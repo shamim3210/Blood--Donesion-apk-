@@ -1,0 +1,738 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // PILLAR 1 & GLOBAL SAFETY NET: Default-Deny Catch-All
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // PHASE 3: HARDENED GLOBAL PRIMITIVES
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        (request.auth.token.firebase.sign_in_provider == 'phone' && request.auth.token.phone_number is string && request.auth.token.phone_number.size() <= 24)
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Exclusive Bootstrapped Super Owner with strict email_verified anti-spoof gate
+    function isBootstrappedSuperAdmin() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.auth.token.email.size() <= 120
+        && request.auth.token.email == 'shamimrakib015@gmail.com';
+    }
+
+    // Zero-Trust DB-backed Admin Role Lookup
+    function isAdmin() {
+      return isVerifiedUser() && (
+        isBootstrappedSuperAdmin() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidBloodGroup(bg) {
+      return bg is string && bg.size() >= 2 && bg.size() <= 4 && bg in ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+    }
+
+    function isValidCardNumber(card) {
+      return card is string && card.size() >= 5 && card.size() <= 40 && card.matches('^[a-zA-Z0-9+\\-]+$');
+    }
+
+    function isValidSha256Hex(digest) {
+      return digest is string
+        && digest.size() == 64
+        && digest.matches('^[a-f0-9]{64}$');
+    }
+
+    // =========================================================================
+    // PILLAR 2: VALIDATION BLUEPRINTS (Synchronized with firebase-blueprint.json)
+    // =========================================================================
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'name', 'email', 'phone', 'whatsappPhone', 'facebookUrl',
+          'bloodGroup', 'division', 'district', 'upazila', 'idCardNumber',
+          'panelType', 'photoUrl', 'age', 'gender', 'weightKg',
+          'availableToDonate', 'totalDonations', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'name', 'email', 'phone', 'whatsappPhone', 'facebookUrl',
+          'bloodGroup', 'division', 'district', 'upazila', 'idCardNumber',
+          'panelType', 'photoUrl', 'age', 'gender', 'weightKg',
+          'availableToDonate', 'totalDonations', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+        && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 24
+        && data.whatsappPhone is string && data.whatsappPhone.size() >= 6 && data.whatsappPhone.size() <= 24
+        && data.facebookUrl is string && data.facebookUrl.size() >= 8 && data.facebookUrl.size() <= 200
+        && isValidBloodGroup(data.bloodGroup)
+        && data.division is string && data.division.size() >= 2 && data.division.size() <= 40
+        && data.district is string && data.district.size() >= 2 && data.district.size() <= 40
+        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 50
+        && isValidCardNumber(data.idCardNumber)
+        && data.panelType is string && data.panelType.size() <= 10 && data.panelType in ['USER', 'ADMIN']
+        && data.photoUrl is string && data.photoUrl.size() <= 150000
+        && data.age is number && data.age >= 18 && data.age <= 65
+        && data.gender is string && data.gender.size() <= 10 && data.gender in ['MALE', 'FEMALE', 'OTHER']
+        && data.weightKg is number && data.weightKg >= 40 && data.weightKg <= 180
+        && data.availableToDonate is bool
+        && data.totalDonations is number && data.totalDonations >= 0 && data.totalDonations <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll([
+          'uid', 'name', 'idCardNumber', 'district', 'secretProofHash', 'registryKey', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'name', 'idCardNumber', 'district', 'secretProofHash', 'registryKey', 'createdAt'
+        ])
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && isValidCardNumber(data.idCardNumber)
+        && data.district is string && data.district.size() >= 2 && data.district.size() <= 40
+        && isValidSha256Hex(data.secretProofHash)
+        && data.registryKey is string && data.registryKey.size() <= 16 && data.registryKey == 'BSBD_ADMIN'
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAdminInviteLock(data) {
+      return data.keys().hasAll([
+          'proofHash', 'label', 'ownerUid', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'proofHash', 'label', 'ownerUid', 'active', 'createdAt', 'updatedAt'
+        ])
+        && isValidSha256Hex(data.proofHash)
+        && data.label is string && data.label.size() >= 2 && data.label.size() <= 60
+        && isValidId(data.ownerUid)
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDonorCard(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'name', 'bloodGroup', 'division', 'district', 'upazila',
+          'maskedPhone', 'available', 'lastDonatedDate', 'totalDonations',
+          'verifiedBadge', 'age', 'gender', 'weightKg', 'hospitalAffiliation',
+          'avatar', 'idCardNumber', 'panelType', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'name', 'bloodGroup', 'division', 'district', 'upazila',
+          'maskedPhone', 'available', 'lastDonatedDate', 'totalDonations',
+          'verifiedBadge', 'age', 'gender', 'weightKg', 'hospitalAffiliation',
+          'avatar', 'idCardNumber', 'panelType', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && isValidBloodGroup(data.bloodGroup)
+        && data.division is string && data.division.size() >= 2 && data.division.size() <= 40
+        && data.district is string && data.district.size() >= 2 && data.district.size() <= 40
+        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 50
+        && data.maskedPhone is string && data.maskedPhone.size() >= 4 && data.maskedPhone.size() <= 24
+        && data.available is bool
+        && data.lastDonatedDate is string && data.lastDonatedDate.size() <= 20
+        && data.totalDonations is number && data.totalDonations >= 0 && data.totalDonations <= 500
+        && data.verifiedBadge is bool
+        && data.age is number && data.age >= 18 && data.age <= 65
+        && data.gender is string && data.gender.size() <= 10 && data.gender in ['MALE', 'FEMALE', 'OTHER']
+        && data.weightKg is number && data.weightKg >= 40 && data.weightKg <= 180
+        && data.hospitalAffiliation is string && data.hospitalAffiliation.size() >= 2 && data.hospitalAffiliation.size() <= 100
+        && data.avatar is string && data.avatar.size() <= 150000
+        && isValidCardNumber(data.idCardNumber)
+        && data.panelType is string && data.panelType.size() <= 10 && data.panelType in ['USER', 'ADMIN']
+        && data.isPublic is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBloodRequest(data) {
+      return data.keys().hasAll([
+          'authorUid', 'patientName', 'patientAge', 'bloodGroup', 'unitsNeeded',
+          'unitsCollected', 'hospitalName', 'division', 'district', 'upazila',
+          'urgency', 'requiredDate', 'reason', 'status', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'authorUid', 'patientName', 'patientAge', 'bloodGroup', 'unitsNeeded',
+          'unitsCollected', 'hospitalName', 'division', 'district', 'upazila',
+          'urgency', 'requiredDate', 'reason', 'status', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.authorUid)
+        && data.patientName is string && data.patientName.size() >= 2 && data.patientName.size() <= 80
+        && data.patientAge is number && data.patientAge >= 0 && data.patientAge <= 120
+        && isValidBloodGroup(data.bloodGroup)
+        && data.unitsNeeded is number && data.unitsNeeded >= 1 && data.unitsNeeded <= 20
+        && data.unitsCollected is number && data.unitsCollected >= 0 && data.unitsCollected <= 20
+        && data.hospitalName is string && data.hospitalName.size() >= 2 && data.hospitalName.size() <= 120
+        && data.division is string && data.division.size() >= 2 && data.division.size() <= 40
+        && data.district is string && data.district.size() >= 2 && data.district.size() <= 40
+        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 50
+        && data.urgency is string && data.urgency.size() <= 12 && data.urgency in ['CRITICAL', 'URGENT', 'STANDARD']
+        && data.requiredDate is string && data.requiredDate.size() >= 2 && data.requiredDate.size() <= 30
+        && data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 300
+        && data.status is string && data.status.size() <= 12 && data.status in ['ACTIVE', 'FULFILLED', 'CANCELLED']
+        && data.isPublic is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBloodStock(data) {
+      return data.keys().hasAll([
+          'bloodGroup', 'unitsInStock', 'updatedByUid', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'bloodGroup', 'unitsInStock', 'updatedByUid', 'updatedAt'
+        ])
+        && isValidBloodGroup(data.bloodGroup)
+        && data.unitsInStock is number && data.unitsInStock >= 0 && data.unitsInStock <= 10000
+        && isValidId(data.updatedByUid)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCommunityMessage(data) {
+      return data.keys().hasAll([
+          'senderUid', 'senderName', 'senderBloodGroup', 'senderAvatar',
+          'senderDistrict', 'text', 'replyToName', 'replyToText', 'isPublic', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'senderUid', 'senderName', 'senderBloodGroup', 'senderAvatar',
+          'senderDistrict', 'text', 'replyToName', 'replyToText', 'isPublic', 'createdAt'
+        ])
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
+        && isValidBloodGroup(data.senderBloodGroup)
+        && data.senderAvatar is string && data.senderAvatar.size() <= 150000
+        && data.senderDistrict is string && data.senderDistrict.size() <= 50
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 2000
+        && data.replyToName is string && data.replyToName.size() <= 80
+        && data.replyToText is string && data.replyToText.size() <= 300
+        && data.isPublic is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidDirectChatRoom(data) {
+      return data.keys().hasAll([
+          'participantOneUid', 'participantOneName', 'participantOneGroup', 'participantOneAvatar',
+          'participantOneWhatsapp', 'participantOneFb',
+          'participantTwoUid', 'participantTwoName', 'participantTwoGroup', 'participantTwoAvatar',
+          'participantTwoWhatsapp', 'participantTwoFb',
+          'lastMessage', 'lastSenderUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'participantOneUid', 'participantOneName', 'participantOneGroup', 'participantOneAvatar',
+          'participantOneWhatsapp', 'participantOneFb',
+          'participantTwoUid', 'participantTwoName', 'participantTwoGroup', 'participantTwoAvatar',
+          'participantTwoWhatsapp', 'participantTwoFb',
+          'lastMessage', 'lastSenderUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.participantOneUid)
+        && data.participantOneName is string && data.participantOneName.size() >= 1 && data.participantOneName.size() <= 80
+        && isValidBloodGroup(data.participantOneGroup)
+        && data.participantOneAvatar is string && data.participantOneAvatar.size() <= 150000
+        && data.participantOneWhatsapp is string && data.participantOneWhatsapp.size() <= 24
+        && data.participantOneFb is string && data.participantOneFb.size() <= 200
+        && isValidId(data.participantTwoUid)
+        && data.participantTwoName is string && data.participantTwoName.size() >= 1 && data.participantTwoName.size() <= 80
+        && isValidBloodGroup(data.participantTwoGroup)
+        && data.participantTwoAvatar is string && data.participantTwoAvatar.size() <= 150000
+        && data.participantTwoWhatsapp is string && data.participantTwoWhatsapp.size() <= 24
+        && data.participantTwoFb is string && data.participantTwoFb.size() <= 200
+        && data.lastMessage is string && data.lastMessage.size() <= 500
+        && isValidId(data.lastSenderUid)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDirectChatMessage(data) {
+      return data.keys().hasAll([
+          'chatId', 'senderUid', 'senderName', 'participantOneUid',
+          'participantTwoUid', 'text', 'replyToText', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'chatId', 'senderUid', 'senderName', 'participantOneUid',
+          'participantTwoUid', 'text', 'replyToText', 'createdAt'
+        ])
+        && isValidId(data.chatId)
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
+        && isValidId(data.participantOneUid)
+        && isValidId(data.participantTwoUid)
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 2000
+        && data.replyToText is string && data.replyToText.size() <= 300
+        && data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // COLLECTION 1: /users/{userId} — STRICT PII ISOLATION & OWNER ANTI-HIJACK
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          incoming().panelType == 'USER' ||
+          isAdmin() ||
+          existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
+
+      allow update: if isValidUserProfile(incoming())
+        && isVerifiedUser()
+        && isValidId(userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isBootstrappedSuperAdmin() ||
+          (
+            isAdmin()
+            && existing().email != 'shamimrakib015@gmail.com'
+            && incoming().email == existing().email
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'phone', 'whatsappPhone', 'facebookUrl', 'bloodGroup',
+              'division', 'district', 'upazila', 'photoUrl', 'age', 'gender',
+              'weightKg', 'availableToDonate', 'totalDonations', 'updatedAt'
+            ])
+          ) ||
+          (
+            isOwner(userId)
+            && incoming().email == existing().email
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'phone', 'whatsappPhone', 'facebookUrl', 'bloodGroup',
+              'division', 'district', 'upazila', 'photoUrl', 'age', 'gender',
+              'weightKg', 'availableToDonate', 'totalDonations', 'panelType', 'idCardNumber', 'updatedAt'
+            ])
+            && (
+              incoming().panelType == existing().panelType ||
+              isBootstrappedSuperAdmin() ||
+              (incoming().panelType == 'ADMIN' && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid)))
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && (
+        isOwner(userId) || isBootstrappedSuperAdmin()
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 2: /admins/{userId} — OWNER-CONTROLLED ADMIN PANEL REGISTRY
+    // =========================================================================
+    match /admins/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedSuperAdmin() && resource.data.registryKey == 'BSBD_ADMIN';
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidAdminRecord(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && (
+          isBootstrappedSuperAdmin() ||
+          (
+            exists(/databases/$(database)/documents/adminInviteLocks/$(incoming().secretProofHash))
+            && get(/databases/$(database)/documents/adminInviteLocks/$(incoming().secretProofHash)).data.active == true
+          )
+        );
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && isBootstrappedSuperAdmin();
+    }
+
+    // =========================================================================
+    // COLLECTION 2B: /adminInviteLocks/{proofHash} — OWNER-EXCLUSIVE VAULT
+    // =========================================================================
+    match /adminInviteLocks/{proofHash} {
+      allow get: if isSignedIn()
+        && isValidId(proofHash)
+        && isValidSha256Hex(proofHash)
+        && (
+          isBootstrappedSuperAdmin() ||
+          (resource != null && existing().active == true)
+        );
+
+      allow list: if isBootstrappedSuperAdmin() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isBootstrappedSuperAdmin()
+        && isValidId(proofHash)
+        && isValidSha256Hex(proofHash)
+        && isValidAdminInviteLock(incoming())
+        && incoming().proofHash == proofHash
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidAdminInviteLock(incoming())
+        && isBootstrappedSuperAdmin()
+        && isValidId(proofHash)
+        && incoming().proofHash == existing().proofHash
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'label', 'active', 'updatedAt'
+        ]);
+
+      allow delete: if isBootstrappedSuperAdmin() && isValidId(proofHash);
+    }
+
+    // =========================================================================
+    // COLLECTION 3: /donors/{donorId} — PUBLIC VOLUNTARY DONOR DIRECTORY (NO PII)
+    // =========================================================================
+    match /donors/{donorId} {
+      allow get: if isValidId(donorId) && (
+        (resource == null && isOwner(donorId)) ||
+        (resource != null && (
+          existing().isPublic == true ||
+          (isSignedIn() && existing().ownerUid == request.auth.uid)
+        )) ||
+        isAdmin()
+      );
+
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isVerifiedUser()
+        && isValidId(donorId)
+        && isValidDonorCard(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (
+          incoming().panelType == 'USER' ||
+          isAdmin() ||
+          existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+        )
+        && (
+          incoming().verifiedBadge == false ||
+          isAdmin() ||
+          existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
+
+      allow update: if isValidDonorCard(incoming())
+        && isVerifiedUser()
+        && isValidId(donorId)
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isBootstrappedSuperAdmin() ||
+          (
+            isAdmin()
+            && existing().panelType != 'ADMIN'
+            && incoming().panelType == existing().panelType
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'verifiedBadge', 'available', 'hospitalAffiliation', 'updatedAt'
+            ])
+          ) ||
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'bloodGroup', 'division', 'district', 'upazila',
+              'maskedPhone', 'available', 'lastDonatedDate', 'totalDonations',
+              'age', 'gender', 'weightKg', 'hospitalAffiliation', 'avatar',
+              'verifiedBadge', 'panelType', 'idCardNumber', 'isPublic', 'updatedAt'
+            ])
+            && (
+              (
+                incoming().verifiedBadge == existing().verifiedBadge
+                && incoming().panelType == existing().panelType
+              ) || (
+                incoming().panelType == 'ADMIN'
+                && incoming().verifiedBadge == true
+                && (
+                  isBootstrappedSuperAdmin() ||
+                  existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+                )
+              )
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(donorId) && (
+        existing().ownerUid == request.auth.uid ||
+        isBootstrappedSuperAdmin() ||
+        (isAdmin() && existing().panelType != 'ADMIN')
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 4: /requests/{requestId} — EMERGENCY SOS REQUESTS
+    // =========================================================================
+    match /requests/{requestId} {
+      allow get: if isValidId(requestId) && (
+        (resource != null && existing().isPublic == true) ||
+        (resource != null && isSignedIn() && existing().authorUid == request.auth.uid) ||
+        isAdmin()
+      );
+
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isVerifiedUser()
+        && isValidId(requestId)
+        && isValidBloodRequest(incoming())
+        && incoming().authorUid == request.auth.uid
+        && incoming().status == 'ACTIVE'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidBloodRequest(incoming())
+        && isVerifiedUser()
+        && isValidId(requestId)
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().status == 'ACTIVE' && (
+              (
+                existing().authorUid == request.auth.uid
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'unitsNeeded', 'unitsCollected', 'hospitalName', 'urgency',
+                  'requiredDate', 'reason', 'status', 'updatedAt'
+                ])
+              ) ||
+              (
+                incoming().unitsCollected == existing().unitsCollected + 1
+                && incoming().unitsCollected <= existing().unitsNeeded
+                && (
+                  incoming().status == 'ACTIVE' ||
+                  (incoming().unitsCollected == existing().unitsNeeded && incoming().status == 'FULFILLED')
+                )
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'unitsCollected', 'status', 'updatedAt'
+                ])
+              )
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(requestId) && (
+        existing().authorUid == request.auth.uid || isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 5: /bloodStock/{groupId} — HOSPITAL BLOOD BANK INVENTORY
+    // =========================================================================
+    match /bloodStock/{groupId} {
+      allow get: if isValidId(groupId) && (
+        (resource != null && existing().unitsInStock >= 0) ||
+        isAdmin()
+      );
+      allow list: if resource.data.unitsInStock >= 0;
+
+      allow create: if isVerifiedUser()
+        && isValidId(groupId)
+        && isValidBloodStock(incoming())
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && isAdmin();
+
+      allow update: if isValidBloodStock(incoming())
+        && isVerifiedUser()
+        && isValidId(groupId)
+        && incoming().bloodGroup == existing().bloodGroup
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'unitsInStock', 'updatedByUid', 'updatedAt'
+        ])
+        && isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(groupId) && isBootstrappedSuperAdmin();
+    }
+
+    // =========================================================================
+    // COLLECTION 6: /communityMessages/{messageId} — LIVE COMMUNITY CHAT (NO PII)
+    // =========================================================================
+    match /communityMessages/{messageId} {
+      allow get: if isValidId(messageId) && resource != null && existing().isPublic == true;
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isVerifiedUser()
+        && isValidId(messageId)
+        && isValidCommunityMessage(incoming())
+        && incoming().senderUid == request.auth.uid
+        && incoming().isPublic == true
+        && incoming().createdAt == request.time;
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser() && isValidId(messageId) && (
+        existing().senderUid == request.auth.uid || isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 7: /directChats/{chatId} — PRIVATE 1-TO-1 USER-TO-USER CHAT
+    // =========================================================================
+    match /directChats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId) && (
+        (
+          resource == null
+          && chatId.split('__').size() == 2
+          && (
+            chatId.split('__')[0] == request.auth.uid ||
+            chatId.split('__')[1] == request.auth.uid
+          )
+        ) ||
+        (
+          resource != null
+          && (
+            existing().participantOneUid == request.auth.uid ||
+            existing().participantTwoUid == request.auth.uid
+          )
+        ) ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.participantOneUid == request.auth.uid ||
+        resource.data.participantTwoUid == request.auth.uid
+      );
+
+      allow create: if isVerifiedUser()
+        && isValidId(chatId)
+        && isValidDirectChatRoom(incoming())
+        && incoming().participantOneUid != incoming().participantTwoUid
+        && chatId == incoming().participantOneUid + '__' + incoming().participantTwoUid
+        && (
+          incoming().participantOneUid == request.auth.uid ||
+          incoming().participantTwoUid == request.auth.uid
+        )
+        && incoming().lastSenderUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidDirectChatRoom(incoming())
+        && isVerifiedUser()
+        && isValidId(chatId)
+        && incoming().participantOneUid == existing().participantOneUid
+        && incoming().participantTwoUid == existing().participantTwoUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().participantOneUid == request.auth.uid
+            && incoming().lastSenderUid == request.auth.uid
+            && incoming().participantTwoWhatsapp == existing().participantTwoWhatsapp
+            && incoming().participantTwoFb == existing().participantTwoFb
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'participantOneName', 'participantOneGroup', 'participantOneAvatar',
+              'participantOneWhatsapp', 'participantOneFb',
+              'participantTwoName', 'participantTwoGroup', 'participantTwoAvatar',
+              'lastMessage', 'lastSenderUid', 'updatedAt'
+            ])
+          ) ||
+          (
+            existing().participantTwoUid == request.auth.uid
+            && incoming().lastSenderUid == request.auth.uid
+            && incoming().participantOneWhatsapp == existing().participantOneWhatsapp
+            && incoming().participantOneFb == existing().participantOneFb
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'participantOneName', 'participantOneGroup', 'participantOneAvatar',
+              'participantTwoName', 'participantTwoGroup', 'participantTwoAvatar',
+              'participantTwoWhatsapp', 'participantTwoFb',
+              'lastMessage', 'lastSenderUid', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(chatId) && isBootstrappedSuperAdmin();
+
+      // =======================================================================
+      // SUBCOLLECTION: /directChats/{chatId}/messages/{messageId}
+      // =======================================================================
+      match /messages/{messageId} {
+        allow get: if isSignedIn()
+          && isValidId(chatId)
+          && isValidId(messageId)
+          && exists(/databases/$(database)/documents/directChats/$(chatId))
+          && (
+            get(/databases/$(database)/documents/directChats/$(chatId)).data.participantOneUid == request.auth.uid ||
+            get(/databases/$(database)/documents/directChats/$(chatId)).data.participantTwoUid == request.auth.uid ||
+            isAdmin()
+          );
+
+        allow list: if isSignedIn()
+          && isValidId(chatId)
+          && (
+            resource.data.participantOneUid == request.auth.uid ||
+            resource.data.participantTwoUid == request.auth.uid
+          );
+
+        allow create: if isVerifiedUser()
+          && isValidId(chatId)
+          && isValidId(messageId)
+          && isValidDirectChatMessage(incoming())
+          && incoming().chatId == chatId
+          && incoming().senderUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/directChats/$(chatId))
+          && getAfter(/databases/$(database)/documents/directChats/$(chatId)).data.participantOneUid == incoming().participantOneUid
+          && getAfter(/databases/$(database)/documents/directChats/$(chatId)).data.participantTwoUid == incoming().participantTwoUid
+          && (
+            incoming().participantOneUid == request.auth.uid ||
+            incoming().participantTwoUid == request.auth.uid
+          );
+
+        allow update: if false;
+
+        allow delete: if isVerifiedUser()
+          && isValidId(chatId)
+          && isValidId(messageId)
+          && exists(/databases/$(database)/documents/directChats/$(chatId))
+          && (
+            isBootstrappedSuperAdmin() ||
+            (
+              existing().senderUid == request.auth.uid && (
+                get(/databases/$(database)/documents/directChats/$(chatId)).data.participantOneUid == request.auth.uid ||
+                get(/databases/$(database)/documents/directChats/$(chatId)).data.participantTwoUid == request.auth.uid
+              )
+            )
+          );
+      }
+    }
+  }
+}

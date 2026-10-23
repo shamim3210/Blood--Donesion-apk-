@@ -1,0 +1,6 @@
+{
+  "name": "BloodSearch - Bangladesh Emergency Blood Network",
+  "description": "Mobile Flutter APK and emergency blood donor ecosystem for Bangladesh with authentic PDF match layouts, blood compatibility engine, and disaster coordination.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

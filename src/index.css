@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Hind Siliguri', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  html {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100dvh;
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100dvh;
+    overflow-x: clip;
+    overscroll-behavior-y: auto;
+    font-family: var(--font-sans);
+    background-color: #f8fafc;
+    color: #0f172a;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  #root {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100dvh;
+    overflow-x: clip;
+  }
+
+  .dark body {
+    background-color: #0b0f19;
+    color: #f8fafc;
+  }
+
+  button,
+  a,
+  [role="button"],
+  summary,
+  select {
+    touch-action: manipulation;
+  }
+
+  /* Prevent mobile browser auto-zoom when tapping text inputs */
+  @media (max-width: 639px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
+}
+
+/* 100% Solid Normal Surfaces - Zero Glass, Zero Blur */
+.glass-surface,
+.standard-surface {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.dark .glass-surface,
+.dark .standard-surface {
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+/* Solid Normal Cards with Clean Sharp Borders */
+.glass-card-adaptive,
+.glass-card,
+.standard-card {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0f172a !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+}
+
+.dark .glass-card-adaptive,
+.dark .glass-card,
+.dark .standard-card {
+  background-color: #1e293b !important;
+  border: 1px solid #334155 !important;
+  color: #f8fafc !important;
+  box-shadow: 0 2px 6px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Native Smooth Touch Scrolling without Scroll Trapping */
+.app-scroll-smooth {
+  -webkit-overflow-scrolling: touch;
+}
+
+.modal-scroll-contain {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+  .dark ::-webkit-scrollbar-track {
+    background: #0f172a;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #94a3b8;
+    border-radius: 9999px;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: #475569;
+  }
+}

@@ -1,0 +1,858 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Strictly isolated private user and donor account profile containing PII and panel membership.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the account owner."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Full display name of the user or donor."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 120,
+          "description": "Verified email address or phone-linked identifier."
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 24,
+          "description": "Primary mobile phone number."
+        },
+        "whatsappPhone": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 24,
+          "description": "Mandatory WhatsApp contact number for emergency coordination."
+        },
+        "facebookUrl": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 200,
+          "description": "Mandatory Facebook profile URL for donor verification."
+        },
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "ABO/Rh blood group."
+        },
+        "division": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "Administrative division in Bangladesh."
+        },
+        "district": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "District in Bangladesh."
+        },
+        "upazila": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 50,
+          "description": "Upazila or Thana."
+        },
+        "idCardNumber": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9+\\-]+$",
+          "description": "Generated Smart Digital ID Card number."
+        },
+        "panelType": {
+          "type": "string",
+          "enum": ["USER", "ADMIN"],
+          "maxLength": 10,
+          "description": "Panel membership tier (USER or verified ADMIN)."
+        },
+        "photoUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "Avatar URL or compressed data URI."
+        },
+        "age": {
+          "type": "number",
+          "description": "Donor age in years (18-65)."
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["MALE", "FEMALE", "OTHER"],
+          "maxLength": 10,
+          "description": "Biological gender."
+        },
+        "weightKg": {
+          "type": "number",
+          "description": "Body weight in kilograms."
+        },
+        "availableToDonate": {
+          "type": "boolean",
+          "description": "Whether the donor is currently available for emergency blood donation."
+        },
+        "totalDonations": {
+          "type": "number",
+          "description": "Total completed blood donations."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last server update timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "email",
+        "phone",
+        "whatsappPhone",
+        "facebookUrl",
+        "bloodGroup",
+        "division",
+        "district",
+        "upazila",
+        "idCardNumber",
+        "panelType",
+        "photoUrl",
+        "age",
+        "gender",
+        "weightKg",
+        "availableToDonate",
+        "totalDonations",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted Admin Panel authorization record unlocked only by Super Owner or an active Owner-issued AdminInviteLock.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the verified administrator."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Administrator full name."
+        },
+        "idCardNumber": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9+\\-]+$",
+          "description": "Admin Smart ID number."
+        },
+        "district": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "Assigned coordination district."
+        },
+        "secretProofHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Salted SHA-256 hex digest verified against an active /adminInviteLocks/{proofHash} document."
+        },
+        "registryKey": {
+          "type": "string",
+          "enum": ["BSBD_ADMIN"],
+          "maxLength": 16,
+          "description": "Explicit query boundary key for Super Owner admin roster listing."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "idCardNumber",
+        "district",
+        "secretProofHash",
+        "registryKey",
+        "createdAt"
+      ]
+    },
+    "AdminInviteLock": {
+      "title": "AdminInviteLock",
+      "description": "Owner-exclusive server-side vault storing salted SHA-256 hashes of active Admin invite codes managed strictly by shamimrakib015@gmail.com.",
+      "type": "object",
+      "properties": {
+        "proofHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Salted SHA-256 digest of the secret code."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60,
+          "description": "Human-readable label for the Owner."
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the Bootstrapped Super Owner."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether this invite code is currently active."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modification timestamp."
+        }
+      },
+      "required": [
+        "proofHash",
+        "label",
+        "ownerUid",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DonorCard": {
+      "title": "DonorCard",
+      "description": "Publicly searchable voluntary blood donor directory entry isolated from raw PII.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the donor who owns this card."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Donor public display name."
+        },
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Blood group."
+        },
+        "division": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "Division ID."
+        },
+        "district": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "District ID or name."
+        },
+        "upazila": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 50,
+          "description": "Upazila ID or name."
+        },
+        "maskedPhone": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "description": "Masked phone indicator (non-PII, e.g. 017****89)."
+        },
+        "available": {
+          "type": "boolean",
+          "description": "Current availability status."
+        },
+        "lastDonatedDate": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20,
+          "description": "Last donation date YYYY-MM-DD."
+        },
+        "totalDonations": {
+          "type": "number",
+          "description": "Total donations count."
+        },
+        "verifiedBadge": {
+          "type": "boolean",
+          "description": "Whether verified by Admin Panel."
+        },
+        "age": {
+          "type": "number",
+          "description": "Donor age."
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["MALE", "FEMALE", "OTHER"],
+          "maxLength": 10,
+          "description": "Gender."
+        },
+        "weightKg": {
+          "type": "number",
+          "description": "Weight in kg."
+        },
+        "hospitalAffiliation": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100,
+          "description": "Voluntary affiliation or coordinator badge."
+        },
+        "avatar": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "Public avatar image URL or compressed thumbnail."
+        },
+        "idCardNumber": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9+\\-]+$",
+          "description": "Smart ID card code."
+        },
+        "panelType": {
+          "type": "string",
+          "enum": ["USER", "ADMIN"],
+          "maxLength": 10,
+          "description": "Account panel tier."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Explicit query guard flag for public donor search."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "name",
+        "bloodGroup",
+        "division",
+        "district",
+        "upazila",
+        "maskedPhone",
+        "available",
+        "lastDonatedDate",
+        "totalDonations",
+        "verifiedBadge",
+        "age",
+        "gender",
+        "weightKg",
+        "hospitalAffiliation",
+        "avatar",
+        "idCardNumber",
+        "panelType",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BloodRequestDoc": {
+      "title": "BloodRequestDoc",
+      "description": "Emergency SOS blood request broadcast record.",
+      "type": "object",
+      "properties": {
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Creator Firebase Auth UID."
+        },
+        "patientName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Patient name."
+        },
+        "patientAge": {
+          "type": "number",
+          "description": "Patient age."
+        },
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Required blood group."
+        },
+        "unitsNeeded": {
+          "type": "number",
+          "description": "Total bags needed (1-20)."
+        },
+        "unitsCollected": {
+          "type": "number",
+          "description": "Units collected so far."
+        },
+        "hospitalName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Hospital name and ward."
+        },
+        "division": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "Division."
+        },
+        "district": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "District."
+        },
+        "upazila": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 50,
+          "description": "Upazila."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": ["CRITICAL", "URGENT", "STANDARD"],
+          "maxLength": 12,
+          "description": "Urgency level."
+        },
+        "requiredDate": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 30,
+          "description": "Date/time blood is required."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 300,
+          "description": "Medical reason for blood transfusion."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ACTIVE", "FULFILLED", "CANCELLED"],
+          "maxLength": 12,
+          "description": "Lifecycle status with terminal locking on FULFILLED/CANCELLED."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Explicit query boundary flag."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "authorUid",
+        "patientName",
+        "patientAge",
+        "bloodGroup",
+        "unitsNeeded",
+        "unitsCollected",
+        "hospitalName",
+        "division",
+        "district",
+        "upazila",
+        "urgency",
+        "requiredDate",
+        "reason",
+        "status",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BloodStockDoc": {
+      "title": "BloodStockDoc",
+      "description": "Central blood bank inventory unit count per blood group managed by Admins.",
+      "type": "object",
+      "properties": {
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Blood group identifier."
+        },
+        "unitsInStock": {
+          "type": "number",
+          "description": "Available units in central stock (0-10000)."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Admin UID who performed the stock update."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of stock modification."
+        }
+      },
+      "required": [
+        "bloodGroup",
+        "unitsInStock",
+        "updatedByUid",
+        "updatedAt"
+      ]
+    },
+    "CommunityChatMessage": {
+      "title": "CommunityChatMessage",
+      "description": "Real-time unlimited message in the BloodSearch Bangladesh live community donor room without raw phone PII.",
+      "type": "object",
+      "properties": {
+        "senderUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated sender UID."
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Display name of the sender."
+        },
+        "senderBloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Sender blood group badge."
+        },
+        "senderAvatar": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "Sender avatar URL or compressed data URI."
+        },
+        "senderDistrict": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50,
+          "description": "Sender district label."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "Unrestricted chat message text."
+        },
+        "replyToName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80,
+          "description": "Quoted message author name if replying."
+        },
+        "replyToText": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300,
+          "description": "Quoted message snippet if replying."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Explicit query boundary guard."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        }
+      },
+      "required": [
+        "senderUid",
+        "senderName",
+        "senderBloodGroup",
+        "senderAvatar",
+        "senderDistrict",
+        "text",
+        "replyToName",
+        "replyToText",
+        "isPublic",
+        "createdAt"
+      ]
+    },
+    "DirectChatRoom": {
+      "title": "DirectChatRoom",
+      "description": "Private 1-to-1 WhatsApp-style user-to-user chat room isolated strictly to its two participants.",
+      "type": "object",
+      "properties": {
+        "participantOneUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "First participant Firebase Auth UID."
+        },
+        "participantOneName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "First participant display name."
+        },
+        "participantOneGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "First participant blood group."
+        },
+        "participantOneAvatar": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "First participant avatar."
+        },
+        "participantOneWhatsapp": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "First participant WhatsApp number shared privately in this room."
+        },
+        "participantOneFb": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "First participant Facebook URL shared privately in this room."
+        },
+        "participantTwoUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Second participant Firebase Auth UID."
+        },
+        "participantTwoName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Second participant display name."
+        },
+        "participantTwoGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Second participant blood group."
+        },
+        "participantTwoAvatar": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "Second participant avatar."
+        },
+        "participantTwoWhatsapp": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Second participant WhatsApp number shared privately in this room."
+        },
+        "participantTwoFb": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "Second participant Facebook URL shared privately in this room."
+        },
+        "lastMessage": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500,
+          "description": "Latest message preview."
+        },
+        "lastSenderUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the user who sent the latest update."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable room creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Latest activity server timestamp."
+        }
+      },
+      "required": [
+        "participantOneUid",
+        "participantOneName",
+        "participantOneGroup",
+        "participantOneAvatar",
+        "participantOneWhatsapp",
+        "participantOneFb",
+        "participantTwoUid",
+        "participantTwoName",
+        "participantTwoGroup",
+        "participantTwoAvatar",
+        "participantTwoWhatsapp",
+        "participantTwoFb",
+        "lastMessage",
+        "lastSenderUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DirectChatMessage": {
+      "title": "DirectChatMessage",
+      "description": "Individual message inside a private 1-to-1 DirectChatRoom.",
+      "type": "object",
+      "properties": {
+        "chatId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent DirectChatRoom ID."
+        },
+        "senderUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Message author UID."
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Message author display name."
+        },
+        "participantOneUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Mirrored participantOneUid for O(1) secure list query enforcement."
+        },
+        "participantTwoUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Mirrored participantTwoUid for O(1) secure list query enforcement."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "Unrestricted user-to-user message text."
+        },
+        "replyToText": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300,
+          "description": "Optional quoted message snippet."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        }
+      },
+      "required": [
+        "chatId",
+        "senderUid",
+        "senderName",
+        "participantOneUid",
+        "participantTwoUid",
+        "text",
+        "replyToText",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Isolated private user accounts and contact PII readable only by the document owner or verified Admins."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted Admin Panel roster created only with an active Owner-issued /adminInviteLocks/{proofHash} or by the bootstrapped Super Owner."
+    },
+    "/adminInviteLocks/{proofHash}": {
+      "schema": { "$ref": "#/entities/AdminInviteLock" },
+      "description": "Server-side dynamic Admin invite vault writable and listable exclusively by shamimrakib015@gmail.com."
+    },
+    "/donors/{donorId}": {
+      "schema": { "$ref": "#/entities/DonorCard" },
+      "description": "Publicly searchable voluntary blood donor cards isolated from raw PII."
+    },
+    "/requests/{requestId}": {
+      "schema": { "$ref": "#/entities/BloodRequestDoc" },
+      "description": "Emergency SOS blood requests with terminal state locking."
+    },
+    "/bloodStock/{groupId}": {
+      "schema": { "$ref": "#/entities/BloodStockDoc" },
+      "description": "Hospital blood inventory counts writable strictly by verified Admins."
+    },
+    "/communityMessages/{messageId}": {
+      "schema": { "$ref": "#/entities/CommunityChatMessage" },
+      "description": "Real-time BloodSearch Bangladesh community live chat stream isolated from raw phone PII."
+    },
+    "/directChats/{chatId}": {
+      "schema": { "$ref": "#/entities/DirectChatRoom" },
+      "description": "Private 1-to-1 user-to-user WhatsApp-style chat rooms accessible strictly to participantOneUid or participantTwoUid."
+    },
+    "/directChats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/DirectChatMessage" },
+      "description": "Private 1-to-1 user-to-user chat messages protected by parent DirectChatRoom Master Gate and participant UID query enforcement."
+    }
+  }
+}
