@@ -44,7 +44,11 @@ import {
   subscribePublicRequests,
   createBloodRequestInFirestore,
   pledgeBloodRequestUnitInFirestore,
+  signInWithGoogleReal,
   signOutReal,
+  getTokenServiceAlert,
+  dismissTokenServiceAlert,
+  TokenServiceAlertInfo,
   User as FirebaseUser,
 } from './firebase';
 
@@ -157,10 +161,18 @@ export default function App() {
     setIsRegisterModalOpen(true);
   }, []);
 
-  const [liveFirebaseUser, setLiveFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [liveFirebaseUser, setLiveFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [tokenServiceAlert, setTokenServiceAlert] = useState<TokenServiceAlertInfo | null>(() =>
+    getTokenServiceAlert()
+  );
 
   // Real Firebase Auth & Cloud Firestore Live Listeners
   useEffect(() => {
+    const syncTokenAlert = () => {
+      setTokenServiceAlert(getTokenServiceAlert());
+    };
+    window.addEventListener('bloodsearch_token_service_alert', syncTokenAlert);
+
     completeRealGmailSignInIfPresent().catch(() => {});
 
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
@@ -204,6 +216,7 @@ export default function App() {
     } catch {}
 
     return () => {
+      window.removeEventListener('bloodsearch_token_service_alert', syncTokenAlert);
       unsubAuth();
       if (unsubDonors) unsubDonors();
       if (unsubRequests) unsubRequests();
@@ -380,6 +393,74 @@ export default function App() {
             activeTab === 'chat' ? 'pt-2.5 pb-20' : 'pt-3.5 pb-24'
           }`}
         >
+          {/* Actionable Session Renew / GCP Token Service API Enable Card (Shown ONLY if an expired token hit disabled securetoken.googleapis.com) */}
+          {tokenServiceAlert?.active && (
+            <div className="mb-3.5 p-3.5 sm:p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/80 shadow-xs text-left">
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-1">
+                  <div className="text-xs sm:text-sm font-black text-amber-950 dark:text-amber-200">
+                    {lang === 'bn'
+                      ? 'লগইন সেশন নবায়ন ও Google Cloud Token Service API নোটিশ'
+                      : 'Session Renewal & Google Cloud Token Service API Notice'}
+                  </div>
+                  <p className="text-[11px] sm:text-xs text-amber-900/90 dark:text-amber-200/90 leading-relaxed">
+                    {lang === 'bn'
+                      ? `আপনার পূর্ববর্তী লগইন সেশনের (${
+                          tokenServiceAlert.expiredEmail || 'Google Account'
+                        }) মেয়াদ শেষ হয়েছে। স্থায়ী অটো-লগইন চালু রাখতে নিচের নীল বাটনে ট্যাপ করে Google Cloud-এ "Token Service API" Enable করুন, অথবা এখনই ১-ক্লিকে পুনরায় লগইন করুন।`
+                      : `Your previous session (${
+                          tokenServiceAlert.expiredEmail || 'Google Account'
+                        }) expired because Token Service API (securetoken.googleapis.com) is disabled in your GCP project. Click Enable once for automatic token refresh, or re-login below.`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => dismissTokenServiceAlert()}
+                  className="min-h-[32px] min-w-[32px] rounded-lg text-amber-800 dark:text-amber-300 hover:bg-amber-200/60 dark:hover:bg-amber-900/50 text-xs font-bold cursor-pointer shrink-0"
+                  aria-label="Dismiss"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    signInWithGoogleReal(tokenServiceAlert.expiredEmail)
+                      .then(async (u) => {
+                        setLiveFirebaseUser(u);
+                        try {
+                          const profile = await fetchUserProfileFromFirestore(u.uid);
+                          const isAdmin = await checkIsVerifiedAdminInFirestore(u);
+                          if (profile) {
+                            if (isAdmin) profile.role = 'ADMIN';
+                            localStorage.setItem('bloodsearch_current_user', JSON.stringify(profile));
+                            window.dispatchEvent(new Event('bloodsearch_user_changed'));
+                          }
+                        } catch {}
+                      })
+                      .catch(() => {
+                        setIsAuthModalOpen(true);
+                      });
+                  }}
+                  className="min-h-[38px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-xs cursor-pointer"
+                >
+                  {lang === 'bn' ? '✓ ১-ক্লিকে পুনরায় Google লগইন' : '✓ 1-Click Google Re-Login'}
+                </button>
+                <a
+                  href={tokenServiceAlert.enableApiUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[38px] inline-flex items-center px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs"
+                >
+                  {lang === 'bn'
+                    ? 'Google Cloud → Token Service API অন করুন ↗'
+                    : 'Enable Token Service API in GCP ↗'}
+                </a>
+              </div>
+            </div>
+          )}
+
           {/* Tab: Home Dashboard */}
           {activeTab === 'home' && (
             <DonorHomeView

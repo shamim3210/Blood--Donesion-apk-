@@ -10,7 +10,7 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   signOut,
-  onAuthStateChanged,
+  onAuthStateChanged as firebaseOnAuthStateChanged,
   RecaptchaVerifier,
   signInWithPhoneNumber,
   ConfirmationResult,
@@ -73,11 +73,13 @@ googleProvider.setCustomParameters({
 });
 
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
+export const FIREBASE_PROJECT_NUMBER = firebaseConfig.messagingSenderId || '194868852449';
 export const FIREBASE_AUTH_PROVIDERS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
 export const FIREBASE_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
 export const FIREBASE_PROJECT_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/settings/general`;
 export const FIREBASE_RULES_CONSOLE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/rules`;
 export const GCP_API_CREDENTIALS_URL = `https://console.cloud.google.com/apis/credentials?project=${firebaseConfig.projectId}`;
+export const GCP_TOKEN_SERVICE_API_URL = `https://console.developers.google.com/apis/api/securetoken.googleapis.com/overview?project=${FIREBASE_PROJECT_NUMBER}`;
 
 export const BOOTSTRAPPED_SUPER_ADMIN_EMAIL = 'shamimrakib015@gmail.com';
 
@@ -85,9 +87,183 @@ export const DEFAULT_AVATAR_DATA_URI =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='28' fill='%23e11d48'/%3E%3Ccircle cx='60' cy='46' r='20' fill='%23ffffff'/%3E%3Cpath d='M26 102c4-19 18-30 34-30s30 11 34 30' fill='%23ffffff'/%3E%3C/svg%3E";
 
 // ============================================================================
+// 1B. AUTH TOKEN-SERVICE HEALTH GATE (Prevents Disabled securetoken API From
+//     Poisoning Firestore WebChannel Into False Offline Mode)
+// ============================================================================
+export interface TokenServiceAlertInfo {
+  active: boolean;
+  expiredEmail?: string;
+  enableApiUrl: string;
+  detectedAt: string;
+}
+
+let latestTokenServiceAlert: TokenServiceAlertInfo | null = null;
+let tokenExpiryGuardTimer: number | null = null;
+
+export function getTokenServiceAlert(): TokenServiceAlertInfo | null {
+  return latestTokenServiceAlert;
+}
+
+export function dismissTokenServiceAlert(): void {
+  latestTokenServiceAlert = null;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('bloodsearch_token_service_alert'));
+  }
+}
+
+function recordTokenServiceAlert(rawErrorMessage: string, email?: string | null): void {
+  const urlMatch = rawErrorMessage.match(
+    /https:\/\/console\.developers\.google\.com\/apis\/api\/securetoken\.googleapis\.com\/overview\?project=[0-9a-zA-Z_-]+/
+  );
+  latestTokenServiceAlert = {
+    active: true,
+    expiredEmail: email || undefined,
+    enableApiUrl: urlMatch ? urlMatch[0] : GCP_TOKEN_SERVICE_API_URL,
+    detectedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('bloodsearch_token_service_alert'));
+  }
+}
+
+export async function probeTokenServiceApiEnabled(): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grant_type: 'refresh_token',
+          refresh_token: 'probe_status_check',
+        }),
+      }
+    );
+    const json = await res.json().catch(() => ({}));
+    const msg = String(json?.error?.message || '');
+    const status = String(json?.error?.status || '');
+    if (
+      msg.includes('Token Service API has not been used') ||
+      msg.includes('securetoken.googleapis.com') ||
+      msg.includes('SERVICE_DISABLED') ||
+      status === 'PERMISSION_DENIED'
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function scheduleProactiveTokenServiceGuard(user: User): void {
+  if (typeof window === 'undefined') return;
+  if (tokenExpiryGuardTimer !== null) {
+    window.clearTimeout(tokenExpiryGuardTimer);
+    tokenExpiryGuardTimer = null;
+  }
+  user
+    .getIdTokenResult()
+    .then((tokenResult) => {
+      const expMs = new Date(tokenResult.expirationTime).getTime();
+      if (!Number.isFinite(expMs)) return;
+      // Check 6 minutes before expiry (1 minute before Firebase SDK's 5-min refresh window)
+      const msUntilGuard = Math.max(5000, expMs - Date.now() - 6 * 60 * 1000);
+      tokenExpiryGuardTimer = window.setTimeout(async () => {
+        if (auth.currentUser?.uid !== user.uid) return;
+        const enabled = await probeTokenServiceApiEnabled();
+        if (!enabled && auth.currentUser?.uid === user.uid) {
+          recordTokenServiceAlert(GCP_TOKEN_SERVICE_API_URL, user.email);
+          await signOut(auth).catch(() => {});
+        }
+      }, msUntilGuard);
+    })
+    .catch(() => {});
+}
+
+export async function validateOrClearBrokenAuthToken(
+  candidateUser: User | null
+): Promise<User | null> {
+  if (!candidateUser) return null;
+  try {
+    await candidateUser.getIdToken();
+    scheduleProactiveTokenServiceGuard(candidateUser);
+    return candidateUser;
+  } catch (err: any) {
+    const rawMsg = String(err?.message || err || '');
+    const code = String(err?.code || '');
+    const isTokenServiceDisabled =
+      rawMsg.includes('token-service-api') ||
+      rawMsg.includes('securetoken.googleapis.com') ||
+      code.includes('token-service-api');
+    const isInvalidatedToken =
+      isTokenServiceDisabled ||
+      code === 'auth/user-token-expired' ||
+      code === 'auth/invalid-user-token' ||
+      code === 'auth/user-disabled';
+
+    if (isTokenServiceDisabled) {
+      recordTokenServiceAlert(rawMsg, candidateUser.email);
+    }
+
+    if (isInvalidatedToken) {
+      // Sign out ONLY the broken Firebase Auth token so Firestore never gets stuck offline;
+      // keep localStorage profile intact for smooth UX.
+      await signOut(auth).catch(() => {});
+      return null;
+    }
+    return candidateUser;
+  }
+}
+
+let bootAuthHealthPromise: Promise<void> | null = null;
+
+export function waitForHealthyAuthBoot(): Promise<void> {
+  if (!bootAuthHealthPromise) {
+    bootAuthHealthPromise = (async () => {
+      try {
+        await auth.authStateReady();
+        if (auth.currentUser) {
+          await validateOrClearBrokenAuthToken(auth.currentUser);
+        }
+      } catch {
+        // Proceed safely if IndexedDB is restricted
+      }
+    })();
+  }
+  return bootAuthHealthPromise;
+}
+
+export async function ensureValidAuthSession(): Promise<User | null> {
+  await waitForHealthyAuthBoot();
+  return validateOrClearBrokenAuthToken(auth.currentUser);
+}
+
+function attachSnapshotAfterBoot(startSnapshot: () => () => void): () => void {
+  let cancelled = false;
+  let innerUnsub: (() => void) | null = null;
+  waitForHealthyAuthBoot().then(() => {
+    if (!cancelled) {
+      try {
+        innerUnsub = startSnapshot();
+      } catch (e) {
+        console.warn('Firestore listener setup skipped:', e);
+      }
+    }
+  });
+  return () => {
+    cancelled = true;
+    if (innerUnsub) {
+      innerUnsub();
+    }
+  };
+}
+
+// ============================================================================
 // 2. VALIDATE CONNECTION ON BOOT (Mandatory per Firebase Integration Skill)
 // ============================================================================
 async function testConnection() {
+  await waitForHealthyAuthBoot();
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -265,7 +441,8 @@ export async function verifyAdminInviteCodeInCloud(
   rawCode: string,
   currentUser?: User | null
 ): Promise<{ valid: boolean; proofHash: string }> {
-  const u = currentUser ?? auth.currentUser;
+  await waitForHealthyAuthBoot();
+  const u = currentUser ?? (await ensureValidAuthSession());
   if (u && isBootstrappedAdminUser(u)) {
     return {
       valid: true,
@@ -397,6 +574,8 @@ export interface LiveAuthDiagnosticReport {
   currentHostname: string;
   domainAuthorized: boolean;
   authorizedDomains: string[];
+  tokenServiceEnabled: boolean;
+  tokenServiceUrl: string;
   googleOAuthReady: boolean;
   emailPasswordEnabled: boolean;
   emailLinkEnabled: boolean;
@@ -412,6 +591,8 @@ export async function runLiveFirebaseAuthDiagnostics(): Promise<LiveAuthDiagnost
     currentHostname: hostname,
     domainAuthorized: true,
     authorizedDomains: [],
+    tokenServiceEnabled: true,
+    tokenServiceUrl: GCP_TOKEN_SERVICE_API_URL,
     googleOAuthReady: false,
     emailPasswordEnabled: false,
     emailLinkEnabled: false,
@@ -420,6 +601,12 @@ export async function runLiveFirebaseAuthDiagnostics(): Promise<LiveAuthDiagnost
   };
 
   try {
+    // 0. Check Google Cloud Token Service API (securetoken.googleapis.com)
+    report.tokenServiceEnabled = await probeTokenServiceApiEnabled();
+    if (report.tokenServiceEnabled) {
+      dismissTokenServiceAlert();
+    }
+
     // 1. Check Authorized Domains
     const cfgRes = await fetch(`https://identitytoolkit.googleapis.com/v1/projects?key=${apiKey}`);
     if (cfgRes.ok) {
@@ -529,6 +716,22 @@ export interface AuthProviderErrorDetails {
 export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
   const code = error?.code || 'auth/unknown';
   const rawMsg = String(error?.message || '');
+
+  if (
+    rawMsg.includes('token-service-api') ||
+    rawMsg.includes('securetoken.googleapis.com') ||
+    code.includes('token-service-api')
+  ) {
+    return {
+      code: 'auth/token-service-disabled',
+      messageBn:
+        'আপনার Google Cloud প্রজেক্টে (194868852449) "Token Service API (securetoken.googleapis.com)" এখনো চালু (Enable) করা হয়নি। নিচের নীল বাটনে ক্লিক করে ১ ক্লিকে "Enable" চাপুন, অথবা এখনই সরাসরি Google বাটনে ট্যাপ করে নতুন সেশন শুরু করুন!',
+      messageEn:
+        'Token Service API (securetoken.googleapis.com) is currently disabled in your Google Cloud project (194868852449). Click Enable below so sessions auto-refresh seamlessly.',
+      needsConsoleProviderEnable: true,
+      consoleUrl: GCP_TOKEN_SERVICE_API_URL,
+    };
+  }
 
   if (
     code === 'auth/operation-not-allowed' ||
@@ -665,7 +868,11 @@ export function signInWithGoogleReal(loginHintEmail?: string): Promise<User> {
   }
   provider.setCustomParameters(params);
 
-  return signInWithPopup(auth, provider, browserPopupRedirectResolver).then((res) => res.user);
+  return signInWithPopup(auth, provider, browserPopupRedirectResolver).then((res) => {
+    dismissTokenServiceAlert();
+    scheduleProactiveTokenServiceGuard(res.user);
+    return res.user;
+  });
 }
 
 export async function sendRealGmailSignInLink(email: string): Promise<void> {
@@ -765,13 +972,50 @@ export async function sendRealPhoneSmsOtp(
 
 export async function signOutReal(): Promise<void> {
   clearPhoneRecaptchaVerifier();
+  if (tokenExpiryGuardTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(tokenExpiryGuardTimer);
+    tokenExpiryGuardTimer = null;
+  }
   await signOut(auth);
   localStorage.removeItem('bloodsearch_current_user');
   sessionStorage.removeItem('bloodsearch_admin_auth');
   window.dispatchEvent(new Event('bloodsearch_user_changed'));
 }
 
-export { onAuthStateChanged };
+/**
+ * Safe wrapper around Firebase `onAuthStateChanged` that ensures expired/unrefreshable
+ * tokens (e.g., when securetoken.googleapis.com is disabled in GCP) are validated and
+ * cleaned up BEFORE emitting a user to UI components or triggering Firestore reads.
+ */
+export function onAuthStateChanged(
+  authInstance: Auth,
+  nextOrObserver: (user: User | null) => void,
+  errorCallback?: (error: Error) => void
+): () => void {
+  let active = true;
+  let callSeq = 0;
+  const rawUnsub = firebaseOnAuthStateChanged(
+    authInstance,
+    async (rawUser) => {
+      const seq = ++callSeq;
+      await waitForHealthyAuthBoot();
+      if (!active || seq !== callSeq) return;
+      if (!rawUser) {
+        nextOrObserver(null);
+        return;
+      }
+      const verifiedUser = await validateOrClearBrokenAuthToken(rawUser);
+      if (!active || seq !== callSeq) return;
+      nextOrObserver(verifiedUser);
+    },
+    errorCallback
+  );
+  return () => {
+    active = false;
+    rawUnsub();
+  };
+}
+
 export type { User, ConfirmationResult };
 
 // ============================================================================
@@ -795,9 +1039,11 @@ export function isBootstrappedAdminUser(user: User | null): boolean {
 export async function checkIsVerifiedAdminInFirestore(user: User | null): Promise<boolean> {
   if (!user) return false;
   if (isBootstrappedAdminUser(user)) return true;
-  const adminPath = `admins/${user.uid}`;
+  const healthyUser = await validateOrClearBrokenAuthToken(user);
+  if (!healthyUser) return false;
+  const adminPath = `admins/${healthyUser.uid}`;
   try {
-    const snap = await getDoc(doc(db, 'admins', user.uid));
+    const snap = await getDoc(doc(db, 'admins', healthyUser.uid));
     return snap.exists();
   } catch (error) {
     console.warn('Admin status check warning:', adminPath, error);
@@ -806,6 +1052,8 @@ export async function checkIsVerifiedAdminInFirestore(user: User | null): Promis
 }
 
 export async function fetchUserProfileFromFirestore(uid: string): Promise<UserAccount | null> {
+  const healthyUser = await ensureValidAuthSession();
+  if (!healthyUser) return null;
   const path = `users/${uid}`;
   try {
     const snap = await getDoc(doc(db, 'users', uid));
@@ -837,6 +1085,9 @@ export async function fetchUserProfileFromFirestore(uid: string): Promise<UserAc
           : new Date().toISOString(),
     };
   } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      return null;
+    }
     handleFirestoreError(error, OperationType.GET, path);
   }
 }
@@ -844,7 +1095,7 @@ export async function fetchUserProfileFromFirestore(uid: string): Promise<UserAc
 export async function fetchUnmaskedDonorContactIfAuthorized(
   donorUid: string
 ): Promise<{ phone: string; whatsappPhone?: string; facebookUrl?: string } | null> {
-  const current = auth.currentUser;
+  const current = await ensureValidAuthSession();
   if (!current) return null;
   try {
     const isAdmin = await checkIsVerifiedAdminInFirestore(current);
@@ -869,7 +1120,11 @@ export async function registerSmartAccountInFirestore(params: {
   adminProofHash?: string;
 }): Promise<void> {
   const { firebaseUser, account, donor, adminProofHash } = params;
-  const uid = firebaseUser.uid;
+  const validUser = await validateOrClearBrokenAuthToken(firebaseUser);
+  if (!validUser) {
+    throw new Error('AUTH_TOKEN_EXPIRED_PLEASE_SIGN_IN');
+  }
+  const uid = validUser.uid;
   const safeAvatar = await compressAvatarIfNeeded(account.photoUrl || donor.avatar || '');
   const isAdminPanel = account.role === 'ADMIN';
 
@@ -1003,85 +1258,89 @@ export async function registerSmartAccountInFirestore(params: {
 }
 
 export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => void {
-  const path = 'donors';
-  const q = query(collection(db, path), where('isPublic', '==', true));
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const list: Donor[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: d.id,
-          name: data.name,
-          bloodGroup: data.bloodGroup as BloodGroup,
-          division: data.division,
-          district: data.district,
-          upazila: data.upazila,
-          phone: data.maskedPhone || '017****00',
-          available: Boolean(data.available),
-          lastDonatedDate: data.lastDonatedDate || '',
-          totalDonations: Number(data.totalDonations) || 0,
-          verifiedBadge: Boolean(data.verifiedBadge),
-          rating: 5.0,
-          reviewsCount: 1,
-          age: Number(data.age) || 24,
-          gender: data.gender || 'MALE',
-          weightKg: Number(data.weightKg) || 60,
-          hospitalAffiliation: data.hospitalAffiliation || 'Voluntary Donor',
-          avatar: data.avatar || DEFAULT_AVATAR_DATA_URI,
-          reliabilityScore: data.verifiedBadge ? 99 : 92,
-        };
-      });
-      onData(list);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    }
-  );
+  return attachSnapshotAfterBoot(() => {
+    const path = 'donors';
+    const q = query(collection(db, path), where('isPublic', '==', true));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: Donor[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            name: data.name,
+            bloodGroup: data.bloodGroup as BloodGroup,
+            division: data.division,
+            district: data.district,
+            upazila: data.upazila,
+            phone: data.maskedPhone || '017****00',
+            available: Boolean(data.available),
+            lastDonatedDate: data.lastDonatedDate || '',
+            totalDonations: Number(data.totalDonations) || 0,
+            verifiedBadge: Boolean(data.verifiedBadge),
+            rating: 5.0,
+            reviewsCount: 1,
+            age: Number(data.age) || 24,
+            gender: data.gender || 'MALE',
+            weightKg: Number(data.weightKg) || 60,
+            hospitalAffiliation: data.hospitalAffiliation || 'Voluntary Donor',
+            avatar: data.avatar || DEFAULT_AVATAR_DATA_URI,
+            reliabilityScore: data.verifiedBadge ? 99 : 92,
+          };
+        });
+        onData(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+  });
 }
 
 export function subscribePublicRequests(onData: (requests: BloodRequest[]) => void): () => void {
-  const path = 'requests';
-  const q = query(collection(db, path), where('isPublic', '==', true));
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const list: BloodRequest[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: d.id,
-          patientName: data.patientName,
-          patientAge: Number(data.patientAge) || 25,
-          bloodGroup: data.bloodGroup as BloodGroup,
-          unitsNeeded: Number(data.unitsNeeded) || 1,
-          unitsCollected: Number(data.unitsCollected) || 0,
-          hospitalName: data.hospitalName,
-          division: data.division,
-          district: data.district,
-          upazila: data.upazila,
-          urgency: data.urgency || 'CRITICAL',
-          contactName: data.patientName,
-          contactPhone: 'হাসপাতাল জরুরি কাউন্টার',
-          requiredDate: data.requiredDate || 'জরুরি',
-          reason: data.reason || 'জরুরি রক্ত সঞ্চালন',
-          responders: [],
-          createdAt:
-            data.createdAt instanceof Timestamp
-              ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'এইমাত্র',
-          status: data.status || 'ACTIVE',
-        };
-      });
-      onData(list);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    }
-  );
+  return attachSnapshotAfterBoot(() => {
+    const path = 'requests';
+    const q = query(collection(db, path), where('isPublic', '==', true));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: BloodRequest[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            patientName: data.patientName,
+            patientAge: Number(data.patientAge) || 25,
+            bloodGroup: data.bloodGroup as BloodGroup,
+            unitsNeeded: Number(data.unitsNeeded) || 1,
+            unitsCollected: Number(data.unitsCollected) || 0,
+            hospitalName: data.hospitalName,
+            division: data.division,
+            district: data.district,
+            upazila: data.upazila,
+            urgency: data.urgency || 'CRITICAL',
+            contactName: data.patientName,
+            contactPhone: 'হাসপাতাল জরুরি কাউন্টার',
+            requiredDate: data.requiredDate || 'জরুরি',
+            reason: data.reason || 'জরুরি রক্ত সঞ্চালন',
+            responders: [],
+            createdAt:
+              data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : 'এইমাত্র',
+            status: data.status || 'ACTIVE',
+          };
+        });
+        onData(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+  });
 }
 
 export async function createBloodRequestInFirestore(newReq: BloodRequest): Promise<void> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return;
 
   const safeId = newReq.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || `req_${Date.now()}`;
@@ -1112,7 +1371,7 @@ export async function createBloodRequestInFirestore(newReq: BloodRequest): Promi
 }
 
 export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
   const safeId = reqId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
   const path = `requests/${safeId}`;
@@ -1137,7 +1396,7 @@ export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<
 }
 
 export async function adminToggleDonorVerifiedInFirestore(donorId: string): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
   const path = `donors/${donorId}`;
   try {
@@ -1157,7 +1416,7 @@ export async function adminToggleDonorVerifiedInFirestore(donorId: string): Prom
 }
 
 export async function adminDeleteDonorInFirestore(donorId: string): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
   const path = `donors/${donorId}`;
   try {
@@ -1172,7 +1431,7 @@ export async function adminDeleteDonorInFirestore(donorId: string): Promise<bool
 }
 
 export async function adminMarkRequestFulfilledInFirestore(reqId: string): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
   const path = `requests/${reqId}`;
   try {
@@ -1193,7 +1452,7 @@ export async function adminMarkRequestFulfilledInFirestore(reqId: string): Promi
 }
 
 export async function adminDeleteRequestInFirestore(reqId: string): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
   const path = `requests/${reqId}`;
   try {
@@ -1214,31 +1473,33 @@ function groupToDocId(grp: BloodGroup): string {
 export function subscribeBloodStock(
   onData: (stockMap: Partial<Record<BloodGroup, number>>) => void
 ): () => void {
-  const path = 'bloodStock';
-  const q = query(collection(db, path), where('unitsInStock', '>=', 0));
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const updates: Partial<Record<BloodGroup, number>> = {};
-      snapshot.docs.forEach((d) => {
-        const data = d.data();
-        if (data.bloodGroup) {
-          updates[data.bloodGroup as BloodGroup] = Number(data.unitsInStock) || 0;
-        }
-      });
-      onData(updates);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    }
-  );
+  return attachSnapshotAfterBoot(() => {
+    const path = 'bloodStock';
+    const q = query(collection(db, path), where('unitsInStock', '>=', 0));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const updates: Partial<Record<BloodGroup, number>> = {};
+        snapshot.docs.forEach((d) => {
+          const data = d.data();
+          if (data.bloodGroup) {
+            updates[data.bloodGroup as BloodGroup] = Number(data.unitsInStock) || 0;
+          }
+        });
+        onData(updates);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+  });
 }
 
 export async function adminUpdateBloodStockInFirestore(
   group: BloodGroup,
   newUnits: number
 ): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
   const docId = groupToDocId(group);
   const path = `bloodStock/${docId}`;
@@ -1272,7 +1533,7 @@ export interface RegisteredAdminItem {
 }
 
 export async function grantAdminAccessWithInviteCode(rawCode: string): Promise<boolean> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
 
   if (isBootstrappedAdminUser(user)) {
@@ -1308,42 +1569,44 @@ export async function grantAdminAccessWithInviteCode(rawCode: string): Promise<b
 export function subscribeOwnerAdminInviteLocks(
   onData: (locks: AdminInviteLockItem[]) => void
 ): () => void {
-  const user = auth.currentUser;
-  if (!user || !isBootstrappedAdminUser(user)) {
-    onData([]);
-    return () => {};
-  }
-  const path = 'adminInviteLocks';
-  const q = query(collection(db, path), where('ownerUid', '==', user.uid));
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const items: AdminInviteLockItem[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          proofHash: d.id,
-          label: String(data.label || 'Admin Invite Code'),
-          ownerUid: String(data.ownerUid || user.uid),
-          active: Boolean(data.active),
-          createdAtLabel:
-            data.createdAt instanceof Timestamp
-              ? data.createdAt.toDate().toLocaleDateString('bn-BD')
-              : 'সক্রিয়',
-        };
-      });
-      onData(items);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+  return attachSnapshotAfterBoot(() => {
+    const user = auth.currentUser;
+    if (!user || !isBootstrappedAdminUser(user)) {
+      onData([]);
+      return () => {};
     }
-  );
+    const path = 'adminInviteLocks';
+    const q = query(collection(db, path), where('ownerUid', '==', user.uid));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const items: AdminInviteLockItem[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            proofHash: d.id,
+            label: String(data.label || 'Admin Invite Code'),
+            ownerUid: String(data.ownerUid || user.uid),
+            active: Boolean(data.active),
+            createdAtLabel:
+              data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate().toLocaleDateString('bn-BD')
+                : 'সক্রিয়',
+          };
+        });
+        onData(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+  });
 }
 
 export async function ownerCreateAdminInviteLock(
   rawCode: string,
   label: string
 ): Promise<string> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isBootstrappedAdminUser(user)) {
     throw new Error('Only the verified Super Owner can create Admin Invite Codes.');
   }
@@ -1372,7 +1635,7 @@ export async function ownerToggleAdminInviteLock(
   nextActive: boolean,
   currentLabel: string
 ): Promise<void> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isBootstrappedAdminUser(user)) return;
   const path = `adminInviteLocks/${proofHash}`;
   try {
@@ -1392,7 +1655,7 @@ export async function ownerToggleAdminInviteLock(
 }
 
 export async function ownerDeleteAdminInviteLock(proofHash: string): Promise<void> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isBootstrappedAdminUser(user)) return;
   const path = `adminInviteLocks/${proofHash}`;
   try {
@@ -1405,39 +1668,41 @@ export async function ownerDeleteAdminInviteLock(proofHash: string): Promise<voi
 export function subscribeAllRegisteredAdminsForOwner(
   onData: (admins: RegisteredAdminItem[]) => void
 ): () => void {
-  const user = auth.currentUser;
-  if (!user || !isBootstrappedAdminUser(user)) {
-    onData([]);
-    return () => {};
-  }
-  const path = 'admins';
-  const q = query(collection(db, path), where('registryKey', '==', 'BSBD_ADMIN'));
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const items: RegisteredAdminItem[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          uid: d.id,
-          name: String(data.name || 'Admin'),
-          idCardNumber: String(data.idCardNumber || 'ADMIN-BD'),
-          district: String(data.district || 'dhaka'),
-          createdAtLabel:
-            data.createdAt instanceof Timestamp
-              ? data.createdAt.toDate().toLocaleDateString('bn-BD')
-              : 'ভেরিফাইড',
-        };
-      });
-      onData(items);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+  return attachSnapshotAfterBoot(() => {
+    const user = auth.currentUser;
+    if (!user || !isBootstrappedAdminUser(user)) {
+      onData([]);
+      return () => {};
     }
-  );
+    const path = 'admins';
+    const q = query(collection(db, path), where('registryKey', '==', 'BSBD_ADMIN'));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const items: RegisteredAdminItem[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            uid: d.id,
+            name: String(data.name || 'Admin'),
+            idCardNumber: String(data.idCardNumber || 'ADMIN-BD'),
+            district: String(data.district || 'dhaka'),
+            createdAtLabel:
+              data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate().toLocaleDateString('bn-BD')
+                : 'ভেরিফাইড',
+          };
+        });
+        onData(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+  });
 }
 
 export async function ownerRevokeAdminAccess(targetUid: string): Promise<void> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isBootstrappedAdminUser(user)) return;
   const path = `admins/${targetUid}`;
   try {
@@ -1543,35 +1808,37 @@ function formatChatTimestamp(ts: unknown): { ms: number; label: string } {
 export function subscribeCommunityMessages(
   onData: (messages: CommunityMessageItem[]) => void
 ): () => void {
-  const path = 'communityMessages';
-  const q = query(collection(db, path), where('isPublic', '==', true));
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const items: CommunityMessageItem[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        const t = formatChatTimestamp(data.createdAt);
-        return {
-          id: d.id,
-          senderUid: data.senderUid || '',
-          senderName: data.senderName || 'Blood Donor',
-          senderBloodGroup: (data.senderBloodGroup as BloodGroup) || 'O+',
-          senderAvatar: data.senderAvatar || DEFAULT_AVATAR_DATA_URI,
-          senderDistrict: data.senderDistrict || '',
-          text: data.text || '',
-          replyToName: data.replyToName || '',
-          replyToText: data.replyToText || '',
-          createdAtMs: t.ms,
-          timeLabel: t.label,
-        };
-      });
-      items.sort((a, b) => a.createdAtMs - b.createdAtMs);
-      onData(items);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    }
-  );
+  return attachSnapshotAfterBoot(() => {
+    const path = 'communityMessages';
+    const q = query(collection(db, path), where('isPublic', '==', true));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const items: CommunityMessageItem[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          const t = formatChatTimestamp(data.createdAt);
+          return {
+            id: d.id,
+            senderUid: data.senderUid || '',
+            senderName: data.senderName || 'Blood Donor',
+            senderBloodGroup: (data.senderBloodGroup as BloodGroup) || 'O+',
+            senderAvatar: data.senderAvatar || DEFAULT_AVATAR_DATA_URI,
+            senderDistrict: data.senderDistrict || '',
+            text: data.text || '',
+            replyToName: data.replyToName || '',
+            replyToText: data.replyToText || '',
+            createdAtMs: t.ms,
+            timeLabel: t.label,
+          };
+        });
+        items.sort((a, b) => a.createdAtMs - b.createdAtMs);
+        onData(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+  });
 }
 
 export async function sendCommunityMessageInFirestore(params: {
@@ -1583,7 +1850,7 @@ export async function sendCommunityMessageInFirestore(params: {
   replyToName?: string;
   replyToText?: string;
 }): Promise<void> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) {
     throw new Error('AUTH_REQUIRED');
   }
@@ -1613,7 +1880,7 @@ export async function sendCommunityMessageInFirestore(params: {
 }
 
 export async function deleteCommunityMessageInFirestore(messageId: string): Promise<void> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return;
   const path = `communityMessages/${messageId}`;
   try {
@@ -1632,67 +1899,74 @@ export function subscribeMyDirectChats(
     return () => {};
   }
 
-  const mapOne = new Map<string, DirectChatRoomItem>();
-  const mapTwo = new Map<string, DirectChatRoomItem>();
+  return attachSnapshotAfterBoot(() => {
+    if (!auth.currentUser || auth.currentUser.uid !== uid) {
+      onData([]);
+      return () => {};
+    }
 
-  const parseDoc = (id: string, data: any): DirectChatRoomItem => {
-    const t = formatChatTimestamp(data.updatedAt || data.createdAt);
-    return {
-      id,
-      participantOneUid: data.participantOneUid,
-      participantOneName: data.participantOneName || 'User',
-      participantOneGroup: (data.participantOneGroup as BloodGroup) || 'B+',
-      participantOneAvatar: data.participantOneAvatar || DEFAULT_AVATAR_DATA_URI,
-      participantOneWhatsapp: data.participantOneWhatsapp || '',
-      participantOneFb: data.participantOneFb || '',
-      participantTwoUid: data.participantTwoUid,
-      participantTwoName: data.participantTwoName || 'Donor',
-      participantTwoGroup: (data.participantTwoGroup as BloodGroup) || 'O+',
-      participantTwoAvatar: data.participantTwoAvatar || DEFAULT_AVATAR_DATA_URI,
-      participantTwoWhatsapp: data.participantTwoWhatsapp || '',
-      participantTwoFb: data.participantTwoFb || '',
-      lastMessage: data.lastMessage || '',
-      lastSenderUid: data.lastSenderUid || '',
-      updatedAtMs: t.ms,
-      timeLabel: t.label,
+    const mapOne = new Map<string, DirectChatRoomItem>();
+    const mapTwo = new Map<string, DirectChatRoomItem>();
+
+    const parseDoc = (id: string, data: any): DirectChatRoomItem => {
+      const t = formatChatTimestamp(data.updatedAt || data.createdAt);
+      return {
+        id,
+        participantOneUid: data.participantOneUid,
+        participantOneName: data.participantOneName || 'User',
+        participantOneGroup: (data.participantOneGroup as BloodGroup) || 'B+',
+        participantOneAvatar: data.participantOneAvatar || DEFAULT_AVATAR_DATA_URI,
+        participantOneWhatsapp: data.participantOneWhatsapp || '',
+        participantOneFb: data.participantOneFb || '',
+        participantTwoUid: data.participantTwoUid,
+        participantTwoName: data.participantTwoName || 'Donor',
+        participantTwoGroup: (data.participantTwoGroup as BloodGroup) || 'O+',
+        participantTwoAvatar: data.participantTwoAvatar || DEFAULT_AVATAR_DATA_URI,
+        participantTwoWhatsapp: data.participantTwoWhatsapp || '',
+        participantTwoFb: data.participantTwoFb || '',
+        lastMessage: data.lastMessage || '',
+        lastSenderUid: data.lastSenderUid || '',
+        updatedAtMs: t.ms,
+        timeLabel: t.label,
+      };
     };
-  };
 
-  const emitMerged = () => {
-    const merged = new Map<string, DirectChatRoomItem>();
-    mapOne.forEach((v, k) => merged.set(k, v));
-    mapTwo.forEach((v, k) => merged.set(k, v));
-    const sorted = Array.from(merged.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-    onData(sorted);
-  };
+    const emitMerged = () => {
+      const merged = new Map<string, DirectChatRoomItem>();
+      mapOne.forEach((v, k) => merged.set(k, v));
+      mapTwo.forEach((v, k) => merged.set(k, v));
+      const sorted = Array.from(merged.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+      onData(sorted);
+    };
 
-  const q1 = query(collection(db, 'directChats'), where('participantOneUid', '==', uid));
-  const q2 = query(collection(db, 'directChats'), where('participantTwoUid', '==', uid));
+    const q1 = query(collection(db, 'directChats'), where('participantOneUid', '==', uid));
+    const q2 = query(collection(db, 'directChats'), where('participantTwoUid', '==', uid));
 
-  const unsub1 = onSnapshot(
-    q1,
-    (snap) => {
-      mapOne.clear();
-      snap.docs.forEach((d) => mapOne.set(d.id, parseDoc(d.id, d.data())));
-      emitMerged();
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'directChats')
-  );
+    const unsub1 = onSnapshot(
+      q1,
+      (snap) => {
+        mapOne.clear();
+        snap.docs.forEach((d) => mapOne.set(d.id, parseDoc(d.id, d.data())));
+        emitMerged();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'directChats')
+    );
 
-  const unsub2 = onSnapshot(
-    q2,
-    (snap) => {
-      mapTwo.clear();
-      snap.docs.forEach((d) => mapTwo.set(d.id, parseDoc(d.id, d.data())));
-      emitMerged();
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'directChats')
-  );
+    const unsub2 = onSnapshot(
+      q2,
+      (snap) => {
+        mapTwo.clear();
+        snap.docs.forEach((d) => mapTwo.set(d.id, parseDoc(d.id, d.data())));
+        emitMerged();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'directChats')
+    );
 
-  return () => {
-    unsub1();
-    unsub2();
-  };
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  });
 }
 
 export function subscribeDirectChatMessages(
@@ -1705,33 +1979,39 @@ export function subscribeDirectChatMessages(
     onData([]);
     return () => {};
   }
-  const fieldName = myUid === participantOneUid ? 'participantOneUid' : 'participantTwoUid';
-  const q = query(
-    collection(db, 'directChats', chatId, 'messages'),
-    where(fieldName, '==', myUid)
-  );
-  return onSnapshot(
-    q,
-    (snap) => {
-      const list: DirectMessageItem[] = snap.docs.map((d) => {
-        const data = d.data();
-        const t = formatChatTimestamp(data.createdAt);
-        return {
-          id: d.id,
-          chatId: data.chatId || chatId,
-          senderUid: data.senderUid || '',
-          senderName: data.senderName || '',
-          text: data.text || '',
-          replyToText: data.replyToText || '',
-          createdAtMs: t.ms,
-          timeLabel: t.label,
-        };
-      });
-      list.sort((a, b) => a.createdAtMs - b.createdAtMs);
-      onData(list);
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, `directChats/${chatId}/messages`)
-  );
+  return attachSnapshotAfterBoot(() => {
+    if (!auth.currentUser || auth.currentUser.uid !== myUid) {
+      onData([]);
+      return () => {};
+    }
+    const fieldName = myUid === participantOneUid ? 'participantOneUid' : 'participantTwoUid';
+    const q = query(
+      collection(db, 'directChats', chatId, 'messages'),
+      where(fieldName, '==', myUid)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list: DirectMessageItem[] = snap.docs.map((d) => {
+          const data = d.data();
+          const t = formatChatTimestamp(data.createdAt);
+          return {
+            id: d.id,
+            chatId: data.chatId || chatId,
+            senderUid: data.senderUid || '',
+            senderName: data.senderName || '',
+            text: data.text || '',
+            replyToText: data.replyToText || '',
+            createdAtMs: t.ms,
+            timeLabel: t.label,
+          };
+        });
+        list.sort((a, b) => a.createdAtMs - b.createdAtMs);
+        onData(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, `directChats/${chatId}/messages`)
+    );
+  });
 }
 
 export async function sendDirectMessageInFirestore(params: {
@@ -1749,7 +2029,7 @@ export async function sendDirectMessageInFirestore(params: {
   text: string;
   replyToText?: string;
 }): Promise<string> {
-  const user = auth.currentUser;
+  const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) {
     throw new Error('AUTH_REQUIRED');
   }
