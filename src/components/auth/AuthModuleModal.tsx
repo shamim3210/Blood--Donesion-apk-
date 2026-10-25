@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Language, UserAccount } from '../../types';
+import { BrandLogo } from '../BrandLogo';
 import {
   auth,
   onAuthStateChanged,
@@ -12,6 +13,7 @@ import {
   signOutReal,
   parseFirebaseAuthError,
   fetchUserProfileFromFirestore,
+  ensureUserAutoSyncedInFirestore,
   checkIsVerifiedAdminInFirestore,
   isBootstrappedAdminUser,
   runLiveFirebaseAuthDiagnostics,
@@ -146,7 +148,10 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
   const syncAuthenticatedUser = async (user: User) => {
     let profile: UserAccount | null = null;
     try {
-      profile = await fetchUserProfileFromFirestore(user.uid);
+      profile = await ensureUserAutoSyncedInFirestore(user);
+      if (!profile) {
+        profile = await fetchUserProfileFromFirestore(user.uid);
+      }
     } catch {
       profile = null;
     }
@@ -158,25 +163,24 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
       name: user.displayName || user.email?.split('@')[0] || 'Verified Donor',
       email: user.email || `${user.uid.slice(0, 8)}@bloodsearch.bd`,
       phone: user.phoneNumber || '',
-      bloodGroup: 'B+',
+      bloodGroup: 'O+',
       division: 'dhaka',
-      district: 'dhaka',
-      upazila: 'dhanmondi',
+      district: 'ঢাকা',
+      upazila: 'সদর',
       photoUrl: user.photoURL || DEFAULT_AVATAR_DATA_URI,
       role: isAdmin ? 'ADMIN' : 'USER',
       verifiedStatus: user.emailVerified || Boolean(user.phoneNumber),
-      idCardNumber: isAdmin ? `ADMIN-BD-2026` : `BD-2026-${user.uid.slice(0, 4).toUpperCase()}`,
+      idCardNumber: isAdmin ? `ADMIN-BD-2026` : `BD-AUTO-${user.uid.slice(0, 4).toUpperCase()}`,
       age: 25,
       gender: 'MALE',
-      weightKg: 64,
+      weightKg: 62,
       availableToDonate: true,
-      totalDonations: 1,
+      totalDonations: 0,
       createdAt: new Date().toISOString(),
     };
 
     if (isAdmin) {
       activeAccount.role = 'ADMIN';
-      sessionStorage.setItem('bloodsearch_admin_auth', 'true');
     }
 
     localStorage.setItem('bloodsearch_current_user', JSON.stringify(activeAccount));
@@ -506,9 +510,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
         {/* Modal Header */}
         <div className="flex items-center justify-between pb-3.5 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-rose-600 to-red-500 text-white flex items-center justify-center shadow-md">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
+            <BrandLogo variant="mark" size="md" />
             <div>
               <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
                 {lang === 'bn' ? 'রিয়েল অ্যাকাউন্ট লগইন ও ভেরিফিকেশন' : 'Real Account Login & Verification'}

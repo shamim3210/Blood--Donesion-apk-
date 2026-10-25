@@ -303,3 +303,81 @@ export const INITIAL_REQUESTS: BloodRequest[] = [
     status: 'ACTIVE',
   },
 ];
+
+export const INITIAL_AUDIT_LOGS = [
+  {
+    id: 'audit-1',
+    action: 'STATUS_CHANGE' as const,
+    actorName: 'System Security Engine',
+    targetDetails: 'Initial verification checks passed for voluntary donors',
+    timestamp: 'আজ সকাল ৮:৩০',
+    securityHash: 'sha256:7f83b165...9c1a',
+  },
+  {
+    id: 'audit-2',
+    action: 'CREATE_SOS' as const,
+    actorName: 'কামাল হোসেন',
+    targetDetails: 'Broadcasted O- request at DMCH (2 units)',
+    timestamp: 'আজ সকাল ৯:১৫',
+    securityHash: 'sha256:c4ca4238...d01b',
+  },
+  {
+    id: 'audit-3',
+    action: 'DISPATCH_INCIDENT' as const,
+    actorName: 'Emergency Command Center',
+    targetDetails: 'Rapid response unit assigned to DMCH emergency Bleeding Case #INC-0412',
+    timestamp: 'আজ সকাল ১০:০৫',
+    securityHash: 'sha256:8b1a992...e4fa',
+  },
+];
+
+export const SEED_DONOR_IDS: ReadonlySet<string> = new Set(INITIAL_DONORS.map((d) => d.id));
+export const SEED_REQUEST_IDS: ReadonlySet<string> = new Set(INITIAL_REQUESTS.map((r) => r.id));
+export const SEED_AUDIT_IDS: ReadonlySet<string> = new Set(INITIAL_AUDIT_LOGS.map((a) => a.id));
+
+export function isSeedDonorId(id?: string): boolean {
+  return Boolean(id && SEED_DONOR_IDS.has(id));
+}
+
+export function isSeedRequestId(id?: string): boolean {
+  return Boolean(id && SEED_REQUEST_IDS.has(id));
+}
+
+export function isSeedAuditId(id?: string): boolean {
+  return Boolean(id && SEED_AUDIT_IDS.has(id));
+}
+
+export function isRealOnlyModeEnabled(): boolean {
+  try {
+    return localStorage.getItem('bloodsearch_real_only_mode') === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Progressively evicts demo/seed items 1-by-1 as real users/records arrive:
+ * - 1 real item  -> removes 1st fake seed item
+ * - 2 real items -> removes 1st & 2nd fake seed items
+ * - N >= seedItems.length (or realOnlyMode = true) -> 0 fake items remain (100% real!)
+ */
+export function evictSeedsProgressively<T extends { id: string }>(
+  realItems: T[],
+  seedItems: T[],
+  forceRealOnly = isRealOnlyModeEnabled()
+): T[] {
+  const seen = new Set<string>();
+  const uniqueReal: T[] = [];
+  for (const item of realItems) {
+    if (item && item.id && !seen.has(item.id)) {
+      seen.add(item.id);
+      uniqueReal.push(item);
+    }
+  }
+  if (forceRealOnly) {
+    return uniqueReal;
+  }
+  const remainingSeeds = seedItems.slice(uniqueReal.length);
+  return [...uniqueReal, ...remainingSeeds];
+}
+

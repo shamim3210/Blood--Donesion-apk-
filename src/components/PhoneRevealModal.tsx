@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
 import { Donor, Language } from '../types';
 import { getTranslation } from '../utils/translations';
-import { fetchUnmaskedDonorContactIfAuthorized } from '../firebase';
+import {
+  fetchUnmaskedDonorContactIfAuthorized,
+  submitScamReportInFirestore,
+} from '../firebase';
+import { buildOfflineEmergencySmsUri } from '../utils/sosAlertEngine';
 import {
   ShieldCheck,
   Phone,
@@ -13,6 +17,8 @@ import {
   MapPin,
   ExternalLink,
   Lock,
+  ShieldAlert,
+  Mail,
 } from 'lucide-react';
 
 interface PhoneRevealModalProps {
@@ -39,6 +45,12 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
     facebookUrl?: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [showScamForm, setShowScamForm] = useState(false);
+  const [scamReason, setScamReason] = useState(
+    'হাসপাতালে আসার আগে বিকাশ/নগদে গাড়িভাড়া বা টাকা দাবি করেছে'
+  );
+  const [scamFeedback, setScamFeedback] = useState<string | null>(null);
+  const [isReportingScam, setIsReportingScam] = useState(false);
 
   if (!isOpen || !donor) return null;
 
@@ -87,14 +99,41 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
     setRevealed(false);
     setResolvedContact(null);
     setCopied(false);
+    setShowScamForm(false);
+    setScamFeedback(null);
     onClose();
   };
 
-  const whatsappMessage = encodeURIComponent(
+  const handleReportScam = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isReportingScam) return;
+    setIsReportingScam(true);
+    try {
+      await submitScamReportInFirestore({
+        suspectPhone: activePhone,
+        suspectName: donor.name,
+        reason: scamReason,
+      });
+      setShowScamForm(false);
+      setScamFeedback(
+        lang === 'bn'
+          ? '✓ রিপোর্ট গৃহীত হয়েছে! অ্যাডমিন টিম নম্বরটি যাচাই করে ব্লকলিস্টে যুক্ত করবে।'
+          : '✓ Scam report submitted to Admin moderation!'
+      );
+    } catch (err: any) {
+      setScamFeedback(err?.message || 'রিপোর্ট পাঠাতে সমস্যা হয়েছে।');
+    } finally {
+      setIsReportingScam(false);
+    }
+  };
+
+  const plainSmsBody =
     lang === 'bn'
-      ? `আসসালামু আলাইকুম ${donor.name}, BloodSearch অ্যাপের মাধ্যমে আপনার প্রোফাইল পেয়েছি। আমার একজন রোগীর জন্য ${donor.bloodGroup} রক্ত প্রয়োজন। আপনি কি বর্তমানে রক্তদানে প্রস্তুত আছেন?`
-      : `Hello ${donor.name}, I found your donor profile on BloodSearch. We urgently need ${donor.bloodGroup} blood for a patient. Are you currently available to donate?`
-  );
+      ? `আসসালামু আলাইকুম ${donor.name}, জরুরি রোগীর জন্য ${donor.bloodGroup} রক্ত প্রয়োজন। আপনি কি রক্তদানে প্রস্তুত আছেন? - BloodSearch`
+      : `Hello ${donor.name}, we urgently need ${donor.bloodGroup} blood for a patient. Are you available to donate?`;
+
+  const whatsappMessage = encodeURIComponent(plainSmsBody);
+  const offlineSmsHref = buildOfflineEmergencySmsUri(activePhone, plainSmsBody);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center p-3 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain transition-all">
@@ -123,7 +162,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="py-5 space-y-4">
+        <div className="py-4 space-y-3.5">
           <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between">
             <div>
               <div className="font-bold text-sm text-slate-900 dark:text-white">{donor.name}</div>
@@ -139,9 +178,19 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
             </div>
           </div>
 
+          {/* Anti-bKash Scam Protection Shield */}
+          <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/35 border border-red-200 dark:border-red-900/70 text-[11px] text-red-900 dark:text-red-200 leading-relaxed">
+            <span className="font-black block mb-0.5">
+              🛡️ বিকাশ/নগদ প্রতারণা সতর্কতা:
+            </span>
+            {lang === 'bn'
+              ? 'স্বেচ্ছাসেবী রক্তদান সম্পূর্ণ বিনামূল্যে। রক্তদাতা হাসপাতালে এসে সশরীরে পৌঁছানোর আগে কখনোই বিকাশ/নগদে গাড়িভাড়া বা অগ্রিম টাকা পাঠাবেন না।'
+              : 'Voluntary blood donation is 100% free. Never send advance travel fare via bKash/Nagad before the donor arrives in person at the hospital.'}
+          </div>
+
           {!revealed ? (
             <>
-              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-900 dark:text-amber-200 space-y-2">
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-900 dark:text-amber-200 space-y-1.5">
                 <div className="flex items-center gap-2 font-bold text-amber-700 dark:text-amber-300">
                   <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
                   <span>{lang === 'bn' ? 'গোপনীয়তা ও নিরাপত্তা নোটিশ' : 'Security Audit Notice'}</span>
@@ -155,7 +204,13 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                 className="w-full min-h-[46px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-md shadow-rose-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-98"
               >
                 <Phone className="w-4 h-4" />
-                <span>{isFetchingContact ? (lang === 'bn' ? 'নম্বর যাচাই হচ্ছে...' : 'Checking...') : t.confirmReveal}</span>
+                <span>
+                  {isFetchingContact
+                    ? lang === 'bn'
+                      ? 'নম্বর যাচাই হচ্ছে...'
+                      : 'Checking...'
+                    : t.confirmReveal}
+                </span>
               </button>
             </>
           ) : isStillMasked ? (
@@ -180,7 +235,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
               </div>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-3.5">
               <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-center space-y-2">
                 <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 tracking-wider block">
                   {lang === 'bn' ? 'সরাসরি যোগাযোগের নম্বর' : 'Verified Contact Number'}
@@ -202,22 +257,30 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-2">
                 <a
                   href={`tel:${activePhone}`}
-                  className="min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md shadow-rose-600/25 transition-all text-center cursor-pointer"
+                  className="min-h-[44px] flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-all text-center cursor-pointer"
                 >
-                  <Phone className="w-4 h-4" />
-                  <span>{t.directCall}</span>
+                  <Phone className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{t.directCall}</span>
                 </a>
                 <a
                   href={`https://wa.me/${activeWhatsapp.replace(/[^0-9]/g, '')}?text=${whatsappMessage}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/25 transition-all text-center cursor-pointer"
+                  className="min-h-[44px] flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-all text-center cursor-pointer"
                 >
-                  <MessageSquare className="w-4 h-4" />
-                  <span>{t.whatsappMessage}</span>
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">WhatsApp</span>
+                </a>
+                <a
+                  href={offlineSmsHref}
+                  className="min-h-[44px] flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs shadow-xs transition-all text-center cursor-pointer"
+                  title="ইন্টারনেট ছাড়াই ফোনের সাধারণ SMS পাঠান"
+                >
+                  <Mail className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{lang === 'bn' ? 'অফলাইন SMS' : 'SMS'}</span>
                 </a>
               </div>
 
@@ -232,14 +295,62 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                   <span>{lang === 'bn' ? 'ফেসবুক প্রোফাইল দেখুন' : 'View Facebook Profile'}</span>
                 </a>
               )}
-
-              <div className="text-center pt-1 text-[11px] text-slate-400 dark:text-slate-500 font-mono">
-                {lang === 'bn'
-                  ? 'এই যোগাযোগ অ্যাক্সেস সিকিউরিটি অডিট লগে রেকর্ড করা হয়েছে।'
-                  : 'This contact access has been recorded to the audit log.'}
-              </div>
             </div>
           )}
+
+          {/* 1-Tap Scam Report Drawer */}
+          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+            {scamFeedback ? (
+              <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 text-center">
+                {scamFeedback}
+              </p>
+            ) : !showScamForm ? (
+              <button
+                type="button"
+                onClick={() => setShowScamForm(true)}
+                className="w-full py-1.5 text-[11px] font-bold text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>
+                  {lang === 'bn'
+                    ? 'টাকা বা বিকাশ দাবি করলে নম্বরটি রিপোর্ট করুন'
+                    : 'Report suspicious number / advance money demand'}
+                </span>
+              </button>
+            ) : (
+              <form onSubmit={handleReportScam} className="space-y-2 pt-1 text-xs">
+                <input
+                  type="text"
+                  required
+                  value={scamReason}
+                  onChange={(e) => setScamReason(e.target.value)}
+                  className="w-full h-9 px-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-red-300 dark:border-red-800 text-slate-900 dark:text-white text-xs"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowScamForm(false)}
+                    className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold cursor-pointer"
+                  >
+                    {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isReportingScam}
+                    className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
+                  >
+                    {isReportingScam
+                      ? lang === 'bn'
+                        ? 'পাঠানো হচ্ছে...'
+                        : 'Sending...'
+                      : lang === 'bn'
+                      ? 'রিপোর্ট পাঠান'
+                      : 'Submit Report'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         </div>
       </div>
     </div>

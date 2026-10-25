@@ -185,7 +185,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'authorUid', 'patientName', 'patientAge', 'bloodGroup', 'unitsNeeded',
           'unitsCollected', 'hospitalName', 'division', 'district', 'upazila',
-          'urgency', 'requiredDate', 'reason', 'status', 'isPublic', 'createdAt', 'updatedAt'
+          'urgency', 'requiredDate', 'reason', 'status', 'exchangeAllowed', 'isPublic', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.authorUid)
         && data.patientName is string && data.patientName.size() >= 2 && data.patientName.size() <= 80
@@ -201,6 +201,7 @@ service cloud.firestore {
         && data.requiredDate is string && data.requiredDate.size() >= 2 && data.requiredDate.size() <= 30
         && data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 300
         && data.status is string && data.status.size() <= 12 && data.status in ['ACTIVE', 'FULFILLED', 'CANCELLED']
+        && (!('exchangeAllowed' in data) || data.exchangeAllowed is bool)
         && data.isPublic is bool
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -226,7 +227,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'senderUid', 'senderName', 'senderBloodGroup', 'senderAvatar',
-          'senderDistrict', 'text', 'replyToName', 'replyToText', 'isPublic', 'createdAt'
+          'senderDistrict', 'text', 'replyToName', 'replyToText', 'attachmentUrl', 'isPublic', 'createdAt'
         ])
         && isValidId(data.senderUid)
         && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
@@ -236,6 +237,7 @@ service cloud.firestore {
         && data.text is string && data.text.size() >= 1 && data.text.size() <= 2000
         && data.replyToName is string && data.replyToName.size() <= 80
         && data.replyToText is string && data.replyToText.size() <= 300
+        && (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 150000))
         && data.isPublic is bool
         && data.createdAt is timestamp;
     }
@@ -280,7 +282,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'chatId', 'senderUid', 'senderName', 'participantOneUid',
-          'participantTwoUid', 'text', 'replyToText', 'createdAt'
+          'participantTwoUid', 'text', 'replyToText', 'attachmentUrl', 'createdAt'
         ])
         && isValidId(data.chatId)
         && isValidId(data.senderUid)
@@ -289,6 +291,62 @@ service cloud.firestore {
         && isValidId(data.participantTwoUid)
         && data.text is string && data.text.size() >= 1 && data.text.size() <= 2000
         && data.replyToText is string && data.replyToText.size() <= 300
+        && (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 150000))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidOwnerAnnouncement(data) {
+      return data.keys().hasAll([
+          'title', 'message', 'urgency', 'active', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'title', 'message', 'urgency', 'active', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 120
+        && data.message is string && data.message.size() >= 2 && data.message.size() <= 600
+        && data.urgency is string && data.urgency.size() <= 12 && data.urgency in ['CRITICAL', 'INFO', 'CAMPAIGN']
+        && data.active is bool
+        && isValidId(data.updatedByUid)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidScamReport(data) {
+      return data.keys().hasAll([
+          'reporterUid', 'reporterName', 'suspectPhone', 'suspectName',
+          'reason', 'status', 'adminQueryKey', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'reporterUid', 'reporterName', 'suspectPhone', 'suspectName',
+          'reason', 'status', 'adminQueryKey', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.reporterUid)
+        && data.reporterName is string && data.reporterName.size() >= 2 && data.reporterName.size() <= 80
+        && data.suspectPhone is string && data.suspectPhone.size() >= 4 && data.suspectPhone.size() <= 24
+        && data.suspectName is string && data.suspectName.size() >= 1 && data.suspectName.size() <= 80
+        && data.reason is string && data.reason.size() >= 4 && data.reason.size() <= 400
+        && data.status is string && data.status.size() <= 12 && data.status in ['OPEN', 'BLOCKED', 'DISMISSED']
+        && data.adminQueryKey is string && data.adminQueryKey.size() <= 16 && data.adminQueryKey == 'BSBD_SCAM'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGratitudeNote(data) {
+      return data.keys().hasAll([
+          'authorUid', 'authorName', 'donorName', 'bloodGroup',
+          'hospitalName', 'message', 'isPublic', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'authorUid', 'authorName', 'donorName', 'bloodGroup',
+          'hospitalName', 'message', 'isPublic', 'createdAt'
+        ])
+        && isValidId(data.authorUid)
+        && data.authorName is string && data.authorName.size() >= 2 && data.authorName.size() <= 80
+        && data.donorName is string && data.donorName.size() >= 2 && data.donorName.size() <= 80
+        && isValidBloodGroup(data.bloodGroup)
+        && data.hospitalName is string && data.hospitalName.size() >= 2 && data.hospitalName.size() <= 120
+        && data.message is string && data.message.size() >= 4 && data.message.size() <= 500
+        && data.isPublic is bool
         && data.createdAt is timestamp;
     }
 
@@ -528,7 +586,7 @@ service cloud.firestore {
                 existing().authorUid == request.auth.uid
                 && incoming().diff(existing()).affectedKeys().hasOnly([
                   'unitsNeeded', 'unitsCollected', 'hospitalName', 'urgency',
-                  'requiredDate', 'reason', 'status', 'updatedAt'
+                  'requiredDate', 'reason', 'status', 'exchangeAllowed', 'updatedAt'
                 ])
               ) ||
               (
@@ -733,6 +791,94 @@ service cloud.firestore {
             )
           );
       }
+    }
+
+    // =========================================================================
+    // COLLECTION 8: /announcements/{announcementId} — OWNER MEGAPHONE BROADCAST
+    // =========================================================================
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && (
+        (resource != null && existing().active == true) ||
+        isAdmin()
+      );
+      allow list: if resource.data.active == true;
+
+      allow create: if isVerifiedUser()
+        && isValidId(announcementId)
+        && isValidOwnerAnnouncement(incoming())
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isAdmin();
+
+      allow update: if isValidOwnerAnnouncement(incoming())
+        && isVerifiedUser()
+        && isValidId(announcementId)
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'message', 'urgency', 'active', 'updatedByUid', 'updatedAt'
+        ])
+        && isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(announcementId) && isAdmin();
+    }
+
+    // =========================================================================
+    // COLLECTION 9: /scamReports/{reportId} — ANTI-BKASH SCAM MODERATION VAULT
+    // =========================================================================
+    match /scamReports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && (
+        isAdmin() ||
+        (resource != null && existing().reporterUid == request.auth.uid)
+      );
+      allow list: if isAdmin() && resource.data.adminQueryKey == 'BSBD_SCAM';
+
+      allow create: if isVerifiedUser()
+        && isValidId(reportId)
+        && isValidScamReport(incoming())
+        && incoming().reporterUid == request.auth.uid
+        && incoming().status == 'OPEN'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidScamReport(incoming())
+        && isVerifiedUser()
+        && isValidId(reportId)
+        && incoming().reporterUid == existing().reporterUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'updatedAt'
+        ])
+        && isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(reportId) && isAdmin();
+    }
+
+    // =========================================================================
+    // COLLECTION 10: /gratitudeNotes/{noteId} — PATIENT FAMILY GRATITUDE WALL
+    // =========================================================================
+    match /gratitudeNotes/{noteId} {
+      allow get: if isValidId(noteId) && (
+        (resource != null && existing().isPublic == true) ||
+        isAdmin()
+      );
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isVerifiedUser()
+        && isValidId(noteId)
+        && isValidGratitudeNote(incoming())
+        && incoming().authorUid == request.auth.uid
+        && incoming().isPublic == true
+        && incoming().createdAt == request.time;
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser() && isValidId(noteId) && (
+        existing().authorUid == request.auth.uid || isAdmin()
+      );
     }
   }
 }

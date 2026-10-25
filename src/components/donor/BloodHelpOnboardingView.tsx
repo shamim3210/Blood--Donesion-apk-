@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { BloodGroup, Language } from '../../types';
+import { BrandLogo } from '../BrandLogo';
 import { 
   ArrowRight, 
   MapPin, 
@@ -78,10 +79,8 @@ export const BloodHelpOnboardingView: React.FC<BloodHelpOnboardingViewProps> = (
       {/* Screen 1: What's your blood type? (Page 2 Screen 1) */}
       {currentStep === 'TYPE_PICKER' && (
         <div className="bg-white dark:bg-[#1e293b] rounded-3xl p-6 sm:p-7 shadow-xl border border-slate-300 dark:border-slate-700 text-left space-y-5 animate-in fade-in">
-          <div>
-            <span className="text-[10px] font-extrabold uppercase tracking-widest text-rose-600 dark:text-rose-400 block mb-1">
-              ● BLOOD HELP
-            </span>
+          <div className="space-y-3">
+            <BrandLogo variant="lockup" size="sm" />
             <h2 className="text-2xl font-black text-slate-900 dark:text-white leading-tight">
               {lang === 'bn' ? 'আপনার রক্তের গ্রুপ কোনটি?' : "What's your blood type?"}
             </h2>

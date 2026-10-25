@@ -37,6 +37,7 @@ export interface BloodRequest {
   status: RequestStatus;
   prescriptionImage?: string;
   distanceKm?: number;
+  exchangeAllowed?: boolean;
 }
 
 export interface HealthConditions {

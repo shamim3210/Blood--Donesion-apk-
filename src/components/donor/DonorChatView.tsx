@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { BloodGroup, Donor, Language, UserAccount } from '../../types';
+import { requestRealDeviceGPS } from '../../utils/geolocation';
 import {
   auth,
   onAuthStateChanged,
@@ -16,6 +17,8 @@ import {
   buildDirectChatId,
   buildWhatsAppChatUrl,
   sanitizeFirestoreIdPart,
+  compressChatAttachmentImage,
+  checkActionCooldownGuard,
   CommunityMessageItem,
   DirectChatRoomItem,
   DirectMessageItem,
@@ -36,6 +39,11 @@ import {
   AlertCircle,
   LogIn,
   UserPlus,
+  MapPin,
+  ImagePlus,
+  Mic,
+  MicOff,
+  Megaphone,
 } from 'lucide-react';
 
 interface DonorChatViewProps {
@@ -58,9 +66,46 @@ interface ActivePeerTarget {
   chatId: string;
 }
 
-const COMMUNITY_ROOM_ID = '__COMMUNITY_LIVE__';
+interface ParsedRichMessage {
+  cleanBody: string;
+  locationPin?: { lat: string; lng: string; label: string; mapsUrl: string };
+  sosCard?: { group: string; bags: string; hospital: string };
+}
 
+const COMMUNITY_ROOM_ID = '__COMMUNITY_LIVE__';
 const QUICK_EMOJIS = ['👍', '❤️', '🙏', '🩸', '🏥', '✅', '🤲', '⚡'];
+const BLOOD_GROUPS: BloodGroup[] = ['O-', 'O+', 'A-', 'A+', 'B-', 'B+', 'AB-', 'AB+'];
+
+function parseRichChatText(rawText: string): ParsedRichMessage {
+  let body = rawText || '';
+  let locationPin: ParsedRichMessage['locationPin'];
+  let sosCard: ParsedRichMessage['sosCard'];
+
+  const locMatch = body.match(/\[LOC:([0-9.-]+),([0-9.-]+)\|([^\]]+)\]/);
+  if (locMatch) {
+    const [, lat, lng, label] = locMatch;
+    locationPin = {
+      lat,
+      lng,
+      label: label.trim(),
+      mapsUrl: `https://www.google.com/maps?q=${lat},${lng}`,
+    };
+    body = body.replace(locMatch[0], '').trim();
+  }
+
+  const sosMatch = body.match(/\[SOS:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]/);
+  if (sosMatch) {
+    const [, group, bags, hospital] = sosMatch;
+    sosCard = {
+      group: group.trim(),
+      bags: bags.trim(),
+      hospital: hospital.trim(),
+    };
+    body = body.replace(sosMatch[0], '').trim();
+  }
+
+  return { cleanBody: body, locationPin, sosCard };
+}
 
 export const DonorChatView: React.FC<DonorChatViewProps> = ({
   lang,
@@ -70,8 +115,10 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
   onOpenAuthModal,
   onOpenRegister,
 }) => {
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const speechRecRef = useRef<any>(null);
 
   // Live Auth & Current User Profile
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
@@ -95,6 +142,11 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     return () => {
       unsubAuth();
       window.removeEventListener('bloodsearch_user_changed', syncProfile);
+      if (speechRecRef.current) {
+        try {
+          speechRecRef.current.stop();
+        } catch {}
+      }
     };
   }, []);
 
@@ -108,14 +160,15 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
   const myGroup: BloodGroup = currentUser?.bloodGroup || 'B+';
   const myAvatar = currentUser?.photoUrl || firebaseUser?.photoURL || DEFAULT_AVATAR_DATA_URI;
   const myDistrict = currentUser?.district || 'ঢাকা';
-  const myWhatsapp = currentUser?.whatsappPhone || currentUser?.phone || firebaseUser?.phoneNumber || '';
+  const myWhatsapp =
+    currentUser?.whatsappPhone || currentUser?.phone || firebaseUser?.phoneNumber || '';
   const myFb = currentUser?.facebookUrl || '';
 
-  // Sidebar Tabs: 'inbox' (Live Community + My Direct Chats) vs 'directory' (All Registered Users/Donors)
+  // Sidebar Tabs
   const [sidebarTab, setSidebarTab] = useState<'inbox' | 'directory'>('inbox');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Active Room Selection: COMMUNITY_ROOM_ID or a Direct Chat Room
+  // Active Room Selection
   const [selectedRoomId, setSelectedRoomId] = useState<string>(COMMUNITY_ROOM_ID);
   const [activePeer, setActivePeer] = useState<ActivePeerTarget | null>(null);
   const [showMobileRoom, setShowMobileRoom] = useState<boolean>(false);
@@ -125,12 +178,24 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
   const [directRooms, setDirectRooms] = useState<DirectChatRoomItem[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessageItem[]>([]);
 
-  // Composer State (Unlimited text!)
+  // Composer State + Rich Attachments + Voice Dictation + Lightbox
   const [inputText, setInputText] = useState('');
+  const [pendingAttachment, setPendingAttachment] = useState<string>('');
+  const [isCompressingImage, setIsCompressingImage] = useState(false);
+  const [isSharingGps, setIsSharingGps] = useState(false);
+  const [isListeningVoice, setIsListeningVoice] = useState(false);
+  const [showSosComposer, setShowSosComposer] = useState(false);
+  const [sosDraftGroup, setSosDraftGroup] = useState<BloodGroup>('O+');
+  const [sosDraftBags, setSosDraftBags] = useState('1');
+  const [sosDraftHospital, setSosDraftHospital] = useState('');
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+
   const [replyingTo, setReplyingTo] = useState<{ name: string; text: string } | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [syncWhatsAppOnSend, setSyncWhatsAppOnSend] = useState(false);
+  const [visibleMsgLimit, setVisibleMsgLimit] = useState<number>(50);
+  const [visibleDirLimit, setVisibleDirLimit] = useState<number>(40);
 
   // 1. Subscribe to Global Real-Time Community Messages
   useEffect(() => {
@@ -179,7 +244,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     return () => unsub();
   }, [selectedRoomId, activePeer?.chatId, activePeer?.peerUid, myUid, directRooms]);
 
-  // Keep activePeer enriched with live WhatsApp/FB if the other user replied in Firestore
   const enrichedPeer = useMemo<ActivePeerTarget | null>(() => {
     if (!activePeer) return null;
     const room = directRooms.find((r) => r.id === activePeer.chatId);
@@ -196,7 +260,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     };
   }, [activePeer, directRooms, myUid]);
 
-  // Open 1-to-1 chat with any Donor / User
   const openDirectChatWithUser = (target: {
     uid: string;
     name: string;
@@ -233,7 +296,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     setReplyingTo(null);
   };
 
-  // Handle incoming donor from DonorSearch or Map
   useEffect(() => {
     if (initialDonor) {
       openDirectChatWithUser({
@@ -251,12 +313,27 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     }
   }, [initialDonor]);
 
-  // Smooth scroll to newest message
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [communityMessages.length, directMessages.length, selectedRoomId]);
+    setVisibleMsgLimit(50);
+    const el = messagesContainerRef.current;
+    if (el) {
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [selectedRoomId, showMobileRoom]);
 
-  // Synchronous 1-click Google login inside chat so popup is never blocked
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 220) {
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [communityMessages.length, directMessages.length]);
+
   const handleInstantGoogleSignIn = () => {
     const p = signInWithGoogleReal();
     setChatError(null);
@@ -266,10 +343,132 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     });
   };
 
+  // Rich Feature 1: Prescription / Hospital Requisition Image Picker
+  const handleSelectImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setChatError(
+        lang === 'bn' ? 'অনুগ্রহ করে শুধুমাত্র ছবি ফাইল নির্বাচন করুন।' : 'Please select a valid image file.'
+      );
+      return;
+    }
+    setIsCompressingImage(true);
+    setChatError(null);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const rawDataUrl = String(reader.result || '');
+      const compressed = await compressChatAttachmentImage(rawDataUrl);
+      setIsCompressingImage(false);
+      if (!compressed) {
+        setChatError(
+          lang === 'bn'
+            ? 'ছবিটি প্রসেস করা যায়নি। অনুগ্রহ করে অন্য একটি স্পষ্ট ছবি চেষ্টা করুন।'
+            : 'Could not compress image. Please try another photo.'
+        );
+        return;
+      }
+      setPendingAttachment(compressed);
+    };
+    reader.onerror = () => {
+      setIsCompressingImage(false);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  // Rich Feature 2: 1-Tap Live GPS Location Pin Share
+  const handleShareLiveGpsPin = async () => {
+    if (isSharingGps) return;
+    setIsSharingGps(true);
+    setChatError(null);
+    try {
+      const coords = await requestRealDeviceGPS();
+      const lat = coords.latitude.toFixed(5);
+      const lng = coords.longitude.toFixed(5);
+      const locLabel =
+        lang === 'bn'
+          ? `${myDistrict} · লাইভ হাসপাতাল / রক্তদাতা লোকেশন`
+          : `${myDistrict} · Live Location Pin`;
+      const locTag = `[LOC:${lat},${lng}|${locLabel}]`;
+      setInputText((prev) =>
+        prev.trim()
+          ? `${locTag}\n${prev.trim()}`
+          : `${locTag}\n📍 আমার বর্তমান লাইভ লোকেশন পিন শেয়ার করলাম।`
+      );
+      inputRef.current?.focus();
+    } catch {
+      setChatError(
+        lang === 'bn'
+          ? 'জিপিএস (GPS) লোকেশন পাওয়া যায়নি। ফোনের Location অন আছে কি না দেখুন।'
+          : 'Could not read device GPS location.'
+      );
+    } finally {
+      setIsSharingGps(false);
+    }
+  };
+
+  // Rich Feature 3: 1-Tap Structured SOS Blood Appeal Card
+  const handleInsertSosCard = () => {
+    const hosp =
+      sosDraftHospital.trim() ||
+      (lang === 'bn' ? 'ঢাকা মেডিকেল কলেজ হাসপাতাল' : 'Emergency Hospital');
+    const cardTag = `[SOS:${sosDraftGroup}|${sosDraftBags} ব্যাগ|${hosp}]`;
+    const note =
+      lang === 'bn'
+        ? `🆘 জরুরি ${sosDraftGroup} রক্ত প্রয়োজন (${sosDraftBags} ব্যাগ) — হাসপাতাল: ${hosp}। প্রস্তুত রক্তদাতারা অনুগ্রহ করে সাড়া দিন!`
+        : `🆘 Urgent ${sosDraftGroup} blood needed (${sosDraftBags} bag) at ${hosp}. Please respond!`;
+    setInputText(`${cardTag}\n${note}`);
+    setShowSosComposer(false);
+    inputRef.current?.focus();
+  };
+
+  // Rich Feature 4: Bangla / English Voice-to-Text Dictation
+  const handleToggleVoiceDictation = () => {
+    const SpeechRec =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setChatError(
+        lang === 'bn'
+          ? 'আপনার ব্রাউজারে ভয়েস টাইপিং সাপোর্ট নেই (Chrome ব্রাউজার ব্যবহার করুন)।'
+          : 'Voice dictation is supported in Chrome / Edge browsers.'
+      );
+      return;
+    }
+
+    if (isListeningVoice && speechRecRef.current) {
+      try {
+        speechRecRef.current.stop();
+      } catch {}
+      setIsListeningVoice(false);
+      return;
+    }
+
+    try {
+      const rec = new SpeechRec();
+      rec.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.onstart = () => setIsListeningVoice(true);
+      rec.onend = () => setIsListeningVoice(false);
+      rec.onerror = () => setIsListeningVoice(false);
+      rec.onresult = (event: any) => {
+        const transcript = event?.results?.[0]?.[0]?.transcript || '';
+        if (transcript) {
+          setInputText((prev) => (prev.trim() ? `${prev.trim()} ${transcript}` : transcript));
+        }
+      };
+      speechRecRef.current = rec;
+      rec.start();
+    } catch {
+      setIsListeningVoice(false);
+    }
+  };
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const trimmed = inputText.trim();
-    if (!trimmed || isSending) return;
+    if ((!trimmed && !pendingAttachment) || isSending) return;
 
     if (!isVerifiedSignedIn) {
       setChatError(
@@ -280,11 +479,28 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
       return;
     }
 
+    const guard = checkActionCooldownGuard('CHAT_SEND', 2000);
+    if (!guard.allowed) {
+      setChatError(
+        lang === 'bn'
+          ? `অনুগ্রহ করে স্প্যাম রোধে ${guard.waitSeconds} সেকেন্ড অপেক্ষা করে বার্তা পাঠান।`
+          : `Please wait ${guard.waitSeconds}s before sending another message.`
+      );
+      return;
+    }
+
     setChatError(null);
     setIsSending(true);
-    const textToSend = trimmed;
+    const textToSend =
+      trimmed ||
+      (lang === 'bn'
+        ? '📷 হাসপাতালের রিকুইজিশন স্লিপ / প্রেসক্রিপশন ছবি'
+        : '📷 Hospital Requisition Slip / Prescription');
+    const attachmentToSend = pendingAttachment;
     const quote = replyingTo;
+
     setInputText('');
+    setPendingAttachment('');
     setReplyingTo(null);
 
     try {
@@ -297,6 +513,7 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           senderDistrict: myDistrict,
           replyToName: quote?.name || '',
           replyToText: quote?.text || '',
+          attachmentUrl: attachmentToSend || undefined,
         });
       } else if (enrichedPeer) {
         const realChatId = await sendDirectMessageInFirestore({
@@ -313,12 +530,12 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           peerFb: enrichedPeer.peerFb,
           text: textToSend,
           replyToText: quote ? `${quote.name}: ${quote.text}` : '',
+          attachmentUrl: attachmentToSend || undefined,
         });
         if (realChatId && realChatId !== selectedRoomId) {
           setSelectedRoomId(realChatId);
         }
 
-        // If user enabled "WhatsApp Sync", also open WhatsApp chat via anchor click
         if (syncWhatsAppOnSend) {
           const waHref = buildWhatsAppChatUrl(enrichedPeer.peerWhatsapp, textToSend);
           const link = document.createElement('a');
@@ -331,7 +548,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
         }
       }
     } catch (err: any) {
-      setInputText(textToSend);
+      setInputText(trimmed);
+      setPendingAttachment(attachmentToSend);
       if (String(err?.message).includes('SELF_CHAT_NOT_ALLOWED')) {
         setChatError(
           lang === 'bn'
@@ -351,7 +569,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     }
   };
 
-  // Filtered Direct Rooms & Directory Users
   const filteredDirectRooms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return directRooms;
@@ -376,6 +593,16 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     );
   }, [donors, searchQuery, myUid]);
 
+  const windowedCommunityMessages = useMemo(() => {
+    if (communityMessages.length <= visibleMsgLimit) return communityMessages;
+    return communityMessages.slice(communityMessages.length - visibleMsgLimit);
+  }, [communityMessages, visibleMsgLimit]);
+
+  const windowedDirectMessages = useMemo(() => {
+    if (directMessages.length <= visibleMsgLimit) return directMessages;
+    return directMessages.slice(directMessages.length - visibleMsgLimit);
+  }, [directMessages, visibleMsgLimit]);
+
   const isCommunityActive = selectedRoomId === COMMUNITY_ROOM_ID;
   const activeWaHref = useMemo(() => {
     const draft =
@@ -386,8 +613,77 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     return buildWhatsAppChatUrl(isCommunityActive ? '' : enrichedPeer?.peerWhatsapp, draft);
   }, [isCommunityActive, enrichedPeer, inputText]);
 
+  const renderRichBubbleContent = (rawText: string, attachmentUrl?: string) => {
+    const parsed = parseRichChatText(rawText);
+    return (
+      <div className="space-y-2">
+        {/* Structured SOS Appeal Card */}
+        {parsed.sosCard && (
+          <div className="p-2.5 rounded-xl bg-rose-600 text-white space-y-1 shadow-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-black uppercase tracking-wider text-rose-100">
+                জরুরি রক্তের SOS কার্ড
+              </span>
+              <span className="px-2 py-0.5 rounded bg-white text-rose-700 font-black text-xs">
+                {parsed.sosCard.group} · {parsed.sosCard.bags}
+              </span>
+            </div>
+            <div className="font-bold text-xs leading-snug">🏥 {parsed.sosCard.hospital}</div>
+          </div>
+        )}
+
+        {/* Interactive Live GPS Location Pin Card */}
+        {parsed.locationPin && (
+          <div className="p-2.5 rounded-xl bg-slate-900 text-white space-y-1.5 border border-slate-700">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+              <MapPin className="w-4 h-4 text-rose-400 shrink-0" />
+              <span className="truncate">{parsed.locationPin.label}</span>
+            </div>
+            <div className="text-[10px] font-mono text-slate-300">
+              GPS: {parsed.locationPin.lat}, {parsed.locationPin.lng}
+            </div>
+            <a
+              href={parsed.locationPin.mapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] flex items-center justify-center gap-1 transition-colors"
+            >
+              <span>Google Maps-এ ডিরেকশন দেখুন</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </div>
+        )}
+
+        {/* Compressed Requisition Slip / Prescription Image */}
+        {attachmentUrl && (
+          <div className="rounded-xl overflow-hidden border border-black/10 dark:border-white/10 bg-black/5">
+            <img
+              src={attachmentUrl}
+              alt="Medical Requisition Slip"
+              loading="lazy"
+              decoding="async"
+              onClick={() => setLightboxImage(attachmentUrl)}
+              className="w-full max-h-56 object-cover cursor-zoom-in hover:opacity-95 transition-opacity"
+            />
+            <button
+              type="button"
+              onClick={() => setLightboxImage(attachmentUrl)}
+              className="w-full py-1 px-2 text-[10px] font-bold text-center bg-black/5 dark:bg-white/5 hover:underline cursor-pointer"
+            >
+              {lang === 'bn' ? '🔍 বড় করে প্রেসক্রিপশন / স্লিপ দেখুন' : '🔍 Tap to enlarge slip'}
+            </button>
+          </div>
+        )}
+
+        {parsed.cleanBody && (
+          <p className="whitespace-pre-wrap select-text">{parsed.cleanBody}</p>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <div className="bg-white dark:bg-[#111b21] rounded-2xl sm:rounded-3xl overflow-hidden shadow-md border border-slate-300 dark:border-slate-700 h-[calc(100dvh-146px)] min-h-[420px] max-h-[720px] flex flex-col @2xl:flex-row text-left">
+    <div className="bg-white dark:bg-[#111b21] rounded-2xl sm:rounded-3xl overflow-hidden shadow-md border border-slate-300 dark:border-slate-700 h-[calc(100dvh-146px)] min-h-[430px] max-h-[740px] flex flex-col @2xl:flex-row text-left">
       {/* ===================================================================== */}
       {/* LEFT PANE: WHATSAPP-STYLE INBOX & USER DIRECTORY                      */}
       {/* ===================================================================== */}
@@ -396,7 +692,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           showMobileRoom ? 'hidden @2xl:flex' : 'flex h-full'
         }`}
       >
-        {/* Top Green WhatsApp-Inspired Header */}
         <div className="p-3.5 bg-[#075e54] dark:bg-[#1f2c34] text-white space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -409,8 +704,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 </h2>
                 <span className="text-[10px] text-emerald-200 font-semibold block truncate">
                   {lang === 'bn'
-                    ? 'আনলিমিটেড ইউজার-টু-ইউজার ও WhatsApp চ্যাট'
-                    : 'Unlimited User-to-User & WhatsApp Sync'}
+                    ? 'লাইভ চ্যাট · GPS পিন · প্রেসক্রিপশন ছবি · ভয়েস'
+                    : 'Live Chat · GPS Pin · Slip Photo · Voice'}
                 </span>
               </div>
             </div>
@@ -426,7 +721,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
             )}
           </div>
 
-          {/* 2 Segmented Tabs: Inbox vs All Users/Donors */}
           <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-black/25 text-xs font-bold">
             <button
               type="button"
@@ -457,7 +751,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
             </button>
           </div>
 
-          {/* Search Input */}
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -474,11 +767,9 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           </div>
         </div>
 
-        {/* Scrollable List */}
         <div className="flex-1 overflow-y-auto modal-scroll-contain divide-y divide-slate-100 dark:divide-slate-800/70">
           {sidebarTab === 'inbox' ? (
             <>
-              {/* Pinned Global Live Community Room */}
               <button
                 type="button"
                 onClick={() => {
@@ -497,7 +788,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                   <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#075e54] to-[#25D366] text-white flex items-center justify-center font-black text-base shadow-xs">
                     🇧🇩
                   </div>
-                  <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#25D366] ring-2 ring-white dark:ring-[#111b21]" />
                 </div>
 
                 <div className="flex-1 min-w-0">
@@ -513,20 +803,22 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                   </div>
                   <p className="text-[11px] text-slate-600 dark:text-slate-400 truncate mt-0.5">
                     {communityMessages.length > 0
-                      ? `${communityMessages[communityMessages.length - 1].senderName}: ${communityMessages[communityMessages.length - 1].text}`
+                      ? `${communityMessages[communityMessages.length - 1].senderName}: ${
+                          parseRichChatText(communityMessages[communityMessages.length - 1].text)
+                            .cleanBody || '📍 লোকেশন / 📷 স্লিপ'
+                        }`
                       : lang === 'bn'
                       ? 'সকল রক্তদাতা ও রোগীর সাথে সরাসরি কথা বলুন...'
                       : 'Chat live with all donors & recipients...'}
                   </p>
                   <div className="text-[10px] text-slate-400 mt-1">
                     {lang === 'bn'
-                      ? `${communityMessages.length}টি লাইভ বার্তা · যেকোনো ইউজারে ট্যাপ করে ইনবক্স করুন`
-                      : `${communityMessages.length} live messages · Tap any user to DM`}
+                      ? `${communityMessages.length}টি বার্তা · GPS পিন ও প্রেসক্রিপশন স্লিপ শেয়ারযোগ্য`
+                      : `${communityMessages.length} live messages · GPS & slip share enabled`}
                   </div>
                 </div>
               </button>
 
-              {/* My 1-to-1 Direct User-to-User Conversations */}
               {filteredDirectRooms.map((room) => {
                 const peerIsOne = room.participantOneUid !== myUid;
                 const pUid = peerIsOne ? room.participantOneUid : room.participantTwoUid;
@@ -561,6 +853,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                     <div className="relative shrink-0">
                       <img
                         src={pAvatar || DEFAULT_AVATAR_DATA_URI}
+                        loading="lazy"
+                        decoding="async"
                         onError={(e) => {
                           (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
                         }}
@@ -583,14 +877,13 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
                         {room.lastSenderUid === myUid ? '✓✓ আপনি: ' : ''}
-                        {room.lastMessage}
+                        {parseRichChatText(room.lastMessage).cleanBody || '📍 লোকেশন / 📷 স্লিপ'}
                       </p>
                     </div>
                   </button>
                 );
               })}
 
-              {/* Prompt to pick a user if no 1-to-1 chats started yet */}
               {filteredDirectRooms.length === 0 && (
                 <div className="p-4 text-center space-y-2.5">
                   <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -612,57 +905,18 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
               )}
             </>
           ) : (
-            /* DIRECTORY TAB: Start 1-to-1 In-App Chat or Direct WhatsApp with Any Donor */
-            filteredDirectoryDonors.map((d) => {
-              const waUrl = buildWhatsAppChatUrl(
-                d.whatsappPhone || d.phone,
-                `আসসালামু আলাইকুম ${d.name}, আমি BloodSearch বাংলাদেশ অ্যাপ থেকে জরুরি ${d.bloodGroup} রক্তের বিষয়ে যোগাযোগ করছি।`
-              );
-              return (
-                <div
-                  key={d.id}
-                  className="p-3 flex items-center justify-between gap-2.5 hover:bg-slate-50 dark:hover:bg-[#202c33]/60 transition-colors"
-                >
+            <>
+              {filteredDirectoryDonors.slice(0, visibleDirLimit).map((d) => {
+                const waUrl = buildWhatsAppChatUrl(
+                  d.whatsappPhone || d.phone,
+                  `আসসালামু আলাইকুম ${d.name}, আমি BloodSearch বাংলাদেশ অ্যাপ থেকে জরুরি ${d.bloodGroup} রক্তের বিষয়ে যোগাযোগ করছি।`
+                );
+                return (
                   <div
-                    onClick={() =>
-                      openDirectChatWithUser({
-                        uid: d.id,
-                        name: d.name,
-                        bloodGroup: d.bloodGroup,
-                        avatar: d.avatar,
-                        whatsapp: d.whatsappPhone || d.phone,
-                        fb: d.facebookUrl,
-                        subtitle: `${d.upazila}, ${d.district}`,
-                      })
-                    }
-                    className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer"
+                    key={d.id}
+                    className="p-3 flex items-center justify-between gap-2.5 hover:bg-slate-50 dark:hover:bg-[#202c33]/60 transition-colors"
                   >
-                    <div className="relative shrink-0">
-                      <img
-                        src={d.avatar || DEFAULT_AVATAR_DATA_URI}
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
-                        }}
-                        alt={d.name}
-                        className="w-10 h-10 rounded-2xl object-cover"
-                      />
-                      <span className="absolute -bottom-0.5 -right-0.5 px-1 rounded bg-rose-600 text-white text-[9px] font-black">
-                        {d.bloodGroup}
-                      </span>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h4 className="font-bold text-xs text-slate-900 dark:text-white truncate">
-                        {d.name}
-                      </h4>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        {d.upazila}, {d.district}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
+                    <div
                       onClick={() =>
                         openDirectChatWithUser({
                           uid: d.id,
@@ -674,23 +928,78 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                           subtitle: `${d.upazila}, ${d.district}`,
                         })
                       }
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-700 hover:bg-black text-white font-bold text-[11px] cursor-pointer"
+                      className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer"
                     >
-                      {lang === 'bn' ? 'চ্যাট' : 'Chat'}
-                    </button>
-                    <a
-                      href={waUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1.5 rounded-lg bg-[#25D366] hover:bg-emerald-500 text-slate-950 font-black text-[11px] cursor-pointer"
-                      title="WhatsApp-এ সরাসরি চ্যাট করুন"
-                    >
-                      WA
-                    </a>
+                      <div className="relative shrink-0">
+                        <img
+                          src={d.avatar || DEFAULT_AVATAR_DATA_URI}
+                          loading="lazy"
+                          decoding="async"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
+                          }}
+                          alt={d.name}
+                          className="w-10 h-10 rounded-2xl object-cover"
+                        />
+                        <span className="absolute -bottom-0.5 -right-0.5 px-1 rounded bg-rose-600 text-white text-[9px] font-black">
+                          {d.bloodGroup}
+                        </span>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h4 className="font-bold text-xs text-slate-900 dark:text-white truncate">
+                          {d.name}
+                        </h4>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {d.upazila}, {d.district}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openDirectChatWithUser({
+                            uid: d.id,
+                            name: d.name,
+                            bloodGroup: d.bloodGroup,
+                            avatar: d.avatar,
+                            whatsapp: d.whatsappPhone || d.phone,
+                            fb: d.facebookUrl,
+                            subtitle: `${d.upazila}, ${d.district}`,
+                          })
+                        }
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-700 hover:bg-black text-white font-bold text-[11px] cursor-pointer"
+                      >
+                        {lang === 'bn' ? 'চ্যাট' : 'Chat'}
+                      </button>
+                      <a
+                        href={waUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-lg bg-[#25D366] hover:bg-emerald-500 text-slate-950 font-black text-[11px] cursor-pointer"
+                        title="WhatsApp-এ সরাসরি চ্যাট করুন"
+                      >
+                        WA
+                      </a>
+                    </div>
                   </div>
+                );
+              })}
+              {filteredDirectoryDonors.length > visibleDirLimit && (
+                <div className="p-3 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleDirLimit((prev) => prev + 40)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-[#202c33] text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer"
+                  >
+                    {lang === 'bn'
+                      ? `আরও ইউজার দেখুন (${filteredDirectoryDonors.length - visibleDirLimit})`
+                      : `Load more users (${filteredDirectoryDonors.length - visibleDirLimit})`}
+                  </button>
                 </div>
-              );
-            })
+              )}
+            </>
           )}
         </div>
       </div>
@@ -748,14 +1057,14 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
               <p className="text-[10px] text-emerald-100 truncate">
                 {isCommunityActive
                   ? lang === 'bn'
-                    ? 'আনলিমিটেড লাইভ চ্যাট · নামের ওপর ক্লিক করে ব্যক্তিগত মেসেজ দিন'
-                    : 'Unlimited live chat · Tap any name for 1-to-1 DM'
-                  : enrichedPeer?.peerSubtitle || (lang === 'bn' ? 'রিয়েল-টাইম ক্লাউড চ্যাট' : 'Live Cloud Chat')}
+                    ? 'আনলিমিটেড লাইভ চ্যাট · GPS লোকেশন ও প্রেসক্রিপশন ছবি পাঠান'
+                    : 'Unlimited live chat · Share GPS pins & prescription photos'
+                  : enrichedPeer?.peerSubtitle ||
+                    (lang === 'bn' ? 'রিয়েল-টাইম ক্লাউড চ্যাট' : 'Live Cloud Chat')}
               </p>
             </div>
           </div>
 
-          {/* Direct WhatsApp, Facebook & Phone Actions */}
           <div className="flex items-center gap-1.5 shrink-0">
             <a
               href={activeWaHref}
@@ -802,23 +1111,37 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
         </div>
 
         {/* Message Canvas */}
-        <div className="flex-1 overflow-y-auto modal-scroll-contain p-3 @md:p-4 space-y-2.5">
-          {/* Encryption / Info Note */}
+        <div
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto modal-scroll-contain p-3 @md:p-4 space-y-2.5"
+        >
           <div className="text-center my-1">
-            <span className="inline-block text-[11px] font-semibold text-slate-700 dark:text-amber-200/90 bg-[#fff5c4] dark:bg-[#182229] px-3 py-1 rounded-xl shadow-2xs max-w-[92%]">
+            <span className="inline-block text-[11px] font-semibold text-slate-700 dark:text-amber-200/90 bg-[#fff5c4] dark:bg-[#182229] px-3 py-1 rounded-xl shadow-2xs max-w-[94%]">
               {isCommunityActive
                 ? lang === 'bn'
-                  ? '🔓 এটি লাইভ কমিউনিটি রুম — আপনার মেসেজ সকল অনলাইন ইউজার সাথে সাথে দেখতে পাবেন। কোনো লিমিট নেই, যা ইচ্ছা লিখুন!'
-                  : '🔓 Live Community Room — Real users see your messages instantly with zero limits!'
+                  ? '🔓 লাইভ কমিউনিটি রুম — নিচে 📍 GPS লোকেশন পিন, 📷 প্রেসক্রিপশন স্লিপ বা 🆘 জরুরি রক্তের কার্ড পাঠাতে পারবেন!'
+                  : '🔓 Live Community Room — Share GPS pins, requisition photos, or SOS cards!'
                 : lang === 'bn'
-                ? '🔒 ব্যক্তিগত ইউজার-টু-ইউজার চ্যাট — শুধুমাত্র আপনি এবং অপর পক্ষ এই মেসেজ দেখতে পাবেন। উপরের WhatsApp বাটনে চাপলে সরাসরি WhatsApp-এও কথা বলতে পারবেন।'
-                : '🔒 Private 1-to-1 User-to-User Chat — Isolated strictly to both participants + 1-tap WhatsApp connect.'}
+                ? '🔒 ব্যক্তিগত ইউজার-টু-ইউজার চ্যাট — শুধুমাত্র আপনি ও অপর পক্ষ এই মেসেজ ও প্রেসক্রিপশন ছবি দেখতে পাবেন।'
+                : '🔒 Private 1-to-1 User-to-User Chat — Isolated strictly to both participants.'}
             </span>
           </div>
 
-          {/* Render Community Stream */}
+          {((isCommunityActive && communityMessages.length > visibleMsgLimit) ||
+            (!isCommunityActive && directMessages.length > visibleMsgLimit)) && (
+            <div className="text-center py-1">
+              <button
+                type="button"
+                onClick={() => setVisibleMsgLimit((prev) => prev + 50)}
+                className="px-3 py-1 rounded-lg bg-white dark:bg-[#202c33] border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                {lang === 'bn' ? '↑ পূর্ববর্তী মেসেজ দেখুন' : '↑ Load older messages'}
+              </button>
+            </div>
+          )}
+
           {isCommunityActive &&
-            (communityMessages.length === 0 ? (
+            (windowedCommunityMessages.length === 0 ? (
               <div className="py-10 text-center space-y-2">
                 <p className="text-xs font-bold text-slate-600 dark:text-slate-400">
                   {lang === 'bn'
@@ -827,7 +1150,7 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 </p>
               </div>
             ) : (
-              communityMessages.map((msg) => {
+              windowedCommunityMessages.map((msg) => {
                 const isMe = Boolean(myUid && msg.senderUid === myUid);
                 return (
                   <div
@@ -841,7 +1164,6 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                           : 'bg-white dark:bg-[#202c33] text-slate-900 dark:text-slate-100 rounded-tl-none'
                       }`}
                     >
-                      {/* Sender Header for Others (Clickable to start 1-to-1 User-to-User Chat!) */}
                       {!isMe && (
                         <div className="flex items-center justify-between gap-2 mb-1">
                           <button
@@ -869,9 +1191,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                         </div>
                       )}
 
-                      {/* Quoted Reply Box */}
                       {msg.replyToText && (
-                        <div className="mb-1.5 p-1.5 rounded-lg bg-black/5 dark:bg-black/25 border-l-3 border-emerald-600 text-[11px] opacity-90">
+                        <div className="mb-1.5 p-1.5 rounded-lg bg-black/5 dark:bg-black/25 border border-emerald-500/30 text-[11px] opacity-90">
                           {msg.replyToName && (
                             <span className="font-bold block text-emerald-700 dark:text-emerald-400">
                               {msg.replyToName}
@@ -881,9 +1202,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                         </div>
                       )}
 
-                      <p className="whitespace-pre-wrap select-text">{msg.text}</p>
+                      {renderRichBubbleContent(msg.text, msg.attachmentUrl)}
 
-                      {/* Bubble Footer: Time, Ticks, Reply & WhatsApp Forward */}
                       <div className="flex items-center justify-end gap-2 mt-1 text-[10px] text-slate-500 dark:text-emerald-100/70">
                         <button
                           type="button"
@@ -905,7 +1225,9 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                         {isMe && (
                           <button
                             type="button"
-                            onClick={() => deleteCommunityMessageInFirestore(msg.id).catch(() => {})}
+                            onClick={() =>
+                              deleteCommunityMessageInFirestore(msg.id).catch(() => {})
+                            }
                             className="text-red-500 hover:text-red-700 cursor-pointer"
                             title="মুছে ফেলুন"
                           >
@@ -921,14 +1243,13 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
               })
             ))}
 
-          {/* Render 1-to-1 Direct User-to-User Stream */}
           {!isCommunityActive &&
-            (directMessages.length === 0 ? (
+            (windowedDirectMessages.length === 0 ? (
               <div className="py-10 text-center space-y-2.5">
                 <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
                   {lang === 'bn'
-                    ? `${enrichedPeer?.peerName || 'রক্তদাতা'}-কে আপনার বার্তা লিখুন — অথবা সরাসরি WhatsApp-এ মেসেজ পাঠান!`
-                    : `Send a live message to ${enrichedPeer?.peerName || 'this donor'} or connect on WhatsApp!`}
+                    ? `${enrichedPeer?.peerName || 'রক্তদাতা'}-কে আপনার বার্তা, 📍 লোকেশন বা 📷 রিকুইজিশন স্লিপ পাঠান!`
+                    : `Send a live message, GPS location, or requisition slip to ${enrichedPeer?.peerName || 'this donor'}!`}
                 </p>
                 <a
                   href={activeWaHref}
@@ -940,7 +1261,7 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 </a>
               </div>
             ) : (
-              directMessages.map((msg) => {
+              windowedDirectMessages.map((msg) => {
                 const isMe = Boolean(myUid && msg.senderUid === myUid);
                 return (
                   <div
@@ -955,12 +1276,12 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                       }`}
                     >
                       {msg.replyToText && (
-                        <div className="mb-1.5 p-1.5 rounded-lg bg-black/5 dark:bg-black/25 border-l-3 border-emerald-600 text-[11px] opacity-90">
+                        <div className="mb-1.5 p-1.5 rounded-lg bg-black/5 dark:bg-black/25 border border-emerald-500/30 text-[11px] opacity-90">
                           <span className="line-clamp-2">{msg.replyToText}</span>
                         </div>
                       )}
 
-                      <p className="whitespace-pre-wrap select-text">{msg.text}</p>
+                      {renderRichBubbleContent(msg.text, msg.attachmentUrl)}
 
                       <div className="flex items-center justify-end gap-2 mt-1 text-[10px] text-slate-500 dark:text-emerald-100/70">
                         <button
@@ -993,11 +1314,18 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 );
               })
             ))}
-
-          <div ref={messagesEndRef} />
         </div>
 
         {/* Error / Auth Prompt Banner */}
+        {/* Anti-bKash Advance Scam Safety Line */}
+        <div className="px-3 py-1.5 bg-amber-50/90 dark:bg-amber-950/30 border-t border-amber-200/80 dark:border-amber-900/60 text-[11px] text-amber-900 dark:text-amber-200/90 flex items-center justify-between gap-2">
+          <span className="truncate">
+            {lang === 'bn'
+              ? 'সতর্কতা: রক্তদানের আগে বিকাশ/নগদে অগ্রিম ভাড়া পাঠাবেন না · সেবা ১০০% বিনামূল্যে'
+              : 'Safety: Never send advance bKash/Nagad fare before meeting at hospital'}
+          </span>
+        </div>
+
         {chatError && (
           <div className="px-3 py-2 bg-red-50 dark:bg-red-950/60 border-t border-red-200 dark:border-red-900 flex items-center justify-between gap-2 text-xs text-red-700 dark:text-red-300 font-bold">
             <div className="flex items-center gap-1.5 min-w-0">
@@ -1014,13 +1342,13 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           </div>
         )}
 
-        {/* Guest Fast Sign-In Strip (So unauthenticated users can log in with 1 tap and chat freely!) */}
+        {/* Guest Fast Sign-In Strip */}
         {!isVerifiedSignedIn && (
           <div className="px-3 py-2 bg-emerald-50 dark:bg-[#182229] border-t border-emerald-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
             <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200">
               {lang === 'bn'
-                ? 'লাইভ চ্যাট করতে ১-ক্লিকে আসল Gmail দিয়ে যুক্ত হোন:'
-                : 'Sign in with Gmail in 1 tap to send live messages:'}
+                ? 'লাইভ চ্যাট ও ছবি পাঠাতে ১-ক্লিকে আসল Gmail দিয়ে যুক্ত হোন:'
+                : 'Sign in with Gmail in 1 tap to send live messages & photos:'}
             </span>
             <div className="flex items-center gap-1.5">
               <button
@@ -1045,10 +1373,106 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           </div>
         )}
 
+        {/* Quick SOS Card Builder Drawer */}
+        {showSosComposer && (
+          <div className="px-3 py-2.5 bg-rose-50 dark:bg-rose-950/60 border-t border-rose-200 dark:border-rose-900 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-black text-rose-700 dark:text-rose-300">
+                {lang === 'bn' ? '🆘 চ্যাটে জরুরি রক্তের কার্ড তৈরি করুন' : '🆘 Build Urgent Blood Card'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowSosComposer(false)}
+                className="p-0.5 text-rose-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <select
+                value={sosDraftGroup}
+                onChange={(e) => setSosDraftGroup(e.target.value as BloodGroup)}
+                className="h-8 px-2 rounded-lg bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 font-black text-rose-600 text-xs"
+              >
+                {BLOOD_GROUPS.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={sosDraftBags}
+                onChange={(e) => setSosDraftBags(e.target.value)}
+                className="h-8 px-2 rounded-lg bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 font-bold text-xs text-slate-800 dark:text-white"
+              >
+                {['1', '2', '3', '4', '5'].map((n) => (
+                  <option key={n} value={n}>
+                    {n} {lang === 'bn' ? 'ব্যাগ' : 'Bag'}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleInsertSosCard}
+                className="h-8 px-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-xs cursor-pointer"
+              >
+                {lang === 'bn' ? 'যুক্ত করুন' : 'Insert'}
+              </button>
+            </div>
+            <input
+              type="text"
+              value={sosDraftHospital}
+              onChange={(e) => setSosDraftHospital(e.target.value)}
+              placeholder={
+                lang === 'bn'
+                  ? 'হাসপাতালের নাম (যেমন: ঢাকা মেডিকেল ওয়ার্ড ২০৪)...'
+                  : 'Hospital & ward name...'
+              }
+              className="w-full h-8 px-2.5 rounded-lg bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-xs text-slate-900 dark:text-white"
+            />
+          </div>
+        )}
+
+        {/* Pending Prescription Image Preview Strip */}
+        {(pendingAttachment || isCompressingImage) && (
+          <div className="px-3 py-2 bg-white dark:bg-[#202c33] border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {pendingAttachment && (
+                <img
+                  src={pendingAttachment}
+                  alt="Attachment preview"
+                  className="w-11 h-11 rounded-xl object-cover border border-emerald-500/40 shrink-0"
+                />
+              )}
+              <div className="min-w-0">
+                <span className="font-bold text-emerald-700 dark:text-[#25D366] block">
+                  {isCompressingImage
+                    ? lang === 'bn'
+                      ? 'ছবিটি অপ্টিমাইজ হচ্ছে...'
+                      : 'Optimizing photo...'
+                    : lang === 'bn'
+                    ? '📷 রিকুইজিশন স্লিপ / প্রেসক্রিপশন ছবি যুক্ত হয়েছে'
+                    : '📷 Prescription / Requisition Slip Ready'}
+                </span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                  {lang === 'bn' ? 'সেন্ড বাটনে চাপলেই চ্যাটে চলে যাবে' : 'Press Send to share in chat'}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPendingAttachment('')}
+              className="p-1 text-slate-400 hover:text-red-500 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* Reply Preview Strip */}
         {replyingTo && (
           <div className="px-3 py-1.5 bg-white dark:bg-[#202c33] border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 text-xs">
-            <div className="min-w-0 flex-1 border-l-3 border-[#25D366] pl-2">
+            <div className="min-w-0 flex-1 pl-2 border border-emerald-500/30 rounded-lg py-1">
               <span className="font-bold text-emerald-700 dark:text-[#25D366] block text-[11px]">
                 {replyingTo.name}
               </span>
@@ -1066,17 +1490,59 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           </div>
         )}
 
-        {/* Quick Emoji + Quick Templates + WhatsApp Auto-Sync Toggle */}
+        {/* Rich Medical Action Bar + Quick Emojis */}
         <div className="px-2.5 py-1.5 bg-white/95 dark:bg-[#1f2c34] border-t border-slate-200 dark:border-slate-800 flex items-center gap-1.5 overflow-x-auto scrollbar-none text-[11px]">
+          {/* Hidden Image File Input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleSelectImageFile}
+            className="hidden"
+          />
+
+          {/* 1. Share Live GPS Pin */}
+          <button
+            type="button"
+            onClick={handleShareLiveGpsPin}
+            disabled={isSharingGps}
+            className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 font-bold inline-flex items-center gap-1 shrink-0 cursor-pointer"
+            title="লাইভ জিপিএস লোকেশন পিন পাঠান"
+          >
+            <MapPin className="w-3.5 h-3.5 text-rose-500" />
+            <span>{isSharingGps ? 'GPS...' : lang === 'bn' ? 'লোকেশন পিন' : 'GPS Pin'}</span>
+          </button>
+
+          {/* 2. Upload Prescription / Requisition Image */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 border border-blue-300 dark:border-blue-800 text-blue-800 dark:text-blue-300 font-bold inline-flex items-center gap-1 shrink-0 cursor-pointer"
+            title="হাসপাতালের রিকুইজিশন স্লিপ বা প্রেসক্রিপশন ছবি যুক্ত করুন"
+          >
+            <ImagePlus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            <span>{lang === 'bn' ? 'স্লিপ / ছবি' : 'Slip Photo'}</span>
+          </button>
+
+          {/* 3. Insert Urgent SOS Card */}
+          <button
+            type="button"
+            onClick={() => setShowSosComposer(!showSosComposer)}
+            className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-bold inline-flex items-center gap-1 shrink-0 cursor-pointer"
+          >
+            <Megaphone className="w-3.5 h-3.5" />
+            <span>{lang === 'bn' ? 'SOS কার্ড' : 'SOS Card'}</span>
+          </button>
+
           {!isCommunityActive && (
-            <label className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-[#25D366] font-bold shrink-0 cursor-pointer">
+            <label className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-[#25D366] font-bold shrink-0 cursor-pointer">
               <input
                 type="checkbox"
                 checked={syncWhatsAppOnSend}
                 onChange={(e) => setSyncWhatsAppOnSend(e.target.checked)}
                 className="w-3 h-3 accent-emerald-600"
               />
-              <span>WhatsApp সিঙ্ক</span>
+              <span>WA সিঙ্ক</span>
             </label>
           )}
 
@@ -1090,36 +1556,37 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
               {em}
             </button>
           ))}
-
-          {[
-            'আসসালামু আলাইকুম, জরুরি রক্ত প্রয়োজন',
-            'রোগী কোন হাসপাতালে আছেন?',
-            'আমি রক্ত দিতে প্রস্তুত আছি',
-            'WhatsApp-এ লোকেশন পাঠান',
-          ].map((chip, idx) => (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => setInputText(chip)}
-              className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#2a3942] dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 whitespace-nowrap cursor-pointer font-medium shrink-0"
-            >
-              {chip}
-            </button>
-          ))}
         </div>
 
-        {/* WhatsApp-Style Unlimited Message Composer */}
+        {/* WhatsApp-Style Unlimited Message Composer + Voice Dictation */}
         <form
           onSubmit={handleSendMessage}
-          className="p-2 @md:p-2.5 bg-[#f0f2f5] dark:bg-[#202c33] flex items-end gap-2 shrink-0"
+          className="p-2 @md:p-2.5 bg-[#f0f2f5] dark:bg-[#202c33] flex items-end gap-1.5 shrink-0"
         >
+          <button
+            type="button"
+            onClick={handleToggleVoiceDictation}
+            className={`w-[42px] h-[42px] rounded-2xl flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
+              isListeningVoice
+                ? 'bg-rose-600 text-white'
+                : 'bg-white dark:bg-[#2a3942] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-100'
+            }`}
+            title={lang === 'bn' ? 'ভয়েস টাইপিং (মুখে বলুন)' : 'Voice Dictation'}
+          >
+            {isListeningVoice ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
+
           <textarea
             ref={inputRef}
             rows={1}
             placeholder={
-              lang === 'bn'
-                ? 'মেসেজ লিখুন (কোনো লিমিট নেই — যা ইচ্ছা লিখুন)...'
-                : 'Type any message (unlimited)...'
+              isListeningVoice
+                ? lang === 'bn'
+                  ? '🎙️ কথা বলুন... স্বয়ংক্রিয়ভাবে লেখা হচ্ছে'
+                  : '🎙️ Listening...'
+                : lang === 'bn'
+                ? 'মেসেজ লিখুন বা লোকেশন / স্লিপ পাঠান...'
+                : 'Type message or share GPS / slip...'
             }
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
@@ -1129,24 +1596,22 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 handleSendMessage();
               }
             }}
-            className="flex-1 min-h-[42px] max-h-28 py-2.5 px-3.5 text-xs @md:text-sm rounded-2xl bg-white dark:bg-[#2a3942] text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-[#128c7e] resize-none placeholder:text-slate-400"
+            className="flex-1 min-h-[42px] max-h-28 py-2.5 px-3 text-xs @md:text-sm rounded-2xl bg-white dark:bg-[#2a3942] text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-[#128c7e] resize-none placeholder:text-slate-400"
           />
 
-          {/* 1-Tap Direct Send to WhatsApp with Current Input Text */}
           <a
             href={activeWaHref}
             target="_blank"
             rel="noopener noreferrer"
-            className="h-[42px] px-3 rounded-2xl bg-[#25D366] hover:bg-emerald-500 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-xs cursor-pointer shrink-0 transition-colors"
+            className="h-[42px] px-2.5 rounded-2xl bg-[#25D366] hover:bg-emerald-500 text-slate-950 font-black text-xs flex items-center justify-center shadow-xs cursor-pointer shrink-0 transition-colors"
             title="এই মেসেজটি সরাসরি WhatsApp-এ পাঠান"
           >
             <span>WA</span>
           </a>
 
-          {/* Primary Real-Time Cloud Send Button */}
           <button
             type="submit"
-            disabled={isSending || !inputText.trim()}
+            disabled={isSending || (!inputText.trim() && !pendingAttachment)}
             className="w-[42px] h-[42px] rounded-2xl bg-[#075e54] hover:bg-[#128c7e] disabled:opacity-50 text-white flex items-center justify-center shadow-sm transition-colors cursor-pointer shrink-0"
             title="লাইভ চ্যাটে পাঠান"
           >
@@ -1154,6 +1619,39 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           </button>
         </form>
       </div>
+
+      {/* Expandable Medical Prescription / Slip Lightbox */}
+      {lightboxImage && (
+        <div
+          onClick={() => setLightboxImage(null)}
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-3 sm:p-6"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-2xl w-full bg-slate-950 rounded-2xl p-2 border border-slate-800 space-y-2"
+          >
+            <div className="flex items-center justify-between px-2 py-1 text-white text-xs font-bold">
+              <span>
+                {lang === 'bn'
+                  ? 'হাসপাতালের রিকুইজিশন স্লিপ / প্রেসক্রিপশন প্রিভিউ'
+                  : 'Hospital Requisition Slip Preview'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLightboxImage(null)}
+                className="p-1 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <img
+              src={lightboxImage}
+              alt="Full Medical Slip"
+              className="w-full max-h-[78dvh] object-contain rounded-xl bg-black"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

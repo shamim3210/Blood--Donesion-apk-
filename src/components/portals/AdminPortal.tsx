@@ -2,6 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Donor, BloodRequest, AuditLogEntry, BloodGroup, Language } from '../../types';
 import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
 import {
+  INITIAL_DONORS,
+  INITIAL_REQUESTS,
+  isSeedDonorId,
+  isSeedRequestId,
+  evictSeedsProgressively,
+} from '../../data/mockDonors';
+import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
@@ -23,6 +30,17 @@ import {
   ownerDeleteAdminInviteLock,
   subscribeAllRegisteredAdminsForOwner,
   ownerRevokeAdminAccess,
+  subscribeActiveAnnouncements,
+  adminPublishAnnouncementInFirestore,
+  adminDeactivateAnnouncementInFirestore,
+  isGlobalRealOnlyModeActive,
+  adminSetGlobalRealOnlyModeInFirestore,
+  ownerPurgeTestCloudRecordsInFirestore,
+  subscribeAdminScamReports,
+  adminUpdateScamReportStatusInFirestore,
+  adminDeleteScamReportInFirestore,
+  OwnerAnnouncementItem,
+  ScamReportItem,
   AdminInviteLockItem,
   RegisteredAdminItem,
   BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
@@ -50,6 +68,8 @@ import {
   ExternalLink,
   Smartphone,
   ShieldAlert,
+  Megaphone,
+  Download,
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -92,10 +112,24 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [confirmDeleteReqId, setConfirmDeleteReqId] = useState<string | null>(null);
   const [confirmRevokeAdminUid, setConfirmRevokeAdminUid] = useState<string | null>(null);
 
-  const [adminTab, setAdminTab] = useState<'donors' | 'sos' | 'inventory' | 'vault' | 'audit'>(
-    'donors'
-  );
+  const [adminTab, setAdminTab] = useState<
+    'donors' | 'sos' | 'inventory' | 'megaphone' | 'scam' | 'vault' | 'audit'
+  >('donors');
   const [searchDonorQuery, setSearchDonorQuery] = useState('');
+
+  // Owner Megaphone & Anti-Scam Moderation States
+  const [announcements, setAnnouncements] = useState<OwnerAnnouncementItem[]>([]);
+  const [broadcastTitle, setBroadcastTitle] = useState('');
+  const [broadcastMsg, setBroadcastMsg] = useState('');
+  const [broadcastUrgency, setBroadcastUrgency] = useState<'CRITICAL' | 'INFO' | 'CAMPAIGN'>(
+    'CRITICAL'
+  );
+  const [isPublishingBroadcast, setIsPublishingBroadcast] = useState(false);
+  const [scamReports, setScamReports] = useState<ScamReportItem[]>([]);
+  const [donorIdLookupQuery, setDonorIdLookupQuery] = useState('');
+  const [realOnlyMode, setRealOnlyMode] = useState<boolean>(() => isGlobalRealOnlyModeActive());
+  const [confirmPurgeCloudTest, setConfirmPurgeCloudTest] = useState(false);
+  const [isPurgingCloudTest, setIsPurgingCloudTest] = useState(false);
 
   // Owner Security Vault states (exclusively for shamimrakib015@gmail.com)
   const [inviteLocks, setInviteLocks] = useState<AdminInviteLockItem[]>([]);
@@ -167,9 +201,204 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     };
   }, [firebaseUser]);
 
+  // Subscribe to Active Announcements & Real-Only Mode Flag
+  useEffect(() => {
+    let unsubAnn: (() => void) | null = null;
+    try {
+      unsubAnn = subscribeActiveAnnouncements(setAnnouncements);
+    } catch {}
+    const syncRealFlag = () => setRealOnlyMode(isGlobalRealOnlyModeActive());
+    window.addEventListener('bloodsearch_real_mode_changed', syncRealFlag);
+    return () => {
+      if (unsubAnn) unsubAnn();
+      window.removeEventListener('bloodsearch_real_mode_changed', syncRealFlag);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAdminAuthenticated) {
+      setScamReports([]);
+      return;
+    }
+    let unsubScam: (() => void) | null = null;
+    try {
+      unsubScam = subscribeAdminScamReports(setScamReports);
+    } catch {}
+    return () => {
+      if (unsubScam) unsubScam();
+    };
+  }, [isAdminAuthenticated]);
+
   const showTempToast = (msg: string) => {
     setAdminToast(msg);
     setTimeout(() => setAdminToast(null), 2800);
+  };
+
+  const realDonorsCount = donors.filter((d) => !isSeedDonorId(d.id)).length;
+  const remainingDemoDonorsCount = donors.filter((d) => isSeedDonorId(d.id)).length;
+  const evictedDemoDonorsCount = Math.max(0, INITIAL_DONORS.length - remainingDemoDonorsCount);
+
+  const handleToggleRealOnlyMode = async () => {
+    const next = !realOnlyMode;
+    setRealOnlyMode(next);
+    await adminSetGlobalRealOnlyModeInFirestore(next).catch(() => {});
+    setDonors((prev) =>
+      evictSeedsProgressively(
+        prev.filter((d) => !isSeedDonorId(d.id)),
+        INITIAL_DONORS,
+        next
+      )
+    );
+    setRequests((prev) =>
+      evictSeedsProgressively(
+        prev.filter((r) => !isSeedRequestId(r.id)),
+        INITIAL_REQUESTS,
+        next
+      )
+    );
+    onLogAudit(
+      'STATUS_CHANGE',
+      next
+        ? 'Enabled 100% Real-Users-Only Mode (all demo/seed data hidden globally)'
+        : 'Enabled Automatic 1-by-1 Demo Eviction Mode'
+    );
+    showTempToast(
+      next
+        ? '✓ সব ডেমো/ফেইক ডাটা সরিয়ে ১০০% রিয়েল-ইউজার মোড চালু হয়েছে!'
+        : '✓ অটো ১-বাই-১ ডেমো রিমুভাল মোড সক্রিয় হয়েছে!'
+    );
+  };
+
+  const handleOwnerPurgeCloudTestData = async () => {
+    if (!isSuperOwner || isPurgingCloudTest) return;
+    setIsPurgingCloudTest(true);
+    try {
+      const res = await ownerPurgeTestCloudRecordsInFirestore();
+      await adminSetGlobalRealOnlyModeInFirestore(true);
+      setRealOnlyMode(true);
+      setConfirmPurgeCloudTest(false);
+      onLogAudit(
+        'STATUS_CHANGE',
+        `Purged test cloud records (${res.deletedDonors} donors, ${res.deletedRequests} SOS, ${res.deletedMessages} chats)`
+      );
+      showTempToast(
+        `✓ ডাটাবেস থেকে ${res.deletedDonors}টি টেস্ট ডোনার ও ${res.deletedRequests}টি পুরনো পোস্ট মুছে ১০০% ফ্রেশ করা হয়েছে!`
+      );
+    } catch {
+      showTempToast('ক্লাউড টেস্ট ডাটা পরিষ্কার করা যায়নি।');
+    } finally {
+      setIsPurgingCloudTest(false);
+    }
+  };
+
+  const handleExportCsvBackup = () => {
+    const headers = [
+      'ID',
+      'Name',
+      'BloodGroup',
+      'District',
+      'Upazila',
+      'Available',
+      'Verified',
+      'TotalDonations',
+      'LastDonated',
+    ];
+    const escapeCsv = (val: unknown) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+    const rows = donors.map((d) =>
+      [
+        d.id,
+        d.name,
+        d.bloodGroup,
+        d.district,
+        d.upazila,
+        d.available ? 'YES' : 'NO',
+        d.verifiedBadge ? 'VERIFIED' : 'PENDING',
+        d.totalDonations,
+        d.lastDonatedDate || '',
+      ]
+        .map(escapeCsv)
+        .join(',')
+    );
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `BloodSearch-Donors-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    onLogAudit('STATUS_CHANGE', `Exported ${donors.length} donors to Excel CSV backup`);
+    showTempToast(
+      lang === 'bn'
+        ? `✓ ${donors.length} জন ডোনারের Excel (.CSV) ব্যাকআপ ডাউনলোড হয়েছে`
+        : `✓ Downloaded Excel (.CSV) backup of ${donors.length} donors`
+    );
+  };
+
+  const handleExportJsonBackup = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      exportedBy: firebaseUser?.email || 'Admin',
+      totalDonors: donors.length,
+      totalRequests: requests.length,
+      bloodStock,
+      donors,
+      requests,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `BloodSearch-FullBackup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    onLogAudit('STATUS_CHANGE', 'Exported full system JSON snapshot backup');
+    showTempToast(
+      lang === 'bn'
+        ? '✓ সম্পূর্ণ ডাটাবেস (.JSON) ব্যাকআপ ডাউনলোড সম্পন্ন'
+        : '✓ Full database (.JSON) backup downloaded'
+    );
+  };
+
+  const handlePublishAnnouncement = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastMsg.trim() || isPublishingBroadcast) return;
+    setIsPublishingBroadcast(true);
+    try {
+      await adminPublishAnnouncementInFirestore({
+        title:
+          broadcastTitle.trim() ||
+          (broadcastUrgency === 'CRITICAL'
+            ? '📢 জরুরি রক্তের ডাক'
+            : broadcastUrgency === 'CAMPAIGN'
+              ? '⛺ রক্তদান ক্যাম্পেইন বিজ্ঞপ্তি'
+              : 'ℹ️ অফিশিয়াল ঘোষণা'),
+        message: broadcastMsg.trim(),
+        urgency: broadcastUrgency,
+      });
+      setBroadcastTitle('');
+      setBroadcastMsg('');
+      onLogAudit('STATUS_CHANGE', `Published live megaphone broadcast (${broadcastUrgency})`);
+      showTempToast(
+        lang === 'bn'
+          ? '📢 লাইভ মেগাফোন ঘোষণা পুরো অ্যাপে প্রকাশিত হয়েছে!'
+          : '📢 Live Megaphone Broadcast published across the app!'
+      );
+    } catch {
+      showTempToast(
+        lang === 'bn'
+          ? 'ঘোষণা প্রকাশ করা যায়নি। অ্যাডমিন অনুমতি চেক করুন।'
+          : 'Failed to publish announcement.'
+      );
+    } finally {
+      setIsPublishingBroadcast(false);
+    }
   };
 
   const handleAdminGoogleSignIn = () => {
@@ -554,6 +783,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
+          <button
+            type="button"
+            onClick={handleExportCsvBackup}
+            className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+            title="Excel .CSV ডাউনলোড"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>.CSV ব্যাকআপ</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportJsonBackup}
+            className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-xs font-bold flex items-center gap-1 cursor-pointer"
+            title="Full .JSON ব্যাকআপ"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>.JSON</span>
+          </button>
+
           {onOpenApkGuide && (
             <button
               onClick={onOpenApkGuide}
@@ -644,6 +893,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           { id: 'donors', label: lang === 'bn' ? '🩸 ডোনার ভেরিফিকেশন' : 'Donors' },
           { id: 'sos', label: lang === 'bn' ? '🚨 SOS মডারেশন' : 'SOS Requests' },
           { id: 'inventory', label: lang === 'bn' ? '🏥 ব্লাড স্টক' : 'Blood Stock' },
+          { id: 'megaphone', label: lang === 'bn' ? '📢 মেগাফোন ঘোষণা' : 'Megaphone' },
+          {
+            id: 'scam',
+            label:
+              lang === 'bn'
+                ? `🛡️ স্ক্যাম ও আইডি যাচাই (${scamReports.filter((r) => r.status === 'OPEN').length})`
+                : `Scam & ID (${scamReports.filter((r) => r.status === 'OPEN').length})`,
+          },
           { id: 'vault', label: lang === 'bn' ? '👑 ওনার সিকিউরিটি ভল্ট' : 'Owner Vault' },
           { id: 'audit', label: lang === 'bn' ? '🔒 অডিট লগ' : 'Audit Logs' },
         ].map((tab) => (
@@ -664,6 +921,64 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       {/* TAB 1: DONOR VERIFICATION */}
       {adminTab === 'donors' && (
         <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 shadow-sm space-y-3">
+          {/* Smart Automatic 1-by-1 Fake Eviction & 100% Real-Only Control Strip */}
+          <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="space-y-0.5">
+              <div className="text-xs font-black text-emerald-950 dark:text-emerald-200">
+                {lang === 'bn'
+                  ? `অটো ফেইক-ডাটা রিমুভার সক্রিয় · ${realDonorsCount} জন রিয়েল ইউজার · ${evictedDemoDonorsCount}টি ডেমো অটো-ডিলিট হয়েছে (${remainingDemoDonorsCount}টি বাকি)`
+                  : `Auto Seed Eviction Active · ${realDonorsCount} Real Users · ${evictedDemoDonorsCount} Demos Deleted (${remainingDemoDonorsCount} left)`}
+              </div>
+              <p className="text-[11px] text-emerald-900/85 dark:text-emerald-300/85">
+                {lang === 'bn'
+                  ? 'প্রতিটি নতুন রিয়েল মানুষ অ্যাকাউন্ট বা পোস্ট তৈরি করলেই ১টি করে ফেইক/ডেমো কার্ড স্বয়ংক্রিয়ভাবে মুছে যায়।'
+                  : 'Each new real user or SOS post automatically deletes 1 demo entry until 0 fake items remain.'}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleToggleRealOnlyMode}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                  realOnlyMode
+                    ? 'bg-emerald-700 text-white'
+                    : 'bg-slate-900 hover:bg-black text-white dark:bg-white dark:text-slate-900'
+                }`}
+              >
+                {realOnlyMode
+                  ? lang === 'bn'
+                    ? '✓ ১০০% রিয়েল মোড চালু আছে'
+                    : '✓ 100% Real Mode ON'
+                  : lang === 'bn'
+                    ? '⚡ এখনই বাকি সব ডেমো মুছুন'
+                    : '⚡ Hide All Demos Now'}
+              </button>
+
+              {isSuperOwner &&
+                (confirmPurgeCloudTest ? (
+                  <button
+                    type="button"
+                    disabled={isPurgingCloudTest}
+                    onClick={handleOwnerPurgeCloudTestData}
+                    className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-black cursor-pointer"
+                  >
+                    {isPurgingCloudTest
+                      ? 'মুছে ফেলা হচ্ছে...'
+                      : 'নিশ্চিত? পুরনো টেস্ট ডাটা মুছুন'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmPurgeCloudTest(true)}
+                    className="px-2.5 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-800 text-[11px] font-bold cursor-pointer"
+                  >
+                    {lang === 'bn' ? 'ডাটাবেস টেস্ট ইউজার রিসেট' : 'Reset Cloud Test Data'}
+                  </button>
+                ))}
+            </div>
+          </div>
+
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-700">
             <div>
               <h3 className="font-bold text-sm text-slate-900 dark:text-white">
@@ -696,13 +1011,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     {donor.bloodGroup}
                   </div>
                   <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
                         {donor.name}
                       </span>
                       <span className="text-[10px] font-bold text-slate-500">
                         · {donor.verifiedBadge ? 'VERIFIED' : 'PENDING'}
                       </span>
+                      {isSeedDonorId(donor.id) ? (
+                        <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                          · ডেমো (নতুন রিয়েল ইউজার এলে অটো-ডিলিট হবে)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                          · ✓ রিয়েল ইউজার
+                        </span>
+                      )}
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
                       {donor.phone} · <span className="capitalize">{donor.upazila}, {donor.district}</span>
@@ -764,7 +1088,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div className="space-y-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="px-2 py-0.5 rounded-md bg-rose-600 text-white font-black text-xs">
                       {req.bloodGroup}
                     </span>
@@ -774,6 +1098,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <span className="text-[11px] font-bold text-slate-500">
                       · {req.status}
                     </span>
+                    {isSeedRequestId(req.id) ? (
+                      <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                        · ডেমো SOS (নতুন পোস্ট এলে অটো-ডিলিট হবে)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                        · ✓ রিয়েল SOS পোস্ট
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
                     <Hospital className="w-3.5 h-3.5 text-rose-500" />
@@ -1079,6 +1412,276 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB: LIVE MEGAPHONE BROADCAST */}
+      {adminTab === 'megaphone' && (
+        <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+          <div className="flex items-center gap-2.5 border-b border-slate-200 dark:border-slate-700 pb-3">
+            <Megaphone className="w-5 h-5 text-rose-600 shrink-0" />
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+                {lang === 'bn'
+                  ? 'লাইভ মেগাফোন ঘোষণা (সকল ইউজারের স্ক্রিনে তাৎক্ষণিক ব্যানার)'
+                  : 'Live Global Megaphone Broadcast'}
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {lang === 'bn'
+                  ? 'জাতীয় দুর্যোগ, ডেঙ্গু জরুরি রক্তের ডাক বা রক্তদান ক্যাম্পের নোটিশ ১-ক্লিকে পুরো অ্যাপে পাঠান'
+                  : 'Push urgent announcements or blood camp alerts to all connected users in real time'}
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handlePublishAnnouncement} className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(
+                [
+                  { id: 'CRITICAL', label: '🚨 জরুরি রক্তের ডাক (CRITICAL)' },
+                  { id: 'CAMPAIGN', label: '⛺ রক্তদান ক্যাম্পেইন (CAMPAIGN)' },
+                  { id: 'INFO', label: 'ℹ️ সাধারণ বিজ্ঞপ্তি (INFO)' },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setBroadcastUrgency(p.id)}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold border cursor-pointer transition-colors ${
+                    broadcastUrgency === p.id
+                      ? 'bg-rose-600 text-white border-rose-500'
+                      : 'bg-slate-50 dark:bg-[#0f172a] text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                {lang === 'bn' ? 'শিরোনাম (ঐচ্ছিক)' : 'Title (Optional)'}
+              </label>
+              <input
+                type="text"
+                maxLength={120}
+                value={broadcastTitle}
+                onChange={(e) => setBroadcastTitle(e.target.value)}
+                placeholder="যেমন: জরুরি প্লাটিলেট ও রক্তের ডাক — ঢাকা ও চট্টগ্রাম"
+                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                {lang === 'bn' ? 'ঘোষণার মূল বার্তা *' : 'Broadcast Message *'}
+              </label>
+              <input
+                type="text"
+                required
+                maxLength={500}
+                value={broadcastMsg}
+                onChange={(e) => setBroadcastMsg(e.target.value)}
+                placeholder="যেমন: ডেঙ্গু ওয়ার্ডে জরুরি O- এবং B+ প্লাটিলেট ডোনার প্রয়োজন — আজই যোগাযোগ করুন!"
+                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isPublishingBroadcast || !broadcastMsg.trim()}
+              className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-black text-xs cursor-pointer"
+            >
+              {isPublishingBroadcast
+                ? lang === 'bn'
+                  ? 'প্রকাশিত হচ্ছে...'
+                  : 'Publishing...'
+                : lang === 'bn'
+                  ? '📢 এখনই পুরো অ্যাপে লাইভ ঘোষণা পাঠান'
+                  : '📢 Publish Live Broadcast Now'}
+            </button>
+          </form>
+
+          <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+            <div className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              {lang === 'bn'
+                ? `বর্তমানে সক্রিয় ঘোষণাসমূহ (${announcements.length})`
+                : `Currently Active Broadcasts (${announcements.length})`}
+            </div>
+            {announcements.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                {lang === 'bn'
+                  ? 'এই মুহূর্তে কোনো সক্রিয় মেগাফোন ব্যানার চালু নেই।'
+                  : 'No active megaphone broadcasts right now.'}
+              </p>
+            ) : (
+              announcements.map((ann) => (
+                <div
+                  key={ann.id}
+                  className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                      {ann.urgency} · {ann.title} · {ann.updatedAtLabel}
+                    </div>
+                    <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
+                      {ann.message}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      adminDeactivateAnnouncementInFirestore(ann.id)
+                        .then(() =>
+                          showTempToast(
+                            lang === 'bn' ? '✓ ঘোষণা বন্ধ করা হয়েছে' : '✓ Broadcast deactivated'
+                          )
+                        )
+                        .catch(() => {});
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shrink-0 cursor-pointer"
+                  >
+                    {lang === 'bn' ? 'বন্ধ করুন' : 'Stop'}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB: SCAM REPORT MODERATION & SMART DONOR ID VERIFIER */}
+      {adminTab === 'scam' && (
+        <div className="space-y-4">
+          {/* Smart Donor ID Checker */}
+          <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 shadow-sm space-y-3">
+            <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+              {lang === 'bn'
+                ? '🔍 স্মার্ট ডোনার আইডি ও ভেরিফিকেশন চেকার'
+                : '🔍 Smart Donor ID & Verification Checker'}
+            </h3>
+            <input
+              type="text"
+              value={donorIdLookupQuery}
+              onChange={(e) => setDonorIdLookupQuery(e.target.value)}
+              placeholder={
+                lang === 'bn'
+                  ? 'ডোনার আইডি, নাম বা ফোন নম্বর লিখে সত্যতা যাচাই করুন...'
+                  : 'Enter Donor ID, name, or phone to verify...'
+              }
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+            />
+            {donorIdLookupQuery.trim() && (
+              <div className="space-y-2">
+                {donors
+                  .filter((d) => {
+                    const q = donorIdLookupQuery.trim().toLowerCase();
+                    return (
+                      d.id.toLowerCase().includes(q) ||
+                      d.name.toLowerCase().includes(q) ||
+                      d.phone.toLowerCase().includes(q)
+                    );
+                  })
+                  .slice(0, 5)
+                  .map((d) => (
+                    <div
+                      key={d.id}
+                      className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div>
+                        <span className="font-black text-slate-900 dark:text-white">
+                          {d.name} ({d.bloodGroup})
+                        </span>
+                        <span className="block text-[11px] text-slate-600 dark:text-slate-400">
+                          ID: {d.id} · {d.district} · {d.totalDonations} বার রক্তদান
+                        </span>
+                      </div>
+                      <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                        {d.verifiedBadge ? '✓ Verified Donor' : 'Registered'}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+
+          {/* Scam Reports Queue */}
+          <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 shadow-sm space-y-3">
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+                {lang === 'bn'
+                  ? '🛡️ প্রতারক / অগ্রিম বিকাশ ভাড়া দাবি রিপোর্ট তালিকা'
+                  : '🛡️ Anti-Scam & Advance Fare Report Queue'}
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {lang === 'bn'
+                  ? 'রোগীর পরিবারের পাঠানো স্ক্যাম রিপোর্ট যাচাই করে ব্লকলিস্টে রাখুন'
+                  : 'Review and block reported scam numbers or suspicious profiles'}
+              </p>
+            </div>
+
+            {scamReports.length === 0 ? (
+              <div className="py-6 text-center text-xs text-slate-500">
+                {lang === 'bn'
+                  ? '✓ কোনো অমীমাংসিত প্রতারণার রিপোর্ট নেই।'
+                  : '✓ Zero pending scam reports.'}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-200 dark:divide-slate-700">
+                {scamReports.map((rep) => (
+                  <div
+                    key={rep.id}
+                    className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="font-black text-slate-900 dark:text-white">
+                        {rep.suspectName} · <span className="font-mono">{rep.suspectPhone}</span>{' '}
+                        · <span className="text-rose-600">{rep.status}</span>
+                      </div>
+                      <p className="text-slate-700 dark:text-slate-300">{rep.reason}</p>
+                      <div className="text-[11px] text-slate-500">
+                        Reported by: {rep.reporterName} · {rep.createdAtLabel}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          adminUpdateScamReportStatusInFirestore(rep.id, 'BLOCKED')
+                            .then(() => showTempToast('✓ প্রতারক ব্লকলিস্টে যুক্ত হয়েছে'))
+                            .catch(() => {});
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
+                      >
+                        {lang === 'bn' ? 'ব্লক করুন' : 'Block'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          adminUpdateScamReportStatusInFirestore(rep.id, 'DISMISSED')
+                            .then(() => showTempToast('✓ রিপোর্ট নিষ্পত্তি হয়েছে'))
+                            .catch(() => {});
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold cursor-pointer"
+                      >
+                        {lang === 'bn' ? 'বাতিল' : 'Dismiss'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          adminDeleteScamReportInFirestore(rep.id).catch(() => {});
+                        }}
+                        className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

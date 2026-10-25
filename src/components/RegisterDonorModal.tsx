@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Donor, BloodGroup, Language, UserAccount } from '../types';
+import { BrandLogo } from './BrandLogo';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { DIVISIONS, DISTRICTS } from '../data/bangladeshGeo';
 import {
@@ -505,13 +506,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         {/* Top Modal Header */}
         <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-3 min-w-0">
-            <div
-              className={`w-10 h-10 rounded-2xl flex items-center justify-center text-white shadow-sm shrink-0 ${
-                accountRole === 'ADMIN' ? 'bg-amber-600' : 'bg-rose-600'
-              }`}
-            >
-              <UserPlus className="w-5 h-5" />
-            </div>
+            <BrandLogo variant="mark" size="md" />
             <div className="min-w-0">
               <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white leading-snug">
                 {createdAccount
@@ -576,21 +571,24 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
 
               <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-700/80 relative z-10">
-                <div className="min-w-0">
-                  <span
-                    className={`text-[10px] uppercase font-bold tracking-wider block ${
-                      createdAccount.role === 'ADMIN' ? 'text-amber-400' : 'text-rose-400'
-                    }`}
-                  >
-                    {createdAccount.role === 'ADMIN'
-                      ? 'BANGLADESH BLOOD NETWORK · ADMIN'
-                      : 'BANGLADESH BLOOD NETWORK · MEMBER'}
-                  </span>
-                  <span className="text-xs font-bold text-slate-200 block truncate">
-                    {createdAccount.role === 'ADMIN'
-                      ? 'অফিসিয়াল অ্যাডমিন প্যানেল ও সমন্বয়ক কার্ড'
-                      : 'জাতীয় ডিজিটাল রক্তদাতা ও ইউজার স্মার্ট কার্ড'}
-                  </span>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <BrandLogo variant="mark" size="xs" />
+                  <div className="min-w-0">
+                    <span
+                      className={`text-[10px] uppercase font-bold tracking-wider block ${
+                        createdAccount.role === 'ADMIN' ? 'text-amber-400' : 'text-rose-400'
+                      }`}
+                    >
+                      {createdAccount.role === 'ADMIN'
+                        ? 'BLOODSEARCH BANGLADESH · ADMIN'
+                        : 'BLOODSEARCH BANGLADESH · MEMBER'}
+                    </span>
+                    <span className="text-xs font-bold text-slate-200 block truncate">
+                      {createdAccount.role === 'ADMIN'
+                        ? 'অফিসিয়াল অ্যাডমিন প্যানেল ও সমন্বয়ক কার্ড'
+                        : 'জাতীয় ডিজিটাল রক্তদাতা ও ইউজার স্মার্ট কার্ড'}
+                    </span>
+                  </div>
                 </div>
 
                 <span className="text-[11px] font-black text-emerald-400 shrink-0">
@@ -742,16 +740,19 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               }`}
             >
               <div className="flex items-center justify-between gap-2 text-[11px] pb-2 mb-2.5 border-b border-white/10">
-                <span className="font-bold text-slate-300">
-                  {accountRole === 'ADMIN'
-                    ? lang === 'bn'
-                      ? '🛡️ লাইভ প্রিভিউ · অ্যাডমিন স্মার্ট কার্ড'
-                      : '🛡️ Live Preview · Admin Smart Card'
-                    : lang === 'bn'
-                    ? '🪪 লাইভ প্রিভিউ · ইউজার স্মার্ট কার্ড'
-                    : '🪪 Live Preview · User Smart Card'}
-                </span>
-                <span className="font-mono font-bold text-emerald-400">
+                <div className="flex items-center gap-2 min-w-0">
+                  <BrandLogo variant="mark" size="xs" />
+                  <span className="font-bold text-slate-200 truncate">
+                    {accountRole === 'ADMIN'
+                      ? lang === 'bn'
+                        ? 'লাইভ প্রিভিউ · অ্যাডমিন স্মার্ট কার্ড'
+                        : 'Live Preview · Admin Smart Card'
+                      : lang === 'bn'
+                      ? 'লাইভ প্রিভিউ · ইউজার স্মার্ট কার্ড'
+                      : 'Live Preview · User Smart Card'}
+                  </span>
+                </div>
+                <span className="font-mono font-bold text-emerald-400 shrink-0">
                   {completionPercent}% {lang === 'bn' ? 'সম্পন্ন' : 'Ready'}
                 </span>
               </div>

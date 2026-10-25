@@ -17,6 +17,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { PrivacyPolicyModal } from '../ecosystem/PrivacyPolicyModal';
+import { BrandLogo } from '../BrandLogo';
 
 interface MobileAppHeaderProps {
   activeTab: ActiveTab;
@@ -36,6 +37,8 @@ interface MobileAppHeaderProps {
   onExitDeckMode?: () => void;
   liveUserLabel?: string | null;
   onSignOut?: () => void;
+  seniorMode?: boolean;
+  setSeniorMode?: (val: boolean) => void;
 }
 
 export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
@@ -54,6 +57,8 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
   onExitDeckMode,
   liveUserLabel,
   onSignOut,
+  seniorMode = false,
+  setSeniorMode,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
@@ -106,19 +111,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
               <span>{lang === 'bn' ? 'অ্যাপে ফিরুন' : 'Back to App'}</span>
             </button>
           ) : activeTab === 'home' ? (
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-red-600 to-rose-500 text-white flex items-center justify-center font-black shadow-sm shrink-0">
-                <Droplet className="w-5 h-5 fill-white" />
-              </div>
-              <div className="min-w-0">
-                <span className="font-black text-sm sm:text-base text-slate-900 dark:text-white block leading-none tracking-tight truncate">
-                  BloodSearch
-                </span>
-                <span className="text-[10px] sm:text-[11px] font-bold text-rose-600 dark:text-rose-400 block mt-0.5 truncate">
-                  {lang === 'bn' ? 'রক্ত সন্ধান · বাংলাদেশ' : 'Emergency Blood Network'}
-                </span>
-              </div>
-            </div>
+            <BrandLogo variant="lockup" size="sm" />
           ) : (
             <div className="flex items-center gap-1.5 min-w-0">
               <button
@@ -146,10 +139,10 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
               type="button"
               onClick={onOpenPlayStoreModal}
               className="hidden md:flex min-h-[38px] items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-black text-emerald-400 border border-slate-700 font-bold text-xs cursor-pointer active:scale-95 transition-all whitespace-nowrap"
-              title="APK ডাউনলোড ও অ্যাপ ইনস্টল"
+              title="সহজ ডিপ্লয়, APK ডাউনলোড ও সিকিউরিটি"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>{lang === 'bn' ? 'APK ও সিকিউরিটি' : 'APK & Security'}</span>
+              <span>{lang === 'bn' ? 'ডিপ্লয় ও APK' : 'Deploy & APK'}</span>
             </button>
           )}
 
@@ -205,6 +198,21 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
             {lang === 'bn' ? 'EN' : 'বাংলা'}
           </button>
 
+          {setSeniorMode && (
+            <button
+              type="button"
+              onClick={() => setSeniorMode(!seniorMode)}
+              className={`hidden md:flex min-h-[38px] items-center px-2.5 py-1.5 rounded-xl border font-black text-xs cursor-pointer transition-colors ${
+                seniorMode
+                  ? 'bg-indigo-600 text-white border-indigo-500'
+                  : 'bg-slate-100 dark:bg-[#1e293b] border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200'
+              }`}
+              title={lang === 'bn' ? 'বড় অক্ষর মোড (প্রবীণদের জন্য)' : 'Senior Large Text Mode'}
+            >
+              অ+
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setDarkMode(!darkMode)}
@@ -231,6 +239,24 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
       {isMenuOpen && (
         <div className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f172a] shadow-2xl max-h-[calc(100dvh-56px)] overflow-y-auto modal-scroll-contain">
           <div className="max-w-5xl mx-auto p-3.5 sm:p-4 space-y-3">
+            {/* Official BloodSearch Brand Showcase Strip inside Menu */}
+            <div className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-[#1e293b]/80 border border-slate-200 dark:border-slate-700/80">
+              <BrandLogo variant="lockup" size="md" />
+              {onOpenPlayStoreModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenPlayStoreModal();
+                    setIsMenuOpen(false);
+                  }}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0 shadow-xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{lang === 'bn' ? 'অ্যাপ ও APK' : 'App & APK'}</span>
+                </button>
+              )}
+            </div>
+
             {/* Quick Language & Theme Toggles */}
             <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-100 dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700">
               <div className="flex items-center gap-1 bg-white dark:bg-[#0f172a] p-1 rounded-lg border border-slate-200 dark:border-slate-700">
@@ -270,6 +296,23 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   >
                     <LogOut className="w-3.5 h-3.5" />
                     <span>{lang === 'bn' ? 'লগআউট' : 'Logout'}</span>
+                  </button>
+                )}
+
+                {setSeniorMode && (
+                  <button
+                    type="button"
+                    onClick={() => setSeniorMode(!seniorMode)}
+                    className={`min-h-[36px] flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-black cursor-pointer shadow-xs ${
+                      seniorMode
+                        ? 'bg-indigo-600 text-white border-indigo-500'
+                        : 'bg-white dark:bg-[#0f172a] border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200'
+                    }`}
+                  >
+                    <span>অ+</span>
+                    <span className="hidden min-[380px]:inline">
+                      {lang === 'bn' ? 'বড় অক্ষর' : 'Large Text'}
+                    </span>
                   </button>
                 )}
 

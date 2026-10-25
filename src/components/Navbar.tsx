@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ActiveTab, Language, PortalMode } from '../types';
 import { getTranslation } from '../utils/translations';
+import { BrandLogo } from './BrandLogo';
 import { 
   HeartHandshake, 
   Search, 
@@ -178,17 +179,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             }}
             className="flex items-center gap-2.5 text-left group cursor-pointer focus:outline-none"
           >
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-rose-600 to-rose-500 flex items-center justify-center text-white shadow-md shadow-rose-600/20 group-hover:scale-105 transition-transform">
-              <HeartHandshake className="w-5 h-5 text-white animate-pulse" />
-            </div>
-            <div>
-              <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap block leading-none">
-                {t.appName}
-              </span>
-              <span className="text-[11px] font-medium text-rose-600 dark:text-rose-400 block mt-0.5 tracking-wide">
-                {lang === 'bn' ? 'রক্ত সন্ধান · বাংলাদেশ' : 'Emergency Blood Network'}
-              </span>
-            </div>
+            <BrandLogo
+              variant="lockup"
+              size="md"
+              className="group-hover:scale-[1.02] transition-transform"
+            />
           </button>
         </div>
 

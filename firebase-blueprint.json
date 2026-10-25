@@ -479,6 +479,10 @@
           "maxLength": 12,
           "description": "Lifecycle status with terminal locking on FULFILLED/CANCELLED."
         },
+        "exchangeAllowed": {
+          "type": "boolean",
+          "description": "Whether hospital blood bank replacement/exchange of any blood group is accepted."
+        },
         "isPublic": {
           "type": "boolean",
           "description": "Explicit query boundary flag."
@@ -602,6 +606,12 @@
           "minLength": 0,
           "maxLength": 300,
           "description": "Quoted message snippet if replying."
+        },
+        "attachmentUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "Optional compressed hospital requisition slip or prescription image data URI."
         },
         "isPublic": {
           "type": "boolean",
@@ -799,6 +809,12 @@
           "maxLength": 300,
           "description": "Optional quoted message snippet."
         },
+        "attachmentUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 150000,
+          "description": "Optional compressed hospital requisition slip or prescription image data URI."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -813,6 +829,195 @@
         "participantTwoUid",
         "text",
         "replyToText",
+        "createdAt"
+      ]
+    },
+    "OwnerAnnouncement": {
+      "title": "OwnerAnnouncement",
+      "description": "Global emergency broadcast banner controlled exclusively by verified Admins and Super Owner.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Short broadcast headline."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 600,
+          "description": "Detailed broadcast body."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": ["CRITICAL", "INFO", "CAMPAIGN"],
+          "maxLength": 12,
+          "description": "Visual priority tier."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the announcement is currently visible to users."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Admin UID who published or updated the announcement."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modification timestamp."
+        }
+      },
+      "required": [
+        "title",
+        "message",
+        "urgency",
+        "active",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ScamReport": {
+      "title": "ScamReport",
+      "description": "Anti-bKash/broker scam report submitted by verified users and readable strictly by Admins.",
+      "type": "object",
+      "properties": {
+        "reporterUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the user filing the scam report."
+        },
+        "reporterName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Name of the reporting user."
+        },
+        "suspectPhone": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "description": "Reported suspicious phone or bKash/Nagad number."
+        },
+        "suspectName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Suspect alias or name."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 400,
+          "description": "Details of the attempted scam or advance fare demand."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["OPEN", "BLOCKED", "DISMISSED"],
+          "maxLength": 12,
+          "description": "Moderation status."
+        },
+        "adminQueryKey": {
+          "type": "string",
+          "enum": ["BSBD_SCAM"],
+          "maxLength": 16,
+          "description": "Explicit query boundary key for Admin moderation listing."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last moderation timestamp."
+        }
+      },
+      "required": [
+        "reporterUid",
+        "reporterName",
+        "suspectPhone",
+        "suspectName",
+        "reason",
+        "status",
+        "adminQueryKey",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GratitudeNote": {
+      "title": "GratitudeNote",
+      "description": "Public patient family gratitude and prayer note honoring life-saving voluntary blood donors (zero raw PII).",
+      "type": "object",
+      "properties": {
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the grateful patient or family member."
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Author display name."
+        },
+        "donorName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Honored blood donor display name."
+        },
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Donated blood group."
+        },
+        "hospitalName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Hospital where life was saved."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 500,
+          "description": "Heartfelt gratitude and blessing message."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Explicit query boundary flag."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        }
+      },
+      "required": [
+        "authorUid",
+        "authorName",
+        "donorName",
+        "bloodGroup",
+        "hospitalName",
+        "message",
+        "isPublic",
         "createdAt"
       ]
     }
@@ -853,6 +1058,18 @@
     "/directChats/{chatId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/DirectChatMessage" },
       "description": "Private 1-to-1 user-to-user chat messages protected by parent DirectChatRoom Master Gate and participant UID query enforcement."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/OwnerAnnouncement" },
+      "description": "Global emergency megaphone announcements writable strictly by Admins."
+    },
+    "/scamReports/{reportId}": {
+      "schema": { "$ref": "#/entities/ScamReport" },
+      "description": "Anti-scam broker/bKash reports isolated strictly to Admin moderation."
+    },
+    "/gratitudeNotes/{noteId}": {
+      "schema": { "$ref": "#/entities/GratitudeNote" },
+      "description": "Public patient family gratitude wall honoring voluntary donors without PII."
     }
   }
 }

@@ -1,5 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { BloodGroup, Language, Donor } from '../../types';
+import { BloodGroup, Language, Donor, BloodRequest } from '../../types';
+import {
+  isSeedDonorId,
+  isSeedRequestId,
+  evictSeedsProgressively,
+} from '../../data/mockDonors';
 import { getTranslation } from '../../utils/translations';
 import { 
   requestRealDeviceGPS, 
@@ -34,6 +39,8 @@ import {
 
 interface InteractiveMapViewProps {
   lang: Language;
+  donors?: Donor[];
+  requests?: BloodRequest[];
   onOpenSOSWizard: () => void;
   onStartChatWithDonor?: (donorName: string, bloodGroup: BloodGroup, phone?: string) => void;
 }
@@ -234,8 +241,21 @@ const LOCATIONS: MapLocation[] = [
   },
 ];
 
+const DIVISION_MAP_PERCENT: Record<string, { x: number; y: number }> = {
+  dhaka: { x: 50, y: 47 },
+  chattogram: { x: 74, y: 70 },
+  sylhet: { x: 79, y: 28 },
+  rajshahi: { x: 26, y: 36 },
+  khulna: { x: 35, y: 66 },
+  barishal: { x: 50, y: 73 },
+  rangpur: { x: 28, y: 18 },
+  mymensingh: { x: 54, y: 28 },
+};
+
 export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   lang,
+  donors = [],
+  requests = [],
   onOpenSOSWizard,
   onStartChatWithDonor,
 }) => {
@@ -249,7 +269,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
     });
   }, []);
 
-  const [selectedLoc, setSelectedLoc] = useState<MapLocation>(LOCATIONS[0]);
+  const [selectedLocId, setSelectedLocId] = useState<string>(LOCATIONS[0].id);
   const [filterType, setFilterType] = useState<'ALL' | 'DONOR' | 'SOS' | 'HOSPITAL'>('ALL');
   const [selectedBloodGroup, setSelectedBloodGroup] = useState<string>('ALL');
   const [selectedDivision, setSelectedDivision] = useState<string>('ALL');
@@ -257,9 +277,62 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
 
-  // Compute live distances from user's actual GPS coordinates
+  // Build real Donor & SOS pins + progressively evict fake DONOR/SOS pins 1-by-1 (verified Govt Hospitals always remain)
   const computedLocations = React.useMemo(() => {
-    return LOCATIONS.map((loc) => {
+    const verifiedHospitals = LOCATIONS.filter((l) => l.type === 'HOSPITAL');
+    const seedDonorAndSosPins = LOCATIONS.filter((l) => l.type !== 'HOSPITAL');
+
+    const realDynamicPins: MapLocation[] = [];
+    requests
+      .filter((r) => !isSeedRequestId(r.id) && r.status === 'ACTIVE')
+      .forEach((r, idx) => {
+        const divKey = (r.division || 'dhaka').toLowerCase();
+        const base = DIVISION_MAP_PERCENT[divKey] || DIVISION_MAP_PERCENT.dhaka;
+        const offsetX = ((idx % 3) - 1) * 4;
+        const offsetY = (Math.floor(idx / 3) % 3 - 1) * 4;
+        realDynamicPins.push({
+          id: `real-map-sos-${r.id}`,
+          name: r.hospitalName,
+          type: 'SOS',
+          bloodGroup: r.bloodGroup,
+          units: Math.max(1, r.unitsNeeded - r.unitsCollected),
+          division: divKey,
+          district: r.district,
+          distance: '২.০ কিমি',
+          phone: r.contactPhone || '+8801700000000',
+          available: true,
+          xPercent: Math.min(88, Math.max(14, base.x + offsetX)),
+          yPercent: Math.min(86, Math.max(14, base.y + offsetY)),
+        });
+      });
+
+    donors
+      .filter((d) => !isSeedDonorId(d.id) && d.available)
+      .forEach((d, idx) => {
+        const divKey = (d.division || 'dhaka').toLowerCase();
+        const base = DIVISION_MAP_PERCENT[divKey] || DIVISION_MAP_PERCENT.dhaka;
+        const offsetX = (((idx + 1) % 4) - 1.5) * 3.5;
+        const offsetY = ((Math.floor((idx + 1) / 4) % 3) - 1) * 3.5;
+        realDynamicPins.push({
+          id: `real-map-donor-${d.id}`,
+          name: `${d.name} (${lang === 'bn' ? 'প্রস্তুত রক্তদাতা' : 'Ready Donor'})`,
+          donorName: d.name,
+          type: 'DONOR',
+          bloodGroup: d.bloodGroup,
+          division: divKey,
+          district: `${d.upazila}, ${d.district}`,
+          distance: '২.৫ কিমি',
+          phone: d.phone,
+          available: d.available,
+          xPercent: Math.min(88, Math.max(14, base.x + offsetX)),
+          yPercent: Math.min(86, Math.max(14, base.y + offsetY)),
+        });
+      });
+
+    const activePeoplePins = evictSeedsProgressively(realDynamicPins, seedDonorAndSosPins);
+    const merged = [...activePeoplePins, ...verifiedHospitals];
+
+    return merged.map((loc) => {
       const targetCoord = DISTRICT_COORDINATES[loc.division] || DEFAULT_BANGLADESH_COORDS;
       const km = calculateHaversineDistance(userCoords, targetCoord);
       return {
@@ -267,7 +340,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
         computedDistance: km > 0 ? formatDistance(km, lang) : loc.distance,
       };
     });
-  }, [userCoords, lang]);
+  }, [userCoords, lang, donors, requests]);
 
   const filteredLocations = computedLocations.filter((l) => {
     if (filterType === 'SOS' && l.type !== 'SOS') return false;
@@ -293,6 +366,13 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
 
     return true;
   });
+
+  const selectedLoc =
+    filteredLocations.find((l) => l.id === selectedLocId) ||
+    computedLocations.find((l) => l.id === selectedLocId) ||
+    filteredLocations[0] ||
+    computedLocations[0] ||
+    null;
 
   const handleZoom = (delta: number) => {
     setZoomLevel((prev) => Math.min(2.2, Math.max(0.8, prev + delta)));
@@ -465,11 +545,11 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
             style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'center center' }}
           >
             {filteredLocations.map((loc) => {
-              const isSelected = loc.id === selectedLoc.id;
+              const isSelected = loc.id === selectedLoc?.id;
               return (
                 <div
                   key={loc.id}
-                  onClick={() => setSelectedLoc(loc)}
+                  onClick={() => setSelectedLocId(loc.id)}
                   style={{ left: `${loc.xPercent}%`, top: `${loc.yPercent}%` }}
                   className="absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer group z-20"
                 >

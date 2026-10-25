@@ -1,15 +1,105 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
   <defs>
-    <linearGradient id="bgGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#e11d48" />
-      <stop offset="100%" stop-color="#9f1239" />
+    <linearGradient id="dropMain" x1="180" y1="84" x2="336" y2="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f22222" />
+      <stop offset="52%" stop-color="#ce1212" />
+      <stop offset="100%" stop-color="#7c0707" />
     </linearGradient>
+    <linearGradient id="dropCrescent" x1="162" y1="186" x2="292" y2="394" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fb3232" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#b91010" stop-opacity="0.88" />
+    </linearGradient>
+    <linearGradient id="pulseRed" x1="40" y1="260" x2="472" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#dc1c1c" />
+      <stop offset="50%" stop-color="#b91010" />
+      <stop offset="100%" stop-color="#dc1c1c" />
+    </linearGradient>
+    <radialGradient id="dropShadow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0f172a" stop-opacity="0.28" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
+    </radialGradient>
   </defs>
-  <rect width="512" height="512" rx="116" fill="url(#bgGrad)" />
+
+  <!-- Crisp White App Squircle -->
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="#ffffff" stroke="#e2e8f0" stroke-width="6" />
+
+  <!-- Subtle Ground Shadow Under Droplet -->
+  <ellipse cx="256" cy="436" rx="88" ry="12" fill="url(#dropShadow)" />
+
+  <!-- Left Donor Silhouette -->
+  <circle cx="66" cy="238" r="15" fill="url(#pulseRed)" />
   <path
-    d="M256 88C256 88 136 226 136 314C136 380.274 189.726 434 256 434C322.274 434 376 380.274 376 314C376 226 256 88 256 88Z"
+    d="M38 286C38 269 50 258 66 258C82 258 94 269 94 286V298C94 303 90 307 84 307H48C42 307 38 303 38 298V286Z"
+    fill="url(#pulseRed)"
+  />
+
+  <!-- Left ECG Heartbeat Line -->
+  <path
+    d="M90 284H116L125 256L137 318L152 214L164 284H180"
+    stroke="url(#pulseRed)"
+    stroke-width="11"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Right ECG Heartbeat Line -->
+  <path
+    d="M332 284H348L360 214L375 318L387 256L396 284H422"
+    stroke="url(#pulseRed)"
+    stroke-width="11"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Right Heart Emblem -->
+  <path
+    d="M446 308C446 308 414 286 414 265C414 252 424 243 435 243C442 243 446 247 446 251C446 247 450 243 457 243C468 243 478 252 478 265C478 286 446 308 446 308Z"
+    fill="url(#pulseRed)"
+  />
+
+  <!-- Main 3D Crimson Blood Drop -->
+  <path
+    d="M256 76C256 76 146 218 146 308C146 370.96 195.248 422 256 422C316.752 422 366 370.96 366 308C366 218 256 76 256 76Z"
+    fill="url(#dropMain)"
+  />
+
+  <!-- Inner 3D Highlight Crescent -->
+  <path
+    d="M256 92C236 122 162 228 162 304C162 356 198 394 246 402C206 382 184 344 186 294C188 236 236 144 256 92Z"
+    fill="url(#dropCrescent)"
+  />
+
+  <!-- Magnifying Glass Handle Crimson Outer Casing (Bottom-Right) -->
+  <path
+    d="M306 346L350 390"
+    stroke="#990d0d"
+    stroke-width="34"
+    stroke-linecap="round"
+  />
+
+  <!-- Magnifying Glass White Handle & Ring -->
+  <path
+    d="M296 336L348 388"
+    stroke="#ffffff"
+    stroke-width="22"
+    stroke-linecap="round"
+  />
+  <circle
+    cx="256"
+    cy="296"
+    r="62"
+    stroke="#ffffff"
+    stroke-width="18"
+    fill="#8c0b0b"
+    fill-opacity="0.32"
+  />
+
+  <!-- Inner White Blood Droplet Inside Magnifier Lens -->
+  <path
+    d="M256 254C256 254 228 292 228 313C228 328.464 240.536 341 256 341C271.464 341 284 328.464 284 313C284 292 256 254 256 254Z"
     fill="#ffffff"
   />
-  <rect x="236" y="254" width="40" height="112" rx="12" fill="#e11d48" />
-  <rect x="200" y="290" width="112" height="40" rx="12" fill="#e11d48" />
+
+  <!-- Bottom Crimson Accent Pill -->
+  <rect x="206" y="462" width="100" height="10" rx="5" fill="#dc1c1c" />
 </svg>

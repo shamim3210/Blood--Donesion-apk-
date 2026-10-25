@@ -15,15 +15,20 @@ export default defineConfig(() => {
           enabled: true,
           type: 'module',
         },
-        includeAssets: ['icon.svg', 'apple-touch-icon.png', '.well-known/assetlinks.json'],
+        includeAssets: [
+          'icon.svg',
+          'apple-touch-icon.png',
+          'assets/bloodsearch-logo-squircle.png',
+          '.well-known/assetlinks.json',
+        ],
         manifest: {
           id: '/',
           name: 'BloodSearch - Bangladesh Emergency Blood Network',
           short_name: 'BloodSearch',
           description:
             'জরুরি রক্তদাতা সন্ধান, ৬৪ জেলা হাসপাতাল ডিরেক্টরি ও লাইভ ব্লাড ডোনেশন নেটওয়ার্ক বাংলাদেশ।',
-          theme_color: '#e11d48',
-          background_color: '#0f172a',
+          theme_color: '#dc2626',
+          background_color: '#ffffff',
           display: 'standalone',
           orientation: 'portrait',
           scope: '/',
@@ -47,6 +52,29 @@ export default defineConfig(() => {
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
+            },
+          ],
+          shortcuts: [
+            {
+              name: 'জরুরি রক্তের আবেদন (SOS)',
+              short_name: 'জরুরি SOS',
+              description: '১-ক্লিকে মুমূর্ষু রোগীর জন্য জরুরি রক্তের আবেদন পাঠান',
+              url: '/?action=sos',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+            {
+              name: 'রক্তদাতা খুঁজুন (৬৪ জেলা)',
+              short_name: 'ডোনার সার্চ',
+              description: 'নিকটস্থ প্রস্তুত রক্তদাতা খুঁজুন',
+              url: '/?action=search',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+            {
+              name: 'লাইভ চ্যাট ও ইনবক্স',
+              short_name: 'লাইভ চ্যাট',
+              description: 'রক্তদাতাদের সাথে সরাসরি চ্যাট ও লোকেশন শেয়ার',
+              url: '/?action=chat',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
             },
           ],
         },
@@ -78,7 +106,7 @@ export default defineConfig(() => {
     ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

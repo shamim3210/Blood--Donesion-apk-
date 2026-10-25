@@ -1,14 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Download, X, WifiOff } from 'lucide-react';
+import { Smartphone, Download, X, WifiOff, Phone, Building2 } from 'lucide-react';
 import { Language } from '../../types';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
+import { BrandLogo } from '../BrandLogo';
 
 interface PwaInstallPromptProps {
   lang: Language;
   onOpenApkGuide?: () => void;
+  onOpenDirectory?: () => void;
 }
 
-export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ lang, onOpenApkGuide }) => {
+export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({
+  lang,
+  onOpenApkGuide,
+  onOpenDirectory,
+}) => {
   const { isInstallable, isInstalled, isIOS, isInIframe, isOnline, promptInstall } =
     usePWAInstall();
   const [dismissed, setDismissed] = useState<boolean>(() => {
@@ -67,19 +73,47 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ lang, onOpen
 
   return (
     <>
-      {/* Offline Connectivity Indicator */}
+      {/* Offline Connectivity Emergency Survival Bar */}
       {!isOnline && (
         <div
           role="status"
           aria-live="polite"
-          className="fixed top-0 inset-x-0 z-50 bg-amber-600 text-white py-1.5 px-3 text-center text-xs font-bold flex items-center justify-center gap-2 shadow-md"
+          className="fixed top-0 inset-x-0 z-50 bg-amber-600 text-white py-2 px-3 text-xs font-bold flex flex-wrap items-center justify-center gap-2 shadow-md"
         >
-          <WifiOff className="w-3.5 h-3.5 shrink-0" />
-          <span>
-            {lang === 'bn'
-              ? 'ইন্টারনেট সংযোগ নেই · অফলাইন মোডে সংরক্ষিত ডোনার ও জরুরি তথ্য চালু আছে'
-              : 'You are offline · Cached donor directory remains accessible'}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <WifiOff className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {lang === 'bn'
+                ? 'অফলাইন মোড সক্রিয় (সংরক্ষিত ডোনার চালু আছে)'
+                : 'Offline Mode Active (Cached Donors Ready)'}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <a
+              href="tel:999"
+              className="px-2 py-0.5 rounded-md bg-white text-rose-700 font-black text-[11px] inline-flex items-center gap-1"
+            >
+              <Phone className="w-3 h-3" />
+              <span>৯৯৯</span>
+            </a>
+            <a
+              href="tel:16263"
+              className="px-2 py-0.5 rounded-md bg-slate-900 text-white font-black text-[11px] inline-flex items-center gap-1"
+            >
+              <Phone className="w-3 h-3" />
+              <span>১৬২৬৩</span>
+            </a>
+            {onOpenDirectory && (
+              <button
+                type="button"
+                onClick={onOpenDirectory}
+                className="px-2 py-0.5 rounded-md bg-amber-950 text-amber-100 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
+              >
+                <Building2 className="w-3 h-3" />
+                <span>{lang === 'bn' ? '৩৪+ হটলাইন' : '34+ Hotlines'}</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -88,9 +122,7 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ lang, onOpen
         <div className="fixed bottom-20 left-3 right-3 sm:left-auto sm:right-4 z-40 sm:max-w-sm bg-slate-900 text-white p-3.5 rounded-2xl border border-slate-700 shadow-2xl space-y-2">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-rose-600 to-red-600 flex items-center justify-center shrink-0 shadow-md">
-                <Smartphone className="w-4 h-4 text-white" />
-              </div>
+              <BrandLogo variant="mark" size="sm" />
               <div className="min-w-0">
                 <h4 className="font-bold text-xs text-white leading-tight">
                   {lang === 'bn' ? 'BloodSearch অ্যাপ ফোনে ইনস্টল করুন' : 'Install BloodSearch App'}

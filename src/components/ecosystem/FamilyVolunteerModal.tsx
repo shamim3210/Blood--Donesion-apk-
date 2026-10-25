@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { BloodGroup, Language } from '../../types';
+import { evictSeedsProgressively } from '../../data/mockDonors';
 import { 
   X, 
   Users, 
@@ -42,6 +43,42 @@ interface VolunteerItem {
   phone: string;
 }
 
+const SEED_FAMILY_MEMBERS: FamilyMember[] = [
+  {
+    id: 'fam-1',
+    name: 'আহমেদ রফিক (বাবা / Father)',
+    relation: 'Father',
+    bloodGroup: 'B+',
+    phone: '+8801711998877',
+    emergencyContact: true,
+  },
+  {
+    id: 'fam-2',
+    name: 'সুলতানা বেগম (মা / Mother)',
+    relation: 'Mother',
+    bloodGroup: 'O+',
+    phone: '+8801819223344',
+    emergencyContact: true,
+  },
+  {
+    id: 'fam-3',
+    name: 'ফারজানা আক্তার (স্ত্রী / Spouse)',
+    relation: 'Spouse',
+    bloodGroup: 'A+',
+    phone: '+8801912445566',
+    emergencyContact: true,
+  },
+  {
+    id: 'fam-4',
+    name: 'আরাফ আহমেদ (ছেলে / Son)',
+    relation: 'Child',
+    bloodGroup: 'O-',
+    phone: 'N/A (Minor)',
+    emergencyContact: false,
+  },
+];
+const SEED_FAMILY_IDS = new Set(SEED_FAMILY_MEMBERS.map((m) => m.id));
+
 export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
   isOpen,
   onClose,
@@ -51,41 +88,20 @@ export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
   const [activeTab, setActiveTab] = useState<'family' | 'volunteers'>('family');
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
-  // Mock Family network
-  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([
-    {
-      id: 'fam-1',
-      name: 'আহমেদ রফিক (বাবা / Father)',
-      relation: 'Father',
-      bloodGroup: 'B+',
-      phone: '+8801711998877',
-      emergencyContact: true,
-    },
-    {
-      id: 'fam-2',
-      name: 'সুলতানা বেগম (মা / Mother)',
-      relation: 'Mother',
-      bloodGroup: 'O+',
-      phone: '+8801819223344',
-      emergencyContact: true,
-    },
-    {
-      id: 'fam-3',
-      name: 'ফারজানা আক্তার (স্ত্রী / Spouse)',
-      relation: 'Spouse',
-      bloodGroup: 'A+',
-      phone: '+8801912445566',
-      emergencyContact: true,
-    },
-    {
-      id: 'fam-4',
-      name: 'আরাফ আহমেদ (ছেলে / Son)',
-      relation: 'Child',
-      bloodGroup: 'O-',
-      phone: 'N/A (Minor)',
-      emergencyContact: false,
-    },
-  ]);
+  // Persistent Family Blood Circle (evicts demo members 1-by-1 as real family members are added)
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>(() => {
+    try {
+      const saved = localStorage.getItem('bloodsearch_family_members');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const realOnly = parsed.filter((m) => m && !SEED_FAMILY_IDS.has(m.id));
+          return evictSeedsProgressively(realOnly, SEED_FAMILY_MEMBERS);
+        }
+      }
+    } catch {}
+    return evictSeedsProgressively([], SEED_FAMILY_MEMBERS);
+  });
 
   // Volunteers
   const [volunteers, setVolunteers] = useState<VolunteerItem[]>([
@@ -131,18 +147,29 @@ export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
 
     const newMember: FamilyMember = {
       id: `fam-${Date.now()}`,
-      name: newFamName,
+      name: newFamName.trim(),
       relation: newFamRelation,
       bloodGroup: newFamGroup,
-      phone: newFamPhone || '+88017XXXXXXXX',
+      phone: newFamPhone.trim() || '+88017XXXXXXXX',
       emergencyContact: true,
     };
 
-    setFamilyMembers((prev) => [...prev, newMember]);
+    setFamilyMembers((prev) => {
+      const realOnly = [newMember, ...prev.filter((m) => !SEED_FAMILY_IDS.has(m.id))];
+      const next = evictSeedsProgressively(realOnly, SEED_FAMILY_MEMBERS);
+      try {
+        localStorage.setItem('bloodsearch_family_members', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     setIsAddingFamily(false);
     setNewFamName('');
     setNewFamPhone('');
-    setSuccessNotice(lang === 'bn' ? 'পারিবারিক সদস্য সফলভাবে যুক্ত করা হয়েছে।' : 'Family member linked to emergency network.');
+    setSuccessNotice(
+      lang === 'bn'
+        ? 'পারিবারিক সদস্য সফলভাবে সংরক্ষিত হয়েছে।'
+        : 'Family member saved to emergency network.'
+    );
     setTimeout(() => setSuccessNotice(null), 2500);
   };
 

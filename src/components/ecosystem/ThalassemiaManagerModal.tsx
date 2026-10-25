@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Language, BloodGroup } from '../../types';
 import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
+import { evictSeedsProgressively } from '../../data/mockDonors';
 import { 
   Heart, 
   Calendar, 
@@ -82,6 +83,8 @@ interface ThalassemiaManagerModalProps {
   lang: Language;
 }
 
+const SEED_THALASSEMIA_IDS = new Set(INITIAL_PATIENTS.map((p) => p.id));
+
 export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = ({
   isOpen,
   onClose,
@@ -91,12 +94,16 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
     const saved = localStorage.getItem('bloodsearch_thalassemia_patients');
     if (saved) {
       try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return INITIAL_PATIENTS;
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const realOnly = parsed.filter((p) => p && !SEED_THALASSEMIA_IDS.has(p.id));
+          return evictSeedsProgressively(realOnly, INITIAL_PATIENTS);
+        }
+      } catch {
+        return evictSeedsProgressively([], INITIAL_PATIENTS);
       }
     }
-    return INITIAL_PATIENTS;
+    return evictSeedsProgressively([], INITIAL_PATIENTS);
   });
 
   const [selectedPatientId, setSelectedPatientId] = useState<string>(patients[0]?.id || 'th-1');
@@ -153,7 +160,10 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
       ]
     };
 
-    setPatients((prev) => [newPat, ...prev]);
+    setPatients((prev) => {
+      const realOnly = [newPat, ...prev.filter((p) => !SEED_THALASSEMIA_IDS.has(p.id))];
+      return evictSeedsProgressively(realOnly, INITIAL_PATIENTS);
+    });
     setSelectedPatientId(newPat.id);
     setIsAddingPatient(false);
     playEmergencyChime();

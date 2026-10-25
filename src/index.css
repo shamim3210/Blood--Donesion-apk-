@@ -18,6 +18,10 @@
     -webkit-tap-highlight-color: transparent;
   }
 
+  html.senior-text {
+    font-size: 112.5%;
+  }
+
   body {
     width: 100%;
     max-width: 100%;
@@ -103,6 +107,23 @@
 .modal-scroll-contain {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
+}
+
+/* Offscreen DOM paint skipping for long donor & request lists (zero-lag mobile scroll) */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 168px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .scrollbar-none {

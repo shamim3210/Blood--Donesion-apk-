@@ -1,21 +1,19 @@
 import React, { useState } from 'react';
 import { BloodGroup, UrgencyLevel, BloodRequest, Language } from '../../types';
 import { ALL_BLOOD_GROUPS, getCompatibleDonors } from '../../data/compatibility';
-import { DIVISIONS, DISTRICTS } from '../../data/bangladeshGeo';
+import { DISTRICTS } from '../../data/bangladeshGeo';
 import { getTranslation } from '../../utils/translations';
-import { 
-  X, 
-  ArrowLeft, 
-  Check, 
-  MapPin, 
-  Hospital, 
-  Phone, 
-  AlertCircle, 
-  CheckCircle2, 
-  Sliders, 
-  Calendar, 
+import { checkActionCooldownGuard } from '../../firebase';
+import { buildOfflineEmergencySmsUri } from '../../utils/sosAlertEngine';
+import {
+  X,
+  ArrowLeft,
+  Check,
+  MapPin,
+  CheckCircle2,
   FileText,
-  ShieldCheck
+  Mail,
+  RefreshCw,
 } from 'lucide-react';
 
 interface RequestBloodWizardProps {
@@ -45,15 +43,32 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   const [district, setDistrict] = useState('dhaka');
   const [contactPhone, setContactPhone] = useState('+880174333969');
   const [reason, setReason] = useState('ইমার্জেন্সি ডেলিভারি ও রক্তক্ষরণ');
+  const [exchangeAllowed, setExchangeAllowed] = useState(false);
   const [doctorSlipUploaded, setDoctorSlipUploaded] = useState(true);
+  const [cooldownWarn, setCooldownWarn] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleNextStep = () => {
+    setCooldownWarn(null);
     if (step < 3) {
       setStep((step + 1) as any);
     } else if (step === 3) {
-      // Create request and move to step 4 celebration
+      const guard = checkActionCooldownGuard('CREATE_SOS', 6000);
+      if (!guard.allowed) {
+        setCooldownWarn(
+          lang === 'bn'
+            ? `অনুগ্রহ করে ${guard.waitSeconds} সেকেন্ড অপেক্ষা করে পরবর্তী আবেদন পাঠান।`
+            : `Please wait ${guard.waitSeconds}s before sending another SOS.`
+        );
+        return;
+      }
+
+      const distObj = DISTRICTS.find((d) => d.id === district);
+      const finalReason = exchangeAllowed
+        ? `${reason.trim()} [ব্লাড ব্যাংক এক্সচেঞ্জ/রিপ্লেসমেন্ট অনুমোদিত - যেকোনো গ্রুপ]`
+        : reason.trim();
+
       const newReq: BloodRequest = {
         id: `sos-${Date.now()}`,
         patientName,
@@ -62,21 +77,25 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
         unitsNeeded: Number(unitsNeeded) || 1,
         unitsCollected: 0,
         hospitalName,
-        division: 'dhaka',
+        division: distObj?.divisionId || 'dhaka',
         district,
-        upazila: 'shahbagh',
+        upazila: distObj?.upazilas?.[0]?.id || 'sadar',
         urgency,
         contactName: 'পরিবারের স্বজন',
         contactPhone,
         requiredDate: urgency === 'CRITICAL' ? 'জরুরি ২ ঘণ্টার মধ্যে' : 'আজকের মধ্যে',
-        reason,
+        reason: finalReason,
+        exchangeAllowed,
         responders: [],
         createdAt: lang === 'bn' ? 'এইমাত্র' : 'Just now',
         status: 'ACTIVE',
       };
 
       onSubmitSOS(newReq);
-      onLogAudit('CREATE_SOS', `Created multi-step SOS for ${bloodGroup} at ${hospitalName} (${unitsNeeded} units)`);
+      onLogAudit(
+        'CREATE_SOS',
+        `Created multi-step SOS for ${bloodGroup} at ${hospitalName} (${unitsNeeded} units)`
+      );
       setStep(4);
     }
   };
@@ -336,20 +355,76 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   />
                 </div>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      {lang === 'bn' ? 'জেলা' : 'District'} *
+                    </label>
+                    <select
+                      value={district}
+                      onChange={(e) => setDistrict(e.target.value)}
+                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                    >
+                      {DISTRICTS.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {lang === 'bn' ? d.nameBn : d.nameEn}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      {t.contactPhone} *
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      value={contactPhone}
+                      onChange={(e) => setContactPhone(e.target.value)}
+                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {t.contactPhone} *
+                    {lang === 'bn' ? 'রক্তের প্রয়োজনের কারণ' : 'Medical Reason'}
                   </label>
                   <input
-                    type="tel"
-                    required
-                    value={contactPhone}
-                    onChange={(e) => setContactPhone(e.target.value)}
-                    className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white/90 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono"
+                    type="text"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                   />
                 </div>
 
-                {/* Doctor Slip / Requisition receipt simulation (matching Image 1 & 16) */}
+                {/* Blood Bank Exchange / Replacement Option */}
+                <label className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 flex items-start gap-2.5 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    checked={exchangeAllowed}
+                    onChange={(e) => setExchangeAllowed(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 accent-emerald-600 shrink-0"
+                  />
+                  <div>
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-1">
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>
+                        {lang === 'bn'
+                          ? 'ব্লাড ব্যাংক এক্সচেঞ্জ / রিপ্লেসমেন্ট সুবিধা আছে (যেকোনো গ্রুপ)'
+                          : 'Blood Bank Exchange Allowed (Any Blood Group)'}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-slate-600 dark:text-slate-400 block mt-0.5">
+                      {lang === 'bn'
+                        ? 'সন্ধানী/কোয়ান্টাম/হাসপাতালে অন্য যেকোনো গ্রুপের রক্ত জমা দিয়ে কাঙ্ক্ষিত ব্যাগ নেওয়া গেলে এটি অন করুন।'
+                        : 'Enable if the hospital blood bank accepts any donor group in exchange.'}
+                    </span>
+                  </div>
+                </label>
+
+                {/* Doctor Slip / Requisition receipt simulation */}
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs">
                     <FileText className="w-4 h-4 text-emerald-500" />
@@ -370,15 +445,21 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                     {doctorSlipUploaded ? 'Change' : 'Attach'}
                   </button>
                 </div>
+
+                {cooldownWarn && (
+                  <p className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                    {cooldownWarn}
+                  </p>
+                )}
               </div>
             </div>
           )}
 
-          {/* STEP 4: CELEBRATION & SENT CONFIRMATION (Matching Image 9) */}
+          {/* STEP 4: CELEBRATION & SENT CONFIRMATION */}
           {step === 4 && (
-            <div className="py-6 space-y-5 text-center">
-              <div className="w-20 h-20 mx-auto rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-8 ring-emerald-500/10 animate-bounce">
-                <Check className="w-10 h-10 stroke-[3]" />
+            <div className="py-5 space-y-4 text-center">
+              <div className="w-16 h-16 mx-auto rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-8 ring-emerald-500/10">
+                <Check className="w-9 h-9 stroke-[3]" />
               </div>
 
               <div>
@@ -387,16 +468,17 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs mx-auto">
                   {lang === 'bn'
-                    ? 'আপনার জরুরি রক্তের আবেদন আশপাশের ৫ কিমির নিবন্ধিত ডোনারদের ফোনে পাঠানো হয়েছে।'
-                    : 'Your emergency broadcast has been dispatched to all eligible donors within the emergency radius.'}
+                    ? 'আপনার জরুরি রক্তের আবেদন নিকটস্থ নিবন্ধিত ডোনারদের কাছে পাঠানো হয়েছে।'
+                    : 'Your emergency broadcast has been dispatched to eligible donors nearby.'}
                 </p>
               </div>
 
-              {/* Request Summary Card matching Image 9 */}
               <div className="p-4 rounded-2xl bg-slate-100/80 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800/80 text-left space-y-3">
                 <div className="flex items-center gap-2 text-xs text-slate-500">
                   <MapPin className="w-4 h-4 text-rose-500" />
-                  <span className="font-semibold text-slate-800 dark:text-slate-200">{hospitalName}</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    {hospitalName}
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 text-center pt-2 border-t border-slate-200/60 dark:border-slate-800/60">
@@ -409,11 +491,31 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                     <span className="text-xs font-bold text-red-600">{urgency}</span>
                   </div>
                   <div className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700/60">
-                    <span className="text-[10px] text-slate-400 uppercase font-bold block">Radius</span>
-                    <span className="text-xs font-bold text-emerald-600">5 km</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-bold block">Mode</span>
+                    <span className="text-xs font-bold text-emerald-600">
+                      {exchangeAllowed ? 'Exchange OK' : 'Direct'}
+                    </span>
                   </div>
                 </div>
               </div>
+
+              {/* Offline Native SMS Fallback Button */}
+              <a
+                href={buildOfflineEmergencySmsUri(
+                  '',
+                  `🚨 জরুরি রক্তের আবেদন! ${bloodGroup} রক্ত প্রয়োজন (${unitsNeeded} ব্যাগ)${
+                    exchangeAllowed ? ' [এক্সচেঞ্জ অনুমোদিত]' : ''
+                  } — হাসপাতাল: ${hospitalName}। রোগী: ${patientName}। যোগাযোগ: ${contactPhone}`
+                )}
+                className="w-full min-h-[44px] px-4 py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-2"
+              >
+                <Mail className="w-4 h-4" />
+                <span>
+                  {lang === 'bn'
+                    ? 'ইন্টারনেট ছাড়াই পরিচিতদের জরুরি SMS পাঠান'
+                    : 'Send Offline Emergency SMS to Contacts'}
+                </span>
+              </a>
             </div>
           )}
         </div>
