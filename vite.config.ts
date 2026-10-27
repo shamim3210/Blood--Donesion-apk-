@@ -12,8 +12,7 @@ export default defineConfig(() => {
       VitePWA({
         registerType: 'autoUpdate',
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
         includeAssets: [
           'icon.svg',
@@ -27,12 +26,18 @@ export default defineConfig(() => {
           short_name: 'BloodSearch',
           description:
             'জরুরি রক্তদাতা সন্ধান, ৬৪ জেলা হাসপাতাল ডিরেক্টরি ও লাইভ ব্লাড ডোনেশন নেটওয়ার্ক বাংলাদেশ।',
+          lang: 'bn',
+          dir: 'ltr',
           theme_color: '#dc2626',
           background_color: '#ffffff',
           display: 'standalone',
           orientation: 'portrait',
           scope: '/',
           start_url: '/',
+          prefer_related_applications: false,
+          launch_handler: {
+            client_mode: 'navigate-existing',
+          },
           categories: ['medical', 'health', 'utilities'],
           icons: [
             {
@@ -94,6 +99,20 @@ export default defineConfig(() => {
                 expiration: {
                   maxEntries: 12,
                   maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/(?:[abc]\.tile\.openstreetmap\.org|[abcd]\.basemaps\.cartocdn\.com)\/.*/i,
+              handler: 'StaleWhileRevalidate',
+              options: {
+                cacheName: 'bangladesh-map-tiles-cache',
+                expiration: {
+                  maxEntries: 250,
+                  maxAgeSeconds: 60 * 60 * 24 * 7,
                 },
                 cacheableResponse: {
                   statuses: [0, 200],

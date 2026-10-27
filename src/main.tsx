@@ -7,6 +7,15 @@ import { initPWAInstallListener } from './hooks/usePWAInstall';
 
 initRuntimeSecurityShield();
 initPWAInstallListener();
-registerSW({ immediate: true });
+
+if (import.meta.env.DEV && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    for (const registration of registrations) {
+      void registration.unregister();
+    }
+  });
+} else {
+  registerSW({ immediate: true });
+}
 
 createRoot(document.getElementById('root')!).render(<App />);

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -153,3 +154,21 @@
     background: #475569;
   }
 }
+
+/* Leaflet Interactive Map Safety & Marker Styles */
+.leaflet-container {
+  font-family: var(--font-sans);
+  z-index: 0;
+}
+
+.leaflet-container img.leaflet-tile,
+.leaflet-container img {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.bsbd-leaflet-pin {
+  background: transparent !important;
+  border: none !important;
+}
+

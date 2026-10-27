@@ -1,5 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Donor, BloodGroup, Language, UserAccount } from '../types';
+import {
+  Donor,
+  BloodGroup,
+  Language,
+  UserAccount,
+  ContactVisibility,
+  DonorAvailabilityStatus,
+} from '../types';
 import { BrandLogo } from './BrandLogo';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { DIVISIONS, DISTRICTS } from '../data/bangladeshGeo';
@@ -116,6 +123,11 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   const [weightKg, setWeightKg] = useState(62);
   const [available, setAvailable] = useState(true);
   const [lastDonatedDate, setLastDonatedDate] = useState('');
+  const [contactVisibility, setContactVisibility] = useState<ContactVisibility>('PUBLIC_OPT_IN');
+  const [allowCall, setAllowCall] = useState(true);
+  const [allowWhatsApp, setAllowWhatsApp] = useState(true);
+  const [allowSms, setAllowSms] = useState(true);
+  const [emergencyAlertsOptIn, setEmergencyAlertsOptIn] = useState(true);
 
   // Photo Upload State
   const [photoUrl, setPhotoUrl] = useState<string>(PRESET_AVATARS[0]);
@@ -395,6 +407,11 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
 
       const normalizedFb = fb.startsWith('http') ? fb : `https://${fb}`;
 
+      const availabilityStatus: DonorAvailabilityStatus = available
+        ? 'AVAILABLE'
+        : 'TEMPORARILY_UNAVAILABLE';
+      const shareDirectContact = contactVisibility !== 'REQUEST_ONLY';
+
       const newAccount: UserAccount = {
         id: activeFirebaseUser.uid,
         name: name.trim(),
@@ -417,6 +434,15 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         gender,
         weightKg: Number(weightKg) || 62,
         availableToDonate: available,
+        availabilityStatus,
+        availabilityConfirmedAtMs: Date.now(),
+        shareDirectContact,
+        contactVisibility,
+        allowCall,
+        allowWhatsApp,
+        allowSms,
+        emergencyAlertsOptIn,
+        alertsPaused: false,
         lastDonationDate: lastDonatedDate || undefined,
         totalDonations: lastDonatedDate ? 1 : 0,
         createdAt: new Date().toISOString(),
@@ -433,6 +459,15 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         whatsappPhone: cleanWa,
         facebookUrl: normalizedFb,
         available,
+        availabilityStatus,
+        availabilityConfirmedAtMs: Date.now(),
+        shareDirectContact,
+        contactVisibility,
+        allowCall,
+        allowWhatsApp,
+        allowSms,
+        emergencyAlertsOptIn,
+        alertsPaused: false,
         lastDonatedDate: lastDonatedDate || '',
         totalDonations: lastDonatedDate ? 1 : 0,
         verifiedBadge: accountRole === 'ADMIN',
@@ -1367,6 +1402,90 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                     title="সর্বশেষ রক্তদানের তারিখ (ঐচ্ছিক)"
                     className="px-2.5 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200"
                   />
+                </div>
+
+                {/* Direct Contact Consent & Privacy Settings */}
+                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 space-y-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-900 dark:text-white">
+                      {lang === 'bn'
+                        ? 'যোগাযোগের গোপনীয়তা ও সরাসরি কল সম্মতি (Privacy & Direct Contact Consent)'
+                        : 'Direct Contact Consent & Privacy Setting'}
+                    </label>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      {lang === 'bn'
+                        ? 'জরুরি মুহূর্তে কারা আপনার ফোন/WhatsApp নম্বরে সরাসরি যোগাযোগ করতে পারবেন তা নির্বাচন করুন।'
+                        : 'Choose who can view and contact your phone/WhatsApp directly during emergencies.'}
+                    </p>
+                  </div>
+
+                  <select
+                    value={contactVisibility}
+                    onChange={(e) => setContactVisibility(e.target.value as ContactVisibility)}
+                    className="w-full h-10 px-3 text-xs font-semibold rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    <option value="PUBLIC_OPT_IN">
+                      {lang === 'bn'
+                        ? 'সব জরুরি রক্তপ্রার্থীর জন্য সরাসরি কল ও WhatsApp উন্মুক্ত (দ্রুততম জীবনরক্ষা)'
+                        : 'Direct Call & WhatsApp for All Emergency Seekers (Fastest)'}
+                    </option>
+                    <option value="VERIFIED_SEEKERS">
+                      {lang === 'bn'
+                        ? 'শুধু লগইনকৃত ভেরিফাইড রক্তপ্রার্থীদের জন্য সরাসরি কল/WhatsApp'
+                        : 'Verified Signed-In Blood Seekers Only'}
+                    </option>
+                    <option value="REQUEST_ONLY">
+                      {lang === 'bn'
+                        ? 'নম্বর গোপন রাখুন — শুধু ইন-অ্যাপ চ্যাট ও অনুমতি সাপেক্ষে নম্বর শেয়ার'
+                        : 'Private — In-App Chat & Consent Request Only'}
+                    </option>
+                  </select>
+
+                  {contactVisibility !== 'REQUEST_ONLY' && (
+                    <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-slate-700 dark:text-slate-300">
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={allowCall}
+                          onChange={(e) => setAllowCall(e.target.checked)}
+                          className="w-4 h-4 rounded text-emerald-600"
+                        />
+                        <span>{lang === 'bn' ? 'সরাসরি ফোন কল' : 'Phone Call'}</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={allowWhatsApp}
+                          onChange={(e) => setAllowWhatsApp(e.target.checked)}
+                          className="w-4 h-4 rounded text-emerald-600"
+                        />
+                        <span>WhatsApp</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={allowSms}
+                          onChange={(e) => setAllowSms(e.target.checked)}
+                          className="w-4 h-4 rounded text-emerald-600"
+                        />
+                        <span>SMS</span>
+                      </label>
+                    </div>
+                  )}
+
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer text-xs font-semibold text-slate-800 dark:text-slate-200 border-t border-slate-200/80 dark:border-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={emergencyAlertsOptIn}
+                      onChange={(e) => setEmergencyAlertsOptIn(e.target.checked)}
+                      className="w-4 h-4 rounded text-rose-600"
+                    />
+                    <span>
+                      {lang === 'bn'
+                        ? 'আমার এলাকার জরুরি রক্তের SOS ব্রডকাস্ট নোটিফিকেশন পেতে চাই'
+                        : 'Opt in to emergency blood request broadcast alerts in my area'}
+                    </span>
+                  </label>
                 </div>
               </div>
             )}

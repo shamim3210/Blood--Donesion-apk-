@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Language, HealthConditions, UserAccount } from '../../types';
+import {
+  Language,
+  HealthConditions,
+  UserAccount,
+  DonorAvailabilityStatus,
+  ContactVisibility,
+  ContactConsentRequestItem,
+} from '../../types';
 import {
   QrCode,
   Award,
@@ -13,6 +20,10 @@ import {
   Download,
   CalendarCheck,
   Droplet,
+  CheckCircle2,
+  BellOff,
+  ShieldCheck,
+  Phone,
 } from 'lucide-react';
 import { PrivacyPolicyModal } from '../ecosystem/PrivacyPolicyModal';
 import { DonorCertificateModal } from './DonorCertificateModal';
@@ -28,8 +39,10 @@ import {
   signOutReal,
   DEFAULT_AVATAR_DATA_URI,
   isBootstrappedAdminUser,
-  syncDonorAvailabilityInFirestore,
+  updateDonorAvailabilityAndConsentInFirestore,
   recordCompletedDonationInFirestore,
+  subscribeIncomingContactRequestsForDonor,
+  respondToContactRequestInFirestore,
   User as FirebaseUser,
 } from '../../firebase';
 
@@ -83,6 +96,59 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isCertOpen, setIsCertOpen] = useState(false);
   const [isAvailable, setIsAvailable] = useState<boolean>(currentUser?.availableToDonate ?? true);
+  const [availabilityStatus, setAvailabilityStatus] = useState<DonorAvailabilityStatus>(
+    currentUser?.availabilityStatus ||
+      (currentUser?.availableToDonate === false ? 'TEMPORARILY_UNAVAILABLE' : 'AVAILABLE')
+  );
+  const [confirmedAtMs, setConfirmedAtMs] = useState<number | undefined>(
+    currentUser?.availabilityConfirmedAtMs
+  );
+  const [contactVisibility, setContactVisibility] = useState<ContactVisibility>(
+    currentUser?.contactVisibility ||
+      (currentUser?.shareDirectContact === false ? 'REQUEST_ONLY' : 'PUBLIC_OPT_IN')
+  );
+  const [allowCall, setAllowCall] = useState<boolean>(currentUser?.allowCall !== false);
+  const [allowWhatsApp, setAllowWhatsApp] = useState<boolean>(currentUser?.allowWhatsApp !== false);
+  const [allowSms, setAllowSms] = useState<boolean>(currentUser?.allowSms !== false);
+  const [emergencyAlertsOptIn, setEmergencyAlertsOptIn] = useState<boolean>(
+    currentUser?.emergencyAlertsOptIn !== false
+  );
+  const [alertsPaused, setAlertsPaused] = useState<boolean>(currentUser?.alertsPaused === true);
+  const [isSavingConsent, setIsSavingConsent] = useState(false);
+  const [incomingContactRequests, setIncomingContactRequests] = useState<
+    ContactConsentRequestItem[]
+  >([]);
+
+  useEffect(() => {
+    if (!firebaseUser?.uid) {
+      setIncomingContactRequests([]);
+      return;
+    }
+    const unsub = subscribeIncomingContactRequestsForDonor(firebaseUser.uid, (items) => {
+      setIncomingContactRequests(items);
+    });
+    return () => unsub();
+  }, [firebaseUser?.uid]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const status: DonorAvailabilityStatus =
+      currentUser.availabilityStatus ||
+      (currentUser.availableToDonate === false ? 'TEMPORARILY_UNAVAILABLE' : 'AVAILABLE');
+    setAvailabilityStatus(status);
+    setIsAvailable(status === 'AVAILABLE');
+    if (currentUser.availabilityConfirmedAtMs) {
+      setConfirmedAtMs(currentUser.availabilityConfirmedAtMs);
+    }
+    if (currentUser.contactVisibility) {
+      setContactVisibility(currentUser.contactVisibility);
+    }
+    setAllowCall(currentUser.allowCall !== false);
+    setAllowWhatsApp(currentUser.allowWhatsApp !== false);
+    setAllowSms(currentUser.allowSms !== false);
+    setEmergencyAlertsOptIn(currentUser.emergencyAlertsOptIn !== false);
+    setAlertsPaused(currentUser.alertsPaused === true);
+  }, [currentUser]);
 
   // Quick Log Completed Donation inside Profile
   const [showLogForm, setShowLogForm] = useState(false);
@@ -113,19 +179,80 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     setTimeout(() => setStatusToast(null), 3500);
   };
 
-  const handleToggleAvailability = async () => {
-    const next = !isAvailable;
-    setIsAvailable(next);
-    const synced = await syncDonorAvailabilityInFirestore(next);
-    showToast(
-      next
-        ? lang === 'bn'
-          ? `✓ আপনি এখন জরুরি রক্তদানের জন্য সক্রিয় (${synced ? 'ক্লাউড সিঙ্কড' : 'লোকাল সেভড'})।`
-          : '✓ Your profile is now marked Available for Emergency Donation.'
-        : lang === 'bn'
-        ? '✓ বিশ্রাম / রিকভারি মোড চালু হয়েছে।'
-        : '✓ Cooldown / Resting mode enabled.'
-    );
+  const applyConsentAndAvailabilityUpdate = async (
+    overrides: Partial<{
+      availabilityStatus: DonorAvailabilityStatus;
+      confirmNow: boolean;
+      contactVisibility: ContactVisibility;
+      allowCall: boolean;
+      allowWhatsApp: boolean;
+      allowSms: boolean;
+      emergencyAlertsOptIn: boolean;
+      alertsPaused: boolean;
+    }>
+  ) => {
+    const nextStatus = overrides.availabilityStatus ?? availabilityStatus;
+    const nextVis = overrides.contactVisibility ?? contactVisibility;
+    const nextCall = overrides.allowCall ?? allowCall;
+    const nextWa = overrides.allowWhatsApp ?? allowWhatsApp;
+    const nextSms = overrides.allowSms ?? allowSms;
+    const nextEmerg = overrides.emergencyAlertsOptIn ?? emergencyAlertsOptIn;
+    const nextPaused = overrides.alertsPaused ?? alertsPaused;
+    const confirmNow = overrides.confirmNow ?? (nextStatus === 'AVAILABLE');
+
+    setAvailabilityStatus(nextStatus);
+    setIsAvailable(nextStatus === 'AVAILABLE');
+    setContactVisibility(nextVis);
+    setAllowCall(nextCall);
+    setAllowWhatsApp(nextWa);
+    setAllowSms(nextSms);
+    setEmergencyAlertsOptIn(nextEmerg);
+    setAlertsPaused(nextPaused);
+    if (confirmNow) {
+      setConfirmedAtMs(Date.now());
+    }
+
+    setIsSavingConsent(true);
+    try {
+      const synced = await updateDonorAvailabilityAndConsentInFirestore({
+        availabilityStatus: nextStatus,
+        confirmNow,
+        shareDirectContact: nextVis !== 'REQUEST_ONLY',
+        contactVisibility: nextVis,
+        allowCall: nextCall,
+        allowWhatsApp: nextWa,
+        allowSms: nextSms,
+        emergencyAlertsOptIn: nextEmerg,
+        alertsPaused: nextPaused,
+      });
+      showToast(
+        lang === 'bn'
+          ? `✓ প্রস্তুতি ও গোপনীয়তা সেটিংস সংরক্ষিত হয়েছে (${synced ? 'ক্লাউড সিঙ্কড' : 'লোকাল সেভড'})।`
+          : `✓ Availability & contact privacy updated (${synced ? 'Cloud Synced' : 'Saved Locally'}).`
+      );
+    } finally {
+      setIsSavingConsent(false);
+    }
+  };
+
+  const handleRespondContactReq = async (reqId: string, approve: boolean) => {
+    const ok = await respondToContactRequestInFirestore({
+      contactReqId: reqId,
+      approve,
+      donorPhone: currentUser?.phone,
+      donorWhatsApp: currentUser?.whatsappPhone || currentUser?.phone,
+    });
+    if (ok) {
+      showToast(
+        approve
+          ? lang === 'bn'
+            ? '✓ রক্তপ্রার্থীর জন্য আপনার নম্বর অনুমোদিত হয়েছে।'
+            : '✓ Approved! This seeker can now call/WhatsApp you directly.'
+          : lang === 'bn'
+          ? 'অনুরোধটি প্রত্যাখ্যান করা হয়েছে।'
+          : 'Contact request declined.'
+      );
+    }
   };
 
   const handleSaveDonationLog = async (e: React.FormEvent) => {
@@ -406,36 +533,278 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           </div>
         </div>
 
-        {/* Cloud-Synced Availability Toggle */}
-        <div className="mt-4 pt-3 flex items-center justify-between px-1">
-          <div className="text-left">
-            <span className="text-xs font-bold text-slate-900 dark:text-white block">
-              {lang === 'bn' ? 'রক্তদানে সক্রিয় উপস্থিতি (লাইভ ডিরেক্টরি)' : 'Available for Emergency Donation'}
-            </span>
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">
-              {isAvailable
-                ? lang === 'bn'
-                  ? 'জরুরি রোগীরা আপনাকে রক্তদাতা তালিকায় দেখতে পাবেন'
-                  : 'Visible to nearby patients in emergency'
-                : lang === 'bn'
-                ? `রিকভারি বিশ্রাম মোড · পরবর্তী রক্তদান: ${recovery.nextEligibleDateLabel}`
-                : `Resting cooldown · Next eligible: ${recovery.nextEligibleDateLabel}`}
-            </span>
+        {/* 3-State Availability, DND & Last Confirmation Control */}
+        <div className="mt-4 pt-4 border-t border-slate-200/70 dark:border-slate-800 text-left space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span className="text-xs font-bold text-slate-900 dark:text-white block">
+                {lang === 'bn' ? 'রক্তদান প্রস্তুতি স্ট্যাটাস (Availability & DND)' : 'Availability & Do Not Disturb'}
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                {confirmedAtMs
+                  ? lang === 'bn'
+                    ? `সর্বশেষ নিশ্চিতকরণ: ${new Date(confirmedAtMs).toLocaleString('bn-BD')}`
+                    : `Last confirmed: ${new Date(confirmedAtMs).toLocaleString()}`
+                  : lang === 'bn'
+                  ? 'এখনো আজকের প্রস্তুতি নিশ্চিত করা হয়নি'
+                  : 'Availability not confirmed recently'}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              disabled={isSavingConsent}
+              onClick={() =>
+                applyConsentAndAvailabilityUpdate({
+                  availabilityStatus: 'AVAILABLE',
+                  confirmNow: true,
+                })
+              }
+              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>{lang === 'bn' ? 'এখন প্রস্তুত নিশ্চিত করুন' : 'Confirm Available Now'}</span>
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleToggleAvailability}
-            className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-              isAvailable ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'
-            }`}
-          >
-            <div
-              className={`w-5 h-5 rounded-full bg-white transition-transform shadow-md ${
-                isAvailable ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+
+          {/* 3-State Segmented Control */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-900">
+            {(
+              [
+                {
+                  id: 'AVAILABLE' as const,
+                  bn: 'প্রস্তুত (Available)',
+                  en: 'Available',
+                },
+                {
+                  id: 'TEMPORARILY_UNAVAILABLE' as const,
+                  bn: 'সাময়িক অনুপস্থিত',
+                  en: 'Temporarily Unavailable',
+                },
+                {
+                  id: 'DND' as const,
+                  bn: 'ডু নট ডিস্টার্ব (DND)',
+                  en: 'Do Not Disturb',
+                },
+              ] as const
+            ).map((opt) => {
+              const active = availabilityStatus === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() =>
+                    applyConsentAndAvailabilityUpdate({
+                      availabilityStatus: opt.id,
+                      confirmNow: opt.id === 'AVAILABLE',
+                    })
+                  }
+                  className={`min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap truncate ${
+                    active
+                      ? opt.id === 'AVAILABLE'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : opt.id === 'DND'
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : 'bg-slate-800 text-white dark:bg-slate-700 shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {lang === 'bn' ? opt.bn : opt.en}
+                </button>
+              );
+            })}
+          </div>
         </div>
+      </div>
+
+      {/* Contact Consent, Privacy Visibility & Emergency Alert Controls */}
+      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm space-y-4">
+        <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+          <div>
+            <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                {lang === 'bn'
+                  ? 'যোগাযোগের গোপনীয়তা ও জরুরি অ্যালার্ট নিয়ন্ত্রণ'
+                  : 'Contact Privacy & Emergency Alert Preferences'}
+              </span>
+            </h3>
+            <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
+              {lang === 'bn'
+                ? 'আপনার সম্মতি ছাড়া গোপন নম্বর কখনোই প্রকাশ করা হয় না। যেকোনো সময় সরাসরি কল বা অ্যালার্ট বিরত রাখতে পারবেন।'
+                : 'Your phone number is never shared without consent. Pause alerts or change who can contact you anytime.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+              {lang === 'bn' ? 'কে আপনাকে সরাসরি কল বা WhatsApp করতে পারবেন?' : 'Who can view & contact you directly?'}
+            </label>
+            <select
+              value={contactVisibility}
+              onChange={(e) =>
+                applyConsentAndAvailabilityUpdate({
+                  contactVisibility: e.target.value as ContactVisibility,
+                })
+              }
+              className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
+            >
+              <option value="PUBLIC_OPT_IN">
+                {lang === 'bn'
+                  ? 'সকল জরুরি রক্তপ্রার্থী — সরাসরি Call ও WhatsApp (দ্রুততম)'
+                  : 'All Emergency Seekers — Direct Call & WhatsApp (Fastest)'}
+              </option>
+              <option value="VERIFIED_SEEKERS">
+                {lang === 'bn'
+                  ? 'শুধু ভেরিফাইড লগইনকৃত রক্তপ্রার্থী'
+                  : 'Verified Signed-In Blood Seekers Only'}
+              </option>
+              <option value="REQUEST_ONLY">
+                {lang === 'bn'
+                  ? 'নম্বর গোপন — ইন-অ্যাপ চ্যাট বা অনুমতি অনুরোধ (Request Only)'
+                  : 'Private — In-App Chat or Consent Request Only'}
+              </option>
+            </select>
+          </div>
+
+          {contactVisibility !== 'REQUEST_ONLY' && availabilityStatus !== 'DND' && (
+            <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200">
+              <label className="inline-flex items-center gap-2 cursor-pointer min-h-[36px]">
+                <input
+                  type="checkbox"
+                  checked={allowCall}
+                  onChange={(e) =>
+                    applyConsentAndAvailabilityUpdate({ allowCall: e.target.checked })
+                  }
+                  className="w-4 h-4 rounded text-emerald-600"
+                />
+                <span>{lang === 'bn' ? 'ফোন কল অনুমোদিত' : 'Allow Phone Call'}</span>
+              </label>
+
+              <label className="inline-flex items-center gap-2 cursor-pointer min-h-[36px]">
+                <input
+                  type="checkbox"
+                  checked={allowWhatsApp}
+                  onChange={(e) =>
+                    applyConsentAndAvailabilityUpdate({ allowWhatsApp: e.target.checked })
+                  }
+                  className="w-4 h-4 rounded text-emerald-600"
+                />
+                <span>{lang === 'bn' ? 'WhatsApp অনুমোদিত' : 'Allow WhatsApp'}</span>
+              </label>
+
+              <label className="inline-flex items-center gap-2 cursor-pointer min-h-[36px]">
+                <input
+                  type="checkbox"
+                  checked={allowSms}
+                  onChange={(e) =>
+                    applyConsentAndAvailabilityUpdate({ allowSms: e.target.checked })
+                  }
+                  className="w-4 h-4 rounded text-emerald-600"
+                />
+                <span>{lang === 'bn' ? 'SMS অনুমোদিত' : 'Allow SMS'}</span>
+              </label>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() =>
+                applyConsentAndAvailabilityUpdate({
+                  emergencyAlertsOptIn: !emergencyAlertsOptIn,
+                })
+              }
+              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+            >
+              <span>
+                {lang === 'bn' ? 'জরুরি ব্রডকাস্ট অ্যালার্ট গ্রহণ' : 'Emergency Broadcast Opt-In'}
+              </span>
+              <span
+                className={`font-mono font-bold ${
+                  emergencyAlertsOptIn ? 'text-emerald-600' : 'text-slate-400'
+                }`}
+              >
+                {emergencyAlertsOptIn ? 'ON' : 'OFF'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                applyConsentAndAvailabilityUpdate({
+                  alertsPaused: !alertsPaused,
+                })
+              }
+              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+            >
+              <span className="flex items-center gap-1.5">
+                <BellOff className="w-3.5 h-3.5 text-amber-600" />
+                <span>{lang === 'bn' ? 'অ্যালার্ট সাময়িক বিরতি (Pause)' : 'Pause Alerts'}</span>
+              </span>
+              <span
+                className={`font-mono font-bold ${
+                  alertsPaused ? 'text-amber-600' : 'text-slate-400'
+                }`}
+              >
+                {alertsPaused ? 'PAUSED' : 'ACTIVE'}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Incoming Consent Contact Requests Inbox */}
+        {incomingContactRequests.length > 0 && (
+          <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+            <h4 className="text-xs font-bold text-slate-900 dark:text-white">
+              {lang === 'bn'
+                ? `নম্বর দেখার অনুমতি অনুরোধ (${incomingContactRequests.length})`
+                : `Consent Contact Requests (${incomingContactRequests.length})`}
+            </h4>
+            <div className="space-y-2">
+              {incomingContactRequests.slice(0, 6).map((item) => (
+                <div
+                  key={item.id}
+                  className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs"
+                >
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-900 dark:text-white truncate">
+                      {item.seekerName} · {item.bloodGroupNeeded} ({item.urgency})
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                      {item.hospitalName} · Callback: {item.seekerPhone}
+                    </div>
+                  </div>
+                  {item.status === 'PENDING' ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleRespondContactReq(item.id, true)}
+                        className="min-h-[38px] px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                        <span>{lang === 'bn' ? 'নম্বর শেয়ার করুন' : 'Approve & Share'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRespondContactReq(item.id, false)}
+                        className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer whitespace-nowrap"
+                      >
+                        {lang === 'bn' ? 'বাতিল' : 'Decline'}
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] font-mono font-bold text-slate-500 shrink-0">
+                      {item.status}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Donation Recovery & History Log Card */}

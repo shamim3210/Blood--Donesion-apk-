@@ -35,13 +35,13 @@
           "type": "string",
           "minLength": 6,
           "maxLength": 24,
-          "description": "Mandatory WhatsApp contact number for emergency coordination."
+          "description": "WhatsApp contact number for emergency coordination."
         },
         "facebookUrl": {
           "type": "string",
           "minLength": 8,
           "maxLength": 200,
-          "description": "Mandatory Facebook profile URL for donor verification."
+          "description": "Facebook profile URL for donor verification."
         },
         "bloodGroup": {
           "type": "string",
@@ -103,6 +103,47 @@
         "availableToDonate": {
           "type": "boolean",
           "description": "Whether the donor is currently available for emergency blood donation."
+        },
+        "availabilityStatus": {
+          "type": "string",
+          "enum": ["AVAILABLE", "TEMPORARILY_UNAVAILABLE", "DND"],
+          "maxLength": 28,
+          "description": "Granular donor availability state."
+        },
+        "availabilityConfirmedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the donor explicitly confirmed current availability."
+        },
+        "shareDirectContact": {
+          "type": "boolean",
+          "description": "Whether the donor explicitly opts into sharing direct phone/WhatsApp with seekers."
+        },
+        "contactVisibility": {
+          "type": "string",
+          "enum": ["PUBLIC_OPT_IN", "VERIFIED_SEEKERS", "REQUEST_ONLY"],
+          "maxLength": 24,
+          "description": "Who can view direct contact details when opted in."
+        },
+        "allowCall": {
+          "type": "boolean",
+          "description": "Whether direct phone dialer calls are permitted."
+        },
+        "allowWhatsApp": {
+          "type": "boolean",
+          "description": "Whether direct WhatsApp messages are permitted."
+        },
+        "allowSms": {
+          "type": "boolean",
+          "description": "Whether SMS fallback notifications are permitted."
+        },
+        "emergencyAlertsOptIn": {
+          "type": "boolean",
+          "description": "Whether the donor opts into concurrent emergency blood broadcast alerts."
+        },
+        "alertsPaused": {
+          "type": "boolean",
+          "description": "Whether emergency alerts are temporarily paused by the donor."
         },
         "totalDonations": {
           "type": "number",
@@ -297,11 +338,53 @@
           "type": "string",
           "minLength": 4,
           "maxLength": 24,
-          "description": "Masked phone indicator (non-PII, e.g. 017****89)."
+          "pattern": ".*\\*\\*.*",
+          "description": "Masked phone indicator guaranteed to obscure digits (non-PII, e.g. 0171****89)."
         },
         "available": {
           "type": "boolean",
           "description": "Current availability status."
+        },
+        "availabilityStatus": {
+          "type": "string",
+          "enum": ["AVAILABLE", "TEMPORARILY_UNAVAILABLE", "DND"],
+          "maxLength": 28,
+          "description": "Granular donor availability state."
+        },
+        "availabilityConfirmedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last server timestamp when availability was explicitly confirmed."
+        },
+        "shareDirectContact": {
+          "type": "boolean",
+          "description": "Whether direct Call/WhatsApp contact is enabled via /donorDirectContacts/{donorId}."
+        },
+        "contactVisibility": {
+          "type": "string",
+          "enum": ["PUBLIC_OPT_IN", "VERIFIED_SEEKERS", "REQUEST_ONLY"],
+          "maxLength": 24,
+          "description": "Privacy visibility tier for direct contact."
+        },
+        "allowCall": {
+          "type": "boolean",
+          "description": "Whether direct phone call is enabled."
+        },
+        "allowWhatsApp": {
+          "type": "boolean",
+          "description": "Whether direct WhatsApp contact is enabled."
+        },
+        "allowSms": {
+          "type": "boolean",
+          "description": "Whether SMS fallback alerts are enabled."
+        },
+        "emergencyAlertsOptIn": {
+          "type": "boolean",
+          "description": "Whether concurrent SOS broadcast alerts are enabled."
+        },
+        "alertsPaused": {
+          "type": "boolean",
+          "description": "Whether alerts are temporarily paused."
         },
         "lastDonatedDate": {
           "type": "string",
@@ -395,6 +478,302 @@
         "updatedAt"
       ]
     },
+    "DonorDirectContact": {
+      "title": "DonorDirectContact",
+      "description": "Consent-isolated direct contact record (allow list: if false) readable via single-doc get ONLY when the donor explicitly opted into sharing contact details and is not in DND.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Donor UID matching document ID."
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 24,
+          "description": "Opted-in direct call phone number."
+        },
+        "whatsappPhone": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Opted-in WhatsApp number."
+        },
+        "shareDirectContact": {
+          "type": "boolean",
+          "description": "Explicit donor opt-in flag."
+        },
+        "contactVisibility": {
+          "type": "string",
+          "enum": ["PUBLIC_OPT_IN", "VERIFIED_SEEKERS", "REQUEST_ONLY"],
+          "maxLength": 24,
+          "description": "Visibility audience rule enforced at Firestore kernel."
+        },
+        "availabilityStatus": {
+          "type": "string",
+          "enum": ["AVAILABLE", "TEMPORARILY_UNAVAILABLE", "DND"],
+          "maxLength": 28,
+          "description": "Availability status; DND immediately blocks non-owner reads."
+        },
+        "allowCall": {
+          "type": "boolean",
+          "description": "Whether phone calls are allowed."
+        },
+        "allowWhatsApp": {
+          "type": "boolean",
+          "description": "Whether WhatsApp is allowed."
+        },
+        "allowSms": {
+          "type": "boolean",
+          "description": "Whether SMS is allowed."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "phone",
+        "whatsappPhone",
+        "shareDirectContact",
+        "contactVisibility",
+        "availabilityStatus",
+        "allowCall",
+        "allowWhatsApp",
+        "allowSms",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ContactConsentRequest": {
+      "title": "ContactConsentRequest",
+      "description": "Pair-isolated consent contact request from a verified seeker to a REQUEST_ONLY donor.",
+      "type": "object",
+      "properties": {
+        "seekerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Verified seeker UID."
+        },
+        "seekerName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Seeker display name."
+        },
+        "seekerPhone": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 24,
+          "description": "Seeker callback phone number."
+        },
+        "donorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Target donor UID."
+        },
+        "donorName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Target donor display name."
+        },
+        "bloodGroupNeeded": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Blood group needed."
+        },
+        "hospitalName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Hospital name."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": ["CRITICAL", "URGENT", "STANDARD"],
+          "maxLength": 12,
+          "description": "Urgency level."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "APPROVED", "DECLINED"],
+          "maxLength": 12,
+          "description": "Consent status."
+        },
+        "approvedPhone": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Donor phone shared upon APPROVED."
+        },
+        "approvedWhatsApp": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Donor WhatsApp shared upon APPROVED."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": [
+        "seekerUid",
+        "seekerName",
+        "seekerPhone",
+        "donorUid",
+        "donorName",
+        "bloodGroupNeeded",
+        "hospitalName",
+        "urgency",
+        "status",
+        "approvedPhone",
+        "approvedWhatsApp",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RequestAlert": {
+      "title": "RequestAlert",
+      "description": "Deterministic concurrent donor notification & response tracking record (requestId__donorUid).",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent blood request ID."
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Seeker UID who owns the parent blood request."
+        },
+        "donorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Target matching opted-in donor UID."
+        },
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Required blood group."
+        },
+        "hospitalName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Hospital name."
+        },
+        "district": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "District."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": ["CRITICAL", "URGENT", "STANDARD"],
+          "maxLength": 12,
+          "description": "Urgency level."
+        },
+        "seekerCallbackPhone": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Seeker callback phone shared strictly with matched notified donors when seeker opted in."
+        },
+        "escalationLevel": {
+          "type": "number",
+          "description": "Escalation tier (0-4) at which this alert was dispatched."
+        },
+        "deliveryState": {
+          "type": "string",
+          "enum": [
+            "DISPATCHED",
+            "VIEWED",
+            "RESPONDED_ACCEPT",
+            "RESPONDED_DECLINE",
+            "STOPPED_RESOLVED"
+          ],
+          "maxLength": 24,
+          "description": "Honest notification & response state."
+        },
+        "responseNote": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "Optional donor response note."
+        },
+        "responderPhone": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Optional callback phone explicitly shared by responding donor."
+        },
+        "responderName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80,
+          "description": "Responding donor display name."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable dispatch server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last state transition server timestamp."
+        }
+      },
+      "required": [
+        "requestId",
+        "authorUid",
+        "donorUid",
+        "bloodGroup",
+        "hospitalName",
+        "district",
+        "urgency",
+        "seekerCallbackPhone",
+        "escalationLevel",
+        "deliveryState",
+        "responseNote",
+        "responderPhone",
+        "responderName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
     "BloodRequestDoc": {
       "title": "BloodRequestDoc",
       "description": "Emergency SOS blood request broadcast record.",
@@ -461,6 +840,12 @@
           "maxLength": 12,
           "description": "Urgency level."
         },
+        "requiredTimeWindow": {
+          "type": "string",
+          "enum": ["IMMEDIATE_2H", "TODAY_6H", "WITHIN_24H", "SCHEDULED"],
+          "maxLength": 20,
+          "description": "Structured required time window."
+        },
         "requiredDate": {
           "type": "string",
           "minLength": 2,
@@ -475,9 +860,69 @@
         },
         "status": {
           "type": "string",
-          "enum": ["ACTIVE", "FULFILLED", "CANCELLED"],
+          "enum": ["ACTIVE", "FULFILLED", "CANCELLED", "EXPIRED"],
           "maxLength": 12,
-          "description": "Lifecycle status with terminal locking on FULFILLED/CANCELLED."
+          "description": "Lifecycle status with terminal locking on FULFILLED/CANCELLED/EXPIRED."
+        },
+        "lifecycleState": {
+          "type": "string",
+          "enum": [
+            "SEARCHING",
+            "DONORS_NOTIFIED",
+            "RESPONSES_RECEIVED",
+            "CONTACT_ATTEMPTED",
+            "DONOR_CONFIRMED",
+            "FULFILLED",
+            "NO_RESPONSE",
+            "CANCELLED",
+            "EXPIRED"
+          ],
+          "maxLength": 28,
+          "description": "Granular tracking stage."
+        },
+        "notifiedCount": {
+          "type": "number",
+          "description": "Count of matched donors notified concurrently."
+        },
+        "viewedCount": {
+          "type": "number",
+          "description": "Count of notified donors who viewed the alert."
+        },
+        "respondedCount": {
+          "type": "number",
+          "description": "Count of donors who responded."
+        },
+        "contactAttemptsCount": {
+          "type": "number",
+          "description": "Count of seeker contact attempts."
+        },
+        "confirmedDonorId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128,
+          "description": "Confirmed donor UID or ID."
+        },
+        "confirmedDonorName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80,
+          "description": "Confirmed donor display name."
+        },
+        "escalationLevel": {
+          "type": "number",
+          "description": "Current escalation tier (0-4)."
+        },
+        "searchRadiusKm": {
+          "type": "number",
+          "description": "Current active search radius in km."
+        },
+        "escalationIntervalMinutes": {
+          "type": "number",
+          "description": "Configured interval in minutes before no-response escalation."
+        },
+        "expiresAtMs": {
+          "type": "number",
+          "description": "Epoch milliseconds when request expires automatically."
         },
         "exchangeAllowed": {
           "type": "boolean",
@@ -1039,9 +1484,21 @@
       "schema": { "$ref": "#/entities/DonorCard" },
       "description": "Publicly searchable voluntary blood donor cards isolated from raw PII."
     },
+    "/donorDirectContacts/{donorId}": {
+      "schema": { "$ref": "#/entities/DonorDirectContact" },
+      "description": "Consent-isolated direct phone/WhatsApp records (allow list: if false) accessible via single-doc get only when donor explicitly opted in."
+    },
+    "/contactRequests/{contactReqId}": {
+      "schema": { "$ref": "#/entities/ContactConsentRequest" },
+      "description": "Pair-isolated consent contact requests for REQUEST_ONLY donors."
+    },
+    "/requestAlerts/{alertId}": {
+      "schema": { "$ref": "#/entities/RequestAlert" },
+      "description": "Concurrent multi-donor emergency broadcast alerts and honest delivery/response states."
+    },
     "/requests/{requestId}": {
       "schema": { "$ref": "#/entities/BloodRequestDoc" },
-      "description": "Emergency SOS blood requests with terminal state locking."
+      "description": "Emergency SOS blood requests with lifecycle tracking and terminal state locking."
     },
     "/bloodStock/{groupId}": {
       "schema": { "$ref": "#/entities/BloodStockDoc" },

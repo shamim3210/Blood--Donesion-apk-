@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 import {
   initializeAuth,
   getAuth,
@@ -41,12 +42,44 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-import { BloodGroup, BloodRequest, Donor, UserAccount } from './types';
+import {
+  BloodGroup,
+  BloodRequest,
+  ContactConsentRequestItem,
+  ContactVisibility,
+  Donor,
+  DonorAvailabilityStatus,
+  RequestAlertItem,
+  RequestLifecycleState,
+  RequiredTimeWindow,
+  UserAccount,
+} from './types';
+import { deriveRequestLifecycleState } from './utils/donorMatcher';
 
 // ============================================================================
 // 1. INITIALIZE FIREBASE SDK (Iframe-Resilient Persistence + Popup Resolver)
 // ============================================================================
 const app = initializeApp(firebaseConfig);
+
+const rawRecaptchaSiteKey = String(
+  (import.meta as any).env?.VITE_RECAPTCHA_V3_SITE_KEY || ''
+).trim();
+
+export const IS_APP_CHECK_CONFIGURED = Boolean(
+  rawRecaptchaSiteKey && rawRecaptchaSiteKey !== 'YOUR_RECAPTCHA_V3_SITE_KEY'
+);
+
+if (typeof window !== 'undefined' && IS_APP_CHECK_CONFIGURED) {
+  try {
+    initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider(rawRecaptchaSiteKey),
+      isTokenAutoRefreshEnabled: true,
+    });
+  } catch (e) {
+    console.warn('Firebase App Check init skipped:', e);
+  }
+}
+
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 function createResilientAuth(): Auth {
@@ -74,11 +107,16 @@ googleProvider.setCustomParameters({
 });
 
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
+export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 export const FIREBASE_PROJECT_NUMBER = firebaseConfig.messagingSenderId || '194868852449';
 export const FIREBASE_AUTH_PROVIDERS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
 export const FIREBASE_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
 export const FIREBASE_PROJECT_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/settings/general`;
+export const FIREBASE_DATA_CONSOLE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/data`;
 export const FIREBASE_RULES_CONSOLE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/rules`;
+export const FIREBASE_APP_CHECK_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/appcheck`;
+export const FIREBASE_BACKUPS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/backups`;
+export const FIREBASE_USAGE_BUDGET_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/usage`;
 export const GCP_API_CREDENTIALS_URL = `https://console.cloud.google.com/apis/credentials?project=${firebaseConfig.projectId}`;
 export const GCP_TOKEN_SERVICE_API_URL = `https://console.developers.google.com/apis/api/securetoken.googleapis.com/overview?project=${FIREBASE_PROJECT_NUMBER}`;
 
@@ -485,14 +523,24 @@ export function normalizeAsciiDigits(input: string): string {
   return (input || '').replace(/[০-৯]/g, (ch) => BANGLA_DIGIT_MAP[ch] ?? ch);
 }
 
+export function sanitizeSafeText(raw: string | undefined | null): string {
+  return (raw ?? '')
+    .replace(/<\s*\/?\s*script\b[^>]*>/gi, '')
+    .replace(/javascript\s*:/gi, '')
+    .replace(/vbscript\s*:/gi, '')
+    .replace(/data\s*:\s*text\/html/gi, '')
+    .replace(/on(?:error|load|click)\s*=/gi, '')
+    .trim();
+}
+
 function clampStr(
   val: string | undefined | null,
   minLen: number,
   maxLen: number,
   fallback: string
 ): string {
-  const clean = (val ?? '').trim();
-  if (clean.length < minLen) return fallback.slice(0, maxLen);
+  const clean = sanitizeSafeText(val);
+  if (clean.length < minLen) return sanitizeSafeText(fallback).slice(0, maxLen);
   return clean.slice(0, maxLen);
 }
 
@@ -1111,6 +1159,22 @@ export async function fetchUserProfileFromFirestore(uid: string): Promise<UserAc
       gender: data.gender,
       weightKg: data.weightKg,
       availableToDonate: data.availableToDonate,
+      availabilityStatus:
+        (data.availabilityStatus as DonorAvailabilityStatus | undefined) ||
+        (data.availableToDonate ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE'),
+      availabilityConfirmedAtMs:
+        data.availabilityConfirmedAt instanceof Timestamp
+          ? data.availabilityConfirmedAt.toMillis()
+          : undefined,
+      shareDirectContact:
+        typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : undefined,
+      contactVisibility: data.contactVisibility as ContactVisibility | undefined,
+      allowCall: typeof data.allowCall === 'boolean' ? data.allowCall : true,
+      allowWhatsApp: typeof data.allowWhatsApp === 'boolean' ? data.allowWhatsApp : true,
+      allowSms: typeof data.allowSms === 'boolean' ? data.allowSms : true,
+      emergencyAlertsOptIn:
+        typeof data.emergencyAlertsOptIn === 'boolean' ? data.emergencyAlertsOptIn : true,
+      alertsPaused: typeof data.alertsPaused === 'boolean' ? data.alertsPaused : false,
       totalDonations: data.totalDonations,
       createdAt:
         data.createdAt instanceof Timestamp
@@ -1158,6 +1222,22 @@ export function subscribeMyUserProfile(
           gender: data.gender,
           weightKg: data.weightKg,
           availableToDonate: data.availableToDonate,
+          availabilityStatus:
+            (data.availabilityStatus as DonorAvailabilityStatus | undefined) ||
+            (data.availableToDonate ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE'),
+          availabilityConfirmedAtMs:
+            data.availabilityConfirmedAt instanceof Timestamp
+              ? data.availabilityConfirmedAt.toMillis()
+              : undefined,
+          shareDirectContact:
+            typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : undefined,
+          contactVisibility: data.contactVisibility as ContactVisibility | undefined,
+          allowCall: typeof data.allowCall === 'boolean' ? data.allowCall : true,
+          allowWhatsApp: typeof data.allowWhatsApp === 'boolean' ? data.allowWhatsApp : true,
+          allowSms: typeof data.allowSms === 'boolean' ? data.allowSms : true,
+          emergencyAlertsOptIn:
+            typeof data.emergencyAlertsOptIn === 'boolean' ? data.emergencyAlertsOptIn : true,
+          alertsPaused: typeof data.alertsPaused === 'boolean' ? data.alertsPaused : false,
           totalDonations: data.totalDonations,
           createdAt:
             data.createdAt instanceof Timestamp
@@ -1189,6 +1269,24 @@ export async function ensureUserAutoSyncedInFirestore(
   const existing = await fetchUserProfileFromFirestore(validUser.uid);
   if (existing) {
     if (isAdmin) existing.role = 'ADMIN';
+    // Smart 90-Day Medical Recovery Auto-Unlock: if donor was resting after a logged donation
+    // and >= 90 days have elapsed since lastDonatedDate, automatically restore availability!
+    try {
+      const dSnap = await getDoc(doc(db, 'donors', validUser.uid));
+      if (dSnap.exists()) {
+        const dData = dSnap.data();
+        if (dData.available === false && typeof dData.lastDonatedDate === 'string' && dData.lastDonatedDate.length >= 8) {
+          const donatedMs = new Date(dData.lastDonatedDate).getTime();
+          if (Number.isFinite(donatedMs)) {
+            const daysElapsed = Math.floor((Date.now() - donatedMs) / (1000 * 60 * 60 * 24));
+            if (daysElapsed >= 90) {
+              await syncDonorAvailabilityInFirestore(true);
+              existing.availableToDonate = true;
+            }
+          }
+        }
+      }
+    } catch {}
     return existing;
   }
 
@@ -1228,6 +1326,14 @@ export async function ensureUserAutoSyncedInFirestore(
       gender: 'MALE',
       weightKg: 62,
       availableToDonate: true,
+      availabilityStatus: 'AVAILABLE',
+      shareDirectContact: false,
+      contactVisibility: 'REQUEST_ONLY',
+      allowCall: true,
+      allowWhatsApp: true,
+      allowSms: true,
+      emergencyAlertsOptIn: true,
+      alertsPaused: false,
       totalDonations: 0,
       createdAt: new Date().toISOString(),
     };
@@ -1241,6 +1347,14 @@ export async function ensureUserAutoSyncedInFirestore(
       upazila: autoAccount.upazila,
       phone: safePhone,
       available: true,
+      availabilityStatus: 'AVAILABLE',
+      shareDirectContact: false,
+      contactVisibility: 'REQUEST_ONLY',
+      allowCall: true,
+      allowWhatsApp: true,
+      allowSms: true,
+      emergencyAlertsOptIn: true,
+      alertsPaused: false,
       lastDonatedDate: '',
       totalDonations: 0,
       verifiedBadge: isAdmin,
@@ -1265,11 +1379,76 @@ export async function ensureUserAutoSyncedInFirestore(
   }
 }
 
+export interface UnmaskedDonorContactPayload {
+  phone: string;
+  whatsappPhone?: string;
+  facebookUrl?: string;
+  allowCall?: boolean;
+  allowWhatsApp?: boolean;
+  allowSms?: boolean;
+  contactVisibility?: ContactVisibility;
+  source: 'CONSENT_DIRECT' | 'APPROVED_REQUEST' | 'OWNER_OR_ADMIN';
+}
+
+/**
+ * Fetches an unmasked donor phone/WhatsApp ONLY when authorized by Firestore Zero-Trust rules:
+ * 1. Consent-gated `/donorDirectContacts/{donorUid}` (`allow list: if false`; single `get` allowed
+ *    when `shareDirectContact == true`, `availabilityStatus != 'DND'`, and visibility allows caller).
+ * 2. Approved `/contactRequests/{seekerUid__donorUid}` when a private donor approved this seeker.
+ * 3. `/users/{donorUid}` strictly when caller is the donor owner or a verified Admin.
+ * Never throws on privacy denial—returns `null` cleanly so UI shows private fallback options.
+ */
 export async function fetchUnmaskedDonorContactIfAuthorized(
   donorUid: string
-): Promise<{ phone: string; whatsappPhone?: string; facebookUrl?: string } | null> {
+): Promise<UnmaskedDonorContactPayload | null> {
+  if (!donorUid || !/^[a-zA-Z0-9_-]{1,128}$/.test(donorUid)) return null;
+  await waitForHealthyAuthBoot();
+
+  // Path 1: Consent-gated /donorDirectContacts/{donorUid} (works for public or verified seekers per donor's choice)
+  try {
+    const directSnap = await getDoc(doc(db, 'donorDirectContacts', donorUid));
+    if (directSnap.exists()) {
+      const d = directSnap.data();
+      if (d.shareDirectContact === true && d.availabilityStatus !== 'DND' && d.phone) {
+        return {
+          phone: String(d.phone),
+          whatsappPhone: d.whatsappPhone ? String(d.whatsappPhone) : String(d.phone),
+          allowCall: d.allowCall !== false,
+          allowWhatsApp: d.allowWhatsApp !== false,
+          allowSms: d.allowSms !== false,
+          contactVisibility: d.contactVisibility as ContactVisibility | undefined,
+          source: 'CONSENT_DIRECT',
+        };
+      }
+    }
+  } catch {
+    // Expected PERMISSION_DENIED when donor opted into REQUEST_ONLY, DND, or VERIFIED_SEEKERS while signed out
+  }
+
   const current = await ensureValidAuthSession();
   if (!current) return null;
+
+  // Path 2: Approved 1-to-1 /contactRequests/{seekerUid__donorUid}
+  if (current.uid !== donorUid) {
+    try {
+      const crSnap = await getDoc(doc(db, 'contactRequests', `${current.uid}__${donorUid}`));
+      if (crSnap.exists()) {
+        const cr = crSnap.data();
+        if (cr.status === 'APPROVED' && cr.approvedPhone) {
+          return {
+            phone: String(cr.approvedPhone),
+            whatsappPhone: cr.approvedWhatsApp ? String(cr.approvedWhatsApp) : String(cr.approvedPhone),
+            allowCall: true,
+            allowWhatsApp: true,
+            allowSms: true,
+            source: 'APPROVED_REQUEST',
+          };
+        }
+      }
+    } catch {}
+  }
+
+  // Path 3: Owner or Verified Admin reading /users/{donorUid}
   try {
     const isAdmin = await checkIsVerifiedAdminInFirestore(current);
     if (current.uid !== donorUid && !isAdmin) return null;
@@ -1280,6 +1459,11 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
       phone: d.phone,
       whatsappPhone: d.whatsappPhone,
       facebookUrl: d.facebookUrl,
+      allowCall: d.allowCall !== false,
+      allowWhatsApp: d.allowWhatsApp !== false,
+      allowSms: d.allowSms !== false,
+      contactVisibility: d.contactVisibility as ContactVisibility | undefined,
+      source: 'OWNER_OR_ADMIN',
     };
   } catch {
     return null;
@@ -1332,6 +1516,25 @@ export async function registerSmartAccountInFirestore(params: {
   const userRef = doc(db, 'users', uid);
   const existingUserSnap = await getDoc(userRef);
 
+  const resolvedStatus: DonorAvailabilityStatus =
+    account.availabilityStatus ||
+    donor.availabilityStatus ||
+    (account.availableToDonate ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE');
+  const resolvedAvailable = resolvedStatus === 'AVAILABLE';
+  const resolvedVisibility: ContactVisibility =
+    account.contactVisibility ||
+    donor.contactVisibility ||
+    (account.shareDirectContact === false ? 'REQUEST_ONLY' : 'PUBLIC_OPT_IN');
+  const resolvedShareDirect =
+    typeof account.shareDirectContact === 'boolean'
+      ? account.shareDirectContact && resolvedVisibility !== 'REQUEST_ONLY'
+      : resolvedVisibility !== 'REQUEST_ONLY';
+  const resolvedAllowCall = account.allowCall !== false;
+  const resolvedAllowWhatsApp = account.allowWhatsApp !== false;
+  const resolvedAllowSms = account.allowSms !== false;
+  const resolvedEmergencyOptIn = account.emergencyAlertsOptIn !== false;
+  const resolvedAlertsPaused = account.alertsPaused === true;
+
   const userPayloadBase = {
     uid,
     name: clampStr(account.name, 2, 80, 'Blood Donor'),
@@ -1354,7 +1557,16 @@ export async function registerSmartAccountInFirestore(params: {
     age: clampNum(account.age, 18, 65, 24),
     gender: account.gender || 'MALE',
     weightKg: clampNum(account.weightKg, 40, 180, 62),
-    availableToDonate: Boolean(account.availableToDonate),
+    availableToDonate: resolvedAvailable,
+    availabilityStatus: resolvedStatus,
+    availabilityConfirmedAt: serverTimestamp(),
+    shareDirectContact: resolvedShareDirect,
+    contactVisibility: resolvedVisibility,
+    allowCall: resolvedAllowCall,
+    allowWhatsApp: resolvedAllowWhatsApp,
+    allowSms: resolvedAllowSms,
+    emergencyAlertsOptIn: resolvedEmergencyOptIn,
+    alertsPaused: resolvedAlertsPaused,
     totalDonations: clampNum(account.totalDonations, 0, 500, 0),
     updatedAt: serverTimestamp(),
   };
@@ -1387,7 +1599,16 @@ export async function registerSmartAccountInFirestore(params: {
     district: clampStr(donor.district, 2, 40, 'dhaka'),
     upazila: clampStr(donor.upazila, 2, 50, 'sadar'),
     maskedPhone: maskPhoneNumber(normalizedPhone || donor.phone),
-    available: Boolean(donor.available),
+    available: resolvedAvailable,
+    availabilityStatus: resolvedStatus,
+    availabilityConfirmedAt: serverTimestamp(),
+    shareDirectContact: resolvedShareDirect,
+    contactVisibility: resolvedVisibility,
+    allowCall: resolvedAllowCall,
+    allowWhatsApp: resolvedAllowWhatsApp,
+    allowSms: resolvedAllowSms,
+    emergencyAlertsOptIn: resolvedEmergencyOptIn,
+    alertsPaused: resolvedAlertsPaused,
     lastDonatedDate: (donor.lastDonatedDate || '').slice(0, 20),
     totalDonations: clampNum(donor.totalDonations, 0, 500, 0),
     verifiedBadge: alreadyAdmin ? true : false,
@@ -1428,6 +1649,37 @@ export async function registerSmartAccountInFirestore(params: {
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
   }
+
+  // 4. Sync consent-isolated /donorDirectContacts/{uid} AFTER /users/{uid} exists
+  try {
+    const directRef = doc(db, 'donorDirectContacts', uid);
+    const existingDirectSnap = await getDoc(directRef);
+    const hasValidRealPhone =
+      normalizedPhone.length >= 10 && normalizedPhone !== '01700000000';
+
+    if (resolvedShareDirect && hasValidRealPhone) {
+      const directPayload = {
+        ownerUid: uid,
+        phone: clampStr(normalizedPhone, 6, 24, '01700000000'),
+        whatsappPhone: clampStr(normalizedWa, 6, 24, normalizedPhone).slice(0, 24),
+        shareDirectContact: true,
+        contactVisibility: resolvedVisibility,
+        availabilityStatus: resolvedStatus,
+        allowCall: resolvedAllowCall,
+        allowWhatsApp: resolvedAllowWhatsApp,
+        allowSms: resolvedAllowSms,
+        createdAt: existingDirectSnap.exists()
+          ? existingDirectSnap.data().createdAt
+          : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      await setDoc(directRef, directPayload);
+    } else if (existingDirectSnap.exists()) {
+      await deleteDoc(directRef);
+    }
+  } catch (err) {
+    console.warn('Direct contact vault sync warning:', err);
+  }
 }
 
 export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => void {
@@ -1439,12 +1691,19 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
       (snapshot) => {
         const mapped = snapshot.docs.map((d) => {
           const data = d.data();
-          const sortMs =
+          const updatedAtMs =
             data.updatedAt instanceof Timestamp
               ? data.updatedAt.toMillis()
               : data.createdAt instanceof Timestamp
                 ? data.createdAt.toMillis()
                 : 0;
+          const confirmedAtMs =
+            data.availabilityConfirmedAt instanceof Timestamp
+              ? data.availabilityConfirmedAt.toMillis()
+              : undefined;
+          const availabilityStatus: DonorAvailabilityStatus =
+            (data.availabilityStatus as DonorAvailabilityStatus | undefined) ||
+            (data.available ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE');
           const donor: Donor = {
             id: d.id,
             name: data.name,
@@ -1453,7 +1712,20 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
             district: data.district,
             upazila: data.upazila,
             phone: data.maskedPhone || '017****00',
-            available: Boolean(data.available),
+            available: Boolean(data.available) && availabilityStatus === 'AVAILABLE',
+            availabilityStatus,
+            availabilityConfirmedAtMs: confirmedAtMs,
+            updatedAtMs: updatedAtMs || undefined,
+            shareDirectContact:
+              typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : false,
+            contactVisibility:
+              (data.contactVisibility as ContactVisibility | undefined) || 'REQUEST_ONLY',
+            allowCall: data.allowCall !== false,
+            allowWhatsApp: data.allowWhatsApp !== false,
+            allowSms: data.allowSms !== false,
+            emergencyAlertsOptIn: data.emergencyAlertsOptIn !== false,
+            alertsPaused: data.alertsPaused === true,
+            isCloudRecord: true,
             lastDonatedDate: data.lastDonatedDate || '',
             totalDonations: Number(data.totalDonations) || 0,
             verifiedBadge: Boolean(data.verifiedBadge),
@@ -1466,7 +1738,7 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
             avatar: data.avatar || DEFAULT_AVATAR_DATA_URI,
             reliabilityScore: data.verifiedBadge ? 99 : 92,
           };
-          return { donor, sortMs };
+          return { donor, sortMs: confirmedAtMs || updatedAtMs };
         });
         mapped.sort((a, b) => b.sortMs - a.sortMs);
         onData(mapped.map((m) => m.donor));
@@ -1487,14 +1759,23 @@ export function subscribePublicRequests(onData: (requests: BloodRequest[]) => vo
       (snapshot) => {
         const mapped = snapshot.docs.map((d) => {
           const data = d.data();
-          const sortMs =
+          const createdAtMs =
             data.createdAt instanceof Timestamp
               ? data.createdAt.toMillis()
               : data.updatedAt instanceof Timestamp
                 ? data.updatedAt.toMillis()
                 : 0;
-          const req: BloodRequest = {
+          const status = (data.status as BloodRequest['status']) || 'ACTIVE';
+          const notifiedCount = Number(data.notifiedCount) || 0;
+          const viewedCount = Number(data.viewedCount) || 0;
+          const respondedCount = Number(data.respondedCount) || 0;
+          const contactAttemptsCount = Number(data.contactAttemptsCount) || 0;
+          const expiresAtMs =
+            typeof data.expiresAtMs === 'number' ? data.expiresAtMs : undefined;
+
+          const baseReq: BloodRequest = {
             id: d.id,
+            authorUid: typeof data.authorUid === 'string' ? data.authorUid : undefined,
             patientName: data.patientName,
             patientAge: Number(data.patientAge) || 25,
             bloodGroup: data.bloodGroup as BloodGroup,
@@ -1505,6 +1786,8 @@ export function subscribePublicRequests(onData: (requests: BloodRequest[]) => vo
             district: data.district,
             upazila: data.upazila,
             urgency: data.urgency || 'CRITICAL',
+            requiredTimeWindow:
+              (data.requiredTimeWindow as RequiredTimeWindow | undefined) || 'IMMEDIATE_2H',
             contactName: data.patientName,
             contactPhone: 'হাসপাতাল জরুরি কাউন্টার',
             requiredDate: data.requiredDate || 'জরুরি',
@@ -1514,10 +1797,29 @@ export function subscribePublicRequests(onData: (requests: BloodRequest[]) => vo
               data.createdAt instanceof Timestamp
                 ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 : 'এইমাত্র',
-            status: data.status || 'ACTIVE',
+            createdAtMs: createdAtMs || undefined,
+            expiresAtMs,
+            status,
+            lifecycleState: data.lifecycleState as RequestLifecycleState | undefined,
+            notifiedCount,
+            viewedCount,
+            respondedCount,
+            contactAttemptsCount,
+            confirmedDonorId:
+              typeof data.confirmedDonorId === 'string' && data.confirmedDonorId
+                ? data.confirmedDonorId
+                : undefined,
+            confirmedDonorName:
+              typeof data.confirmedDonorName === 'string' && data.confirmedDonorName
+                ? data.confirmedDonorName
+                : undefined,
+            escalationLevel: Number(data.escalationLevel) || 0,
+            searchRadiusKm: Number(data.searchRadiusKm) || 10,
+            escalationIntervalMinutes: Number(data.escalationIntervalMinutes) || 10,
             exchangeAllowed: Boolean(data.exchangeAllowed),
           };
-          return { req, sortMs };
+          baseReq.lifecycleState = deriveRequestLifecycleState(baseReq);
+          return { req: baseReq, sortMs: createdAtMs };
         });
         mapped.sort((a, b) => b.sortMs - a.sortMs);
         onData(mapped.map((m) => m.req));
@@ -1529,9 +1831,10 @@ export function subscribePublicRequests(onData: (requests: BloodRequest[]) => vo
   });
 }
 
-export async function createBloodRequestInFirestore(newReq: BloodRequest): Promise<void> {
+export async function createBloodRequestInFirestore(newReq: BloodRequest): Promise<string | null> {
   const user = await ensureValidAuthSession();
-  if (!user || !isUserVerifiedForWrites(user)) return;
+  if (!user || !isUserVerifiedForWrites(user)) return null;
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
 
   const safeId = newReq.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || `req_${Date.now()}`;
   const path = `requests/${safeId}`;
@@ -1548,14 +1851,30 @@ export async function createBloodRequestInFirestore(newReq: BloodRequest): Promi
       district: clampStr(newReq.district, 2, 40, 'dhaka'),
       upazila: clampStr(newReq.upazila, 2, 50, 'sadar'),
       urgency: newReq.urgency || 'CRITICAL',
+      requiredTimeWindow: newReq.requiredTimeWindow || 'IMMEDIATE_2H',
       requiredDate: clampStr(newReq.requiredDate, 2, 30, 'আজ জরুরি'),
       reason: clampStr(newReq.reason, 2, 300, 'জরুরি রক্তের প্রয়োজন'),
       status: 'ACTIVE',
+      lifecycleState: newReq.lifecycleState || 'SEARCHING',
+      notifiedCount: clampNum(newReq.notifiedCount ?? 0, 0, 5000, 0),
+      viewedCount: clampNum(newReq.viewedCount ?? 0, 0, 5000, 0),
+      respondedCount: clampNum(newReq.respondedCount ?? 0, 0, 5000, 0),
+      contactAttemptsCount: clampNum(newReq.contactAttemptsCount ?? 0, 0, 5000, 0),
+      confirmedDonorId: clampStr(newReq.confirmedDonorId || '', 0, 128, ''),
+      confirmedDonorName: clampStr(newReq.confirmedDonorName || '', 0, 80, ''),
+      escalationLevel: clampNum(newReq.escalationLevel ?? 0, 0, 10, 0),
+      searchRadiusKm: clampNum(newReq.searchRadiusKm ?? 10, 1, 1000, 10),
+      escalationIntervalMinutes: clampNum(newReq.escalationIntervalMinutes ?? 10, 1, 180, 10),
+      expiresAtMs:
+        typeof newReq.expiresAtMs === 'number' && newReq.expiresAtMs > 0
+          ? newReq.expiresAtMs
+          : Date.now() + 24 * 60 * 60 * 1000,
       exchangeAllowed: Boolean(newReq.exchangeAllowed),
       isPublic: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    return safeId;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
@@ -1564,6 +1883,7 @@ export async function createBloodRequestInFirestore(newReq: BloodRequest): Promi
 export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<boolean> {
   const user = await ensureValidAuthSession();
   if (!user || !isUserVerifiedForWrites(user)) return false;
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
   const safeId = reqId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
   const path = `requests/${safeId}`;
   try {
@@ -1574,9 +1894,14 @@ export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<
     if (prev.status !== 'ACTIVE' || prev.unitsCollected >= prev.unitsNeeded) return false;
     const nextCollected = prev.unitsCollected + 1;
     const nextStatus = nextCollected >= prev.unitsNeeded ? 'FULFILLED' : 'ACTIVE';
+    const nextResponded = clampNum((Number(prev.respondedCount) || 0) + 1, 1, 5000, 1);
+    const nextLifecycle: RequestLifecycleState =
+      nextStatus === 'FULFILLED' ? 'FULFILLED' : 'RESPONSES_RECEIVED';
     await setDoc(ref, {
       ...prev,
       unitsCollected: nextCollected,
+      respondedCount: nextResponded,
+      lifecycleState: nextLifecycle,
       status: nextStatus,
       updatedAt: serverTimestamp(),
     });
@@ -2049,11 +2374,12 @@ export async function sendCommunityMessageInFirestore(params: {
   if (!user || !isUserVerifiedForWrites(user)) {
     throw new Error('AUTH_REQUIRED');
   }
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
   const safeAttachment = params.attachmentUrl
     ? await compressChatAttachmentImage(params.attachmentUrl)
     : '';
   const fallbackText = safeAttachment ? '📷 হাসপাতালের রিকুইজিশন স্লিপ / প্রেসক্রিপশন ছবি' : '';
-  const cleanText = (params.text.trim() || fallbackText).slice(0, 2000);
+  const cleanText = sanitizeSafeText(params.text.trim() || fallbackText).slice(0, 2000);
   if (!cleanText) return;
 
   const msgId = `cmsg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2065,10 +2391,10 @@ export async function sendCommunityMessageInFirestore(params: {
     senderName: clampStr(params.senderName || user.displayName || 'রক্তদাতা', 1, 80, 'রক্তদাতা'),
     senderBloodGroup: params.senderBloodGroup || 'B+',
     senderAvatar: safeAvatar,
-    senderDistrict: (params.senderDistrict || '').trim().slice(0, 50),
+    senderDistrict: sanitizeSafeText(params.senderDistrict).slice(0, 50),
     text: cleanText,
-    replyToName: (params.replyToName || '').trim().slice(0, 80),
-    replyToText: (params.replyToText || '').trim().slice(0, 300),
+    replyToName: sanitizeSafeText(params.replyToName).slice(0, 80),
+    replyToText: sanitizeSafeText(params.replyToText).slice(0, 300),
     isPublic: true,
     createdAt: serverTimestamp(),
   };
@@ -2240,6 +2566,7 @@ export async function sendDirectMessageInFirestore(params: {
   if (!user || !isUserVerifiedForWrites(user)) {
     throw new Error('AUTH_REQUIRED');
   }
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
 
   const myUid = sanitizeFirestoreIdPart(user.uid);
   const cleanPeerUid = sanitizeFirestoreIdPart(params.peerUid);
@@ -2251,7 +2578,7 @@ export async function sendDirectMessageInFirestore(params: {
     ? await compressChatAttachmentImage(params.attachmentUrl)
     : '';
   const fallbackText = safeAttachment ? '📷 রিকুইজিশন স্লিপ / প্রেসক্রিপশন ছবি' : '';
-  const cleanText = (params.text.trim() || fallbackText).slice(0, 2000);
+  const cleanText = sanitizeSafeText(params.text.trim() || fallbackText).slice(0, 2000);
   if (!cleanText) return '';
 
   const chatId = buildDirectChatId(myUid, cleanPeerUid);
@@ -2449,12 +2776,47 @@ export async function recordCompletedDonationInFirestore(params: {
   return { totalDonations: nextTotal, syncedToCloud: false };
 }
 
-export async function syncDonorAvailabilityInFirestore(available: boolean): Promise<boolean> {
+export interface DonorAvailabilityAndConsentUpdate {
+  availabilityStatus: DonorAvailabilityStatus;
+  confirmNow?: boolean;
+  shareDirectContact?: boolean;
+  contactVisibility?: ContactVisibility;
+  allowCall?: boolean;
+  allowWhatsApp?: boolean;
+  allowSms?: boolean;
+  emergencyAlertsOptIn?: boolean;
+  alertsPaused?: boolean;
+  phone?: string;
+  whatsappPhone?: string;
+}
+
+export async function updateDonorAvailabilityAndConsentInFirestore(
+  prefs: DonorAvailabilityAndConsentUpdate
+): Promise<boolean> {
+  const available = prefs.availabilityStatus === 'AVAILABLE';
+
   try {
     const rawUser = localStorage.getItem('bloodsearch_current_user');
     if (rawUser) {
       const parsed = JSON.parse(rawUser);
       parsed.availableToDonate = available;
+      parsed.availabilityStatus = prefs.availabilityStatus;
+      if (prefs.confirmNow) parsed.availabilityConfirmedAtMs = Date.now();
+      if (typeof prefs.shareDirectContact === 'boolean') {
+        parsed.shareDirectContact = prefs.shareDirectContact;
+      }
+      if (prefs.contactVisibility) parsed.contactVisibility = prefs.contactVisibility;
+      if (typeof prefs.allowCall === 'boolean') parsed.allowCall = prefs.allowCall;
+      if (typeof prefs.allowWhatsApp === 'boolean') parsed.allowWhatsApp = prefs.allowWhatsApp;
+      if (typeof prefs.allowSms === 'boolean') parsed.allowSms = prefs.allowSms;
+      if (typeof prefs.emergencyAlertsOptIn === 'boolean') {
+        parsed.emergencyAlertsOptIn = prefs.emergencyAlertsOptIn;
+      }
+      if (typeof prefs.alertsPaused === 'boolean') parsed.alertsPaused = prefs.alertsPaused;
+      if (prefs.phone) parsed.phone = normalizeAsciiDigits(prefs.phone).trim();
+      if (prefs.whatsappPhone) {
+        parsed.whatsappPhone = normalizeAsciiDigits(prefs.whatsappPhone).trim();
+      }
       localStorage.setItem('bloodsearch_current_user', JSON.stringify(parsed));
       window.dispatchEvent(new Event('bloodsearch_user_changed'));
     }
@@ -2466,27 +2828,136 @@ export async function syncDonorAvailabilityInFirestore(available: boolean): Prom
   try {
     const userRef = doc(db, 'users', user.uid);
     const donorRef = doc(db, 'donors', user.uid);
-    const [uSnap, dSnap] = await Promise.all([getDoc(userRef), getDoc(donorRef)]);
+    const directRef = doc(db, 'donorDirectContacts', user.uid);
+    const [uSnap, dSnap, directSnap] = await Promise.all([
+      getDoc(userRef),
+      getDoc(donorRef),
+      getDoc(directRef),
+    ]);
+
     const batch = writeBatch(db);
     let hasWrites = false;
 
+    let effectivePhone = prefs.phone ? normalizeAsciiDigits(prefs.phone).trim() : '';
+    let effectiveWa = prefs.whatsappPhone ? normalizeAsciiDigits(prefs.whatsappPhone).trim() : '';
+    let effectiveShare = prefs.shareDirectContact;
+    let effectiveVisibility = prefs.contactVisibility;
+    let effectiveAllowCall = prefs.allowCall;
+    let effectiveAllowWa = prefs.allowWhatsApp;
+    let effectiveAllowSms = prefs.allowSms;
+    let effectiveEmergOptIn = prefs.emergencyAlertsOptIn;
+    let effectivePaused = prefs.alertsPaused;
+
     if (uSnap.exists()) {
       const prevU = uSnap.data();
-      batch.set(userRef, {
+      effectivePhone = effectivePhone || String(prevU.phone || '');
+      effectiveWa = effectiveWa || String(prevU.whatsappPhone || effectivePhone || '');
+      effectiveVisibility =
+        effectiveVisibility ||
+        (prevU.contactVisibility as ContactVisibility | undefined) ||
+        'REQUEST_ONLY';
+      effectiveShare =
+        typeof effectiveShare === 'boolean'
+          ? effectiveShare && effectiveVisibility !== 'REQUEST_ONLY'
+          : Boolean(prevU.shareDirectContact) && effectiveVisibility !== 'REQUEST_ONLY';
+      effectiveAllowCall =
+        typeof effectiveAllowCall === 'boolean' ? effectiveAllowCall : prevU.allowCall !== false;
+      effectiveAllowWa =
+        typeof effectiveAllowWa === 'boolean' ? effectiveAllowWa : prevU.allowWhatsApp !== false;
+      effectiveAllowSms =
+        typeof effectiveAllowSms === 'boolean' ? effectiveAllowSms : prevU.allowSms !== false;
+      effectiveEmergOptIn =
+        typeof effectiveEmergOptIn === 'boolean'
+          ? effectiveEmergOptIn
+          : prevU.emergencyAlertsOptIn !== false;
+      effectivePaused =
+        typeof effectivePaused === 'boolean' ? effectivePaused : prevU.alertsPaused === true;
+
+      const nextUser: Record<string, unknown> = {
         ...prevU,
+        phone: clampStr(effectivePhone, 6, 24, String(prevU.phone || '01700000000')),
+        whatsappPhone: clampStr(effectiveWa, 6, 24, String(prevU.whatsappPhone || '01700000000')),
         availableToDonate: available,
+        availabilityStatus: prefs.availabilityStatus,
+        shareDirectContact: effectiveShare,
+        contactVisibility: effectiveVisibility,
+        allowCall: effectiveAllowCall,
+        allowWhatsApp: effectiveAllowWa,
+        allowSms: effectiveAllowSms,
+        emergencyAlertsOptIn: effectiveEmergOptIn,
+        alertsPaused: effectivePaused,
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (prefs.confirmNow) {
+        nextUser.availabilityConfirmedAt = serverTimestamp();
+      }
+      batch.set(userRef, nextUser);
       hasWrites = true;
     }
 
     if (dSnap.exists()) {
       const prevD = dSnap.data();
-      batch.set(donorRef, {
+      const vis =
+        effectiveVisibility ||
+        (prevD.contactVisibility as ContactVisibility | undefined) ||
+        'REQUEST_ONLY';
+      const shr =
+        typeof effectiveShare === 'boolean'
+          ? effectiveShare
+          : Boolean(prevD.shareDirectContact) && vis !== 'REQUEST_ONLY';
+
+      const nextDonor: Record<string, unknown> = {
         ...prevD,
+        maskedPhone: effectivePhone ? maskPhoneNumber(effectivePhone) : prevD.maskedPhone,
         available,
+        availabilityStatus: prefs.availabilityStatus,
+        shareDirectContact: shr,
+        contactVisibility: vis,
+        allowCall:
+          typeof effectiveAllowCall === 'boolean' ? effectiveAllowCall : prevD.allowCall !== false,
+        allowWhatsApp:
+          typeof effectiveAllowWa === 'boolean' ? effectiveAllowWa : prevD.allowWhatsApp !== false,
+        allowSms:
+          typeof effectiveAllowSms === 'boolean' ? effectiveAllowSms : prevD.allowSms !== false,
+        emergencyAlertsOptIn:
+          typeof effectiveEmergOptIn === 'boolean'
+            ? effectiveEmergOptIn
+            : prevD.emergencyAlertsOptIn !== false,
+        alertsPaused:
+          typeof effectivePaused === 'boolean' ? effectivePaused : prevD.alertsPaused === true,
+        updatedAt: serverTimestamp(),
+      };
+      if (prefs.confirmNow) {
+        nextDonor.availabilityConfirmedAt = serverTimestamp();
+      }
+      batch.set(donorRef, nextDonor);
+      hasWrites = true;
+    }
+
+    const canPublishDirect =
+      Boolean(effectiveShare) &&
+      effectiveVisibility !== 'REQUEST_ONLY' &&
+      prefs.availabilityStatus !== 'DND' &&
+      effectivePhone.length >= 6 &&
+      effectivePhone !== '01700000000';
+
+    if (canPublishDirect && uSnap.exists()) {
+      batch.set(directRef, {
+        ownerUid: user.uid,
+        phone: clampStr(effectivePhone, 6, 24, '01700000000'),
+        whatsappPhone: clampStr(effectiveWa || effectivePhone, 6, 24, effectivePhone).slice(0, 24),
+        shareDirectContact: true,
+        contactVisibility: effectiveVisibility || 'PUBLIC_OPT_IN',
+        availabilityStatus: prefs.availabilityStatus,
+        allowCall: effectiveAllowCall !== false,
+        allowWhatsApp: effectiveAllowWa !== false,
+        allowSms: effectiveAllowSms !== false,
+        createdAt: directSnap.exists() ? directSnap.data().createdAt : serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      hasWrites = true;
+    } else if (directSnap.exists()) {
+      batch.delete(directRef);
       hasWrites = true;
     }
 
@@ -2494,8 +2965,770 @@ export async function syncDonorAvailabilityInFirestore(available: boolean): Prom
       await batch.commit();
       return true;
     }
-  } catch {}
+  } catch (err) {
+    console.warn('Availability & consent sync failed:', err);
+  }
   return false;
+}
+
+export async function syncDonorAvailabilityInFirestore(available: boolean): Promise<boolean> {
+  return updateDonorAvailabilityAndConsentInFirestore({
+    availabilityStatus: available ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE',
+    confirmNow: available,
+  });
+}
+
+// ============================================================================
+// 9B. CONSENT CONTACT REQUESTS, CONCURRENT EMERGENCY ALERTS & ESCALATION ENGINE
+// ============================================================================
+export async function sendContactConsentRequestInFirestore(params: {
+  donorUid: string;
+  donorName: string;
+  seekerName: string;
+  seekerPhone: string;
+  bloodGroupNeeded: BloodGroup;
+  hospitalName: string;
+  urgency: 'CRITICAL' | 'URGENT' | 'STANDARD';
+}): Promise<{ ok: boolean; reason?: string }> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) {
+    return { ok: false, reason: 'AUTH_REQUIRED' };
+  }
+  if (user.uid === params.donorUid) {
+    return { ok: false, reason: 'SELF_REQUEST' };
+  }
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
+
+  const contactReqId = `${user.uid}__${params.donorUid}`;
+  const path = `contactRequests/${contactReqId}`;
+  const cleanSeekerPhone = clampStr(
+    normalizeAsciiDigits(params.seekerPhone).trim(),
+    6,
+    24,
+    '01700000000'
+  );
+
+  try {
+    const ref = doc(db, 'contactRequests', contactReqId);
+    const existing = await getDoc(ref);
+    if (existing.exists()) {
+      const prev = existing.data();
+      if (prev.status === 'APPROVED') {
+        return { ok: true, reason: 'ALREADY_APPROVED' };
+      }
+      await setDoc(ref, {
+        ...prev,
+        seekerName: clampStr(params.seekerName, 2, 80, 'Blood Seeker'),
+        seekerPhone: cleanSeekerPhone,
+        bloodGroupNeeded: params.bloodGroupNeeded,
+        hospitalName: clampStr(params.hospitalName, 2, 120, 'Hospital Emergency'),
+        urgency: params.urgency || 'CRITICAL',
+        status: 'PENDING',
+        approvedPhone: '',
+        approvedWhatsApp: '',
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true };
+    }
+
+    await setDoc(ref, {
+      seekerUid: user.uid,
+      seekerName: clampStr(params.seekerName, 2, 80, 'Blood Seeker'),
+      seekerPhone: cleanSeekerPhone,
+      donorUid: params.donorUid,
+      donorName: clampStr(params.donorName, 2, 80, 'Voluntary Donor'),
+      bloodGroupNeeded: params.bloodGroupNeeded,
+      hospitalName: clampStr(params.hospitalName, 2, 120, 'Hospital Emergency'),
+      urgency: params.urgency || 'CRITICAL',
+      status: 'PENDING',
+      approvedPhone: '',
+      approvedWhatsApp: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return { ok: true };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeIncomingContactRequestsForDonor(
+  donorUid: string,
+  onData: (items: ContactConsentRequestItem[]) => void
+): () => void {
+  return attachSnapshotAfterBoot(() => {
+    const q = query(collection(db, 'contactRequests'), where('donorUid', '==', donorUid));
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list: ContactConsentRequestItem[] = snap.docs.map((d) => {
+          const x = d.data();
+          const createdAtMs =
+            x.createdAt instanceof Timestamp ? x.createdAt.toMillis() : Date.now();
+          const updatedAtMs =
+            x.updatedAt instanceof Timestamp ? x.updatedAt.toMillis() : createdAtMs;
+          return {
+            id: d.id,
+            seekerUid: String(x.seekerUid || ''),
+            seekerName: String(x.seekerName || ''),
+            seekerPhone: String(x.seekerPhone || ''),
+            donorUid: String(x.donorUid || ''),
+            donorName: String(x.donorName || ''),
+            bloodGroupNeeded: (x.bloodGroupNeeded as BloodGroup) || 'O+',
+            hospitalName: String(x.hospitalName || ''),
+            urgency: (x.urgency as 'CRITICAL' | 'URGENT' | 'STANDARD') || 'CRITICAL',
+            status: (x.status as 'PENDING' | 'APPROVED' | 'DECLINED') || 'PENDING',
+            approvedPhone: x.approvedPhone ? String(x.approvedPhone) : undefined,
+            approvedWhatsApp: x.approvedWhatsApp ? String(x.approvedWhatsApp) : undefined,
+            createdAtMs,
+            updatedAtMs,
+          };
+        });
+        list.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+        onData(list);
+      },
+      (err) => {
+        console.warn('Incoming contact requests listener warning:', err);
+        onData([]);
+      }
+    );
+  });
+}
+
+export async function respondToContactRequestInFirestore(params: {
+  contactReqId: string;
+  approve: boolean;
+  donorPhone?: string;
+  donorWhatsApp?: string;
+}): Promise<boolean> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return false;
+
+  const ref = doc(db, 'contactRequests', params.contactReqId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return false;
+  const prev = snap.data();
+  if (prev.donorUid !== user.uid || prev.status !== 'PENDING') return false;
+
+  let phoneToShare = normalizeAsciiDigits(params.donorPhone || '').trim();
+  let waToShare = normalizeAsciiDigits(params.donorWhatsApp || '').trim();
+
+  if (params.approve && !phoneToShare) {
+    const uSnap = await getDoc(doc(db, 'users', user.uid));
+    if (uSnap.exists()) {
+      phoneToShare = String(uSnap.data().phone || '');
+      waToShare = String(uSnap.data().whatsappPhone || phoneToShare || '');
+    }
+  }
+
+  await setDoc(ref, {
+    ...prev,
+    status: params.approve ? 'APPROVED' : 'DECLINED',
+    approvedPhone: params.approve ? clampStr(phoneToShare, 6, 24, '01700000000') : '',
+    approvedWhatsApp: params.approve
+      ? clampStr(waToShare || phoneToShare, 6, 24, '01700000000')
+      : '',
+    updatedAt: serverTimestamp(),
+  });
+  return true;
+}
+
+export interface EmergencyBroadcastDispatchResult {
+  requestId: string;
+  syncedToCloud: boolean;
+  alertsWritten: number;
+  pushChannelState: 'CONFIGURED' | 'NOT_CONFIGURED_BROWSER_REALTIME_ONLY';
+  smsChannelState: 'SENT' | 'NOT_CONFIGURED' | 'PROVIDER_ERROR' | 'NO_ELIGIBLE_RECIPIENTS';
+  smsSentCount: number;
+  honestNotice: string;
+}
+
+export async function checkFcmAndServerCapabilities(): Promise<{
+  fcmClientSupported: boolean;
+  fcmVapidConfigured: boolean;
+  fcmServerConfigured: boolean;
+  smsProviderConfigured: boolean;
+  smsProvider: string;
+  browserNotificationPermission: string;
+}> {
+  const vapidKey = String((import.meta as any).env?.VITE_FIREBASE_VAPID_KEY || '').trim();
+  let fcmClientSupported = false;
+  if (typeof window !== 'undefined') {
+    try {
+      const { isSupported } = await import('firebase/messaging');
+      fcmClientSupported = await isSupported();
+    } catch {
+      fcmClientSupported = false;
+    }
+  }
+  const browserPerm =
+    typeof window !== 'undefined' && 'Notification' in window
+      ? Notification.permission
+      : 'unsupported';
+
+  try {
+    const res = await fetch('/api/capabilities');
+    if (res.ok) {
+      const capJson = await res.json();
+      const cap = capJson?.capabilities || capJson;
+      return {
+        fcmClientSupported,
+        fcmVapidConfigured: Boolean(vapidKey || cap.fcmVapidConfigured),
+        fcmServerConfigured: Boolean(cap.fcmServerConfigured || cap.fcmPushConfigured),
+        smsProviderConfigured: Boolean(cap.smsConfigured || cap.smsProviderConfigured),
+        smsProvider: String(cap.smsProvider || 'NONE'),
+        browserNotificationPermission: browserPerm,
+      };
+    }
+  } catch {}
+
+  return {
+    fcmClientSupported,
+    fcmVapidConfigured: Boolean(vapidKey),
+    fcmServerConfigured: false,
+    smsProviderConfigured: false,
+    smsProvider: 'NONE',
+    browserNotificationPermission: browserPerm,
+  };
+}
+
+export async function dispatchEmergencyBroadcastClient(params: {
+  request: BloodRequest;
+  seekerCallbackPhone: string;
+  candidateCloudDonorIds: string[];
+}): Promise<EmergencyBroadcastDispatchResult> {
+  const { request, seekerCallbackPhone, candidateCloudDonorIds } = params;
+  const safeId =
+    request.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || `req_${Date.now()}`;
+
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) {
+    return {
+      requestId: safeId,
+      syncedToCloud: false,
+      alertsWritten: 0,
+      pushChannelState: 'NOT_CONFIGURED_BROWSER_REALTIME_ONLY',
+      smsChannelState: 'NOT_CONFIGURED',
+      smsSentCount: 0,
+      honestNotice:
+        'Signed-out session: request saved locally on this device only. Sign in with a verified account to broadcast to cloud donors, or call opted-in donors directly right now.',
+    };
+  }
+
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
+
+  // Filter eligible cloud donor IDs (exclude self and local seed IDs like donor-1 or d1)
+  const uniqueDonorIds = Array.from(
+    new Set(
+      candidateCloudDonorIds.filter(
+        (id) =>
+          id &&
+          id !== user.uid &&
+          !/^(d|donor-)\d+$/.test(id) &&
+          /^[a-zA-Z0-9_-]{4,128}$/.test(id)
+      )
+    )
+  ).slice(0, 25);
+
+  let pushChannelState: 'CONFIGURED' | 'NOT_CONFIGURED_BROWSER_REALTIME_ONLY' =
+    'NOT_CONFIGURED_BROWSER_REALTIME_ONLY';
+  let smsChannelState: 'SENT' | 'NOT_CONFIGURED' | 'PROVIDER_ERROR' | 'NO_ELIGIBLE_RECIPIENTS' =
+    'NOT_CONFIGURED';
+  let smsSentCount = 0;
+  let serverNote = '';
+
+  // 1. Validate & dispatch through secure Express backend (/api/emergency/dispatch)
+  try {
+    const idToken = await user.getIdToken();
+    const optedInRecipientPhones: string[] = [];
+    for (const dId of uniqueDonorIds.slice(0, 10)) {
+      const contact = await fetchUnmaskedDonorContactIfAuthorized(dId);
+      if (contact?.phone && contact.allowSms !== false) {
+        optedInRecipientPhones.push(contact.phone);
+      }
+    }
+
+    const resp = await fetch('/api/emergency/dispatch', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        requestId: safeId,
+        bloodGroup: request.bloodGroup,
+        unitsNeeded: request.unitsNeeded,
+        hospitalName: request.hospitalName,
+        district: request.district,
+        upazila: request.upazila,
+        urgency: request.urgency,
+        requiredTimeWindow: request.requiredTimeWindow || 'IMMEDIATE_2H',
+        escalationLevel: 0,
+        searchRadiusKm: request.searchRadiusKm || 10,
+        candidateDonorIds: uniqueDonorIds,
+        optedInSmsPhones: optedInRecipientPhones,
+      }),
+    });
+
+    if (resp.status === 409 || resp.status === 429) {
+      const errBody = await resp.json().catch(() => ({}));
+      throw new Error(
+        String(
+          errBody.message ||
+            'Duplicate or rate-limited request blocked by server protection.'
+        )
+      );
+    }
+
+    if (resp.ok) {
+      const data = await resp.json();
+      const rawPush = String(data?.channels?.pushStatus || data?.channels?.fcmPush || '');
+      pushChannelState =
+        rawPush === 'FCM_SERVER_READY' || rawPush === 'CONFIGURED'
+          ? 'CONFIGURED'
+          : 'NOT_CONFIGURED_BROWSER_REALTIME_ONLY';
+      smsChannelState =
+        data?.channels?.smsStatus || data?.channels?.sms?.status || 'NOT_CONFIGURED';
+      smsSentCount =
+        Number(data?.channels?.smsSentCount ?? data?.channels?.sms?.sentCount) || 0;
+      serverNote = String(data?.honestDeliveryNotice || data?.honestDeliveryNote || '');
+    }
+  } catch (err: any) {
+    if (
+      String(err?.message || '').includes('Duplicate') ||
+      String(err?.message || '').includes('rate-limited') ||
+      String(err?.message || '').includes('Too many')
+    ) {
+      throw err;
+    }
+  }
+
+  // 2. Write /requests/{safeId} FIRST so /requestAlerts relational check sees it
+  const initialLifecycle: RequestLifecycleState =
+    uniqueDonorIds.length > 0 ? 'DONORS_NOTIFIED' : 'SEARCHING';
+  const createdId = await createBloodRequestInFirestore({
+    ...request,
+    id: safeId,
+    authorUid: user.uid,
+    lifecycleState: initialLifecycle,
+    notifiedCount: uniqueDonorIds.length,
+    escalationLevel: 0,
+    searchRadiusKm: request.searchRadiusKm || 10,
+    escalationIntervalMinutes: request.escalationIntervalMinutes || 10,
+  });
+
+  if (!createdId) {
+    return {
+      requestId: safeId,
+      syncedToCloud: false,
+      alertsWritten: 0,
+      pushChannelState,
+      smsChannelState,
+      smsSentCount,
+      honestNotice: 'Could not publish cloud request. Use direct Call/WhatsApp on matched donors.',
+    };
+  }
+
+  // 3. Concurrently fan out deterministic /requestAlerts/{safeId__donorUid}
+  let alertsWritten = 0;
+  const cleanCallback = clampStr(
+    normalizeAsciiDigits(seekerCallbackPhone).trim(),
+    0,
+    24,
+    ''
+  );
+
+  if (uniqueDonorIds.length > 0) {
+    try {
+      const batch = writeBatch(db);
+      for (const donorUid of uniqueDonorIds) {
+        const alertId = `${createdId}__${donorUid}`;
+        batch.set(doc(db, 'requestAlerts', alertId), {
+          requestId: createdId,
+          authorUid: user.uid,
+          donorUid,
+          bloodGroup: request.bloodGroup,
+          hospitalName: clampStr(request.hospitalName, 2, 120, 'Hospital Emergency'),
+          district: clampStr(request.district, 2, 40, 'dhaka'),
+          urgency: request.urgency || 'CRITICAL',
+          seekerCallbackPhone: cleanCallback,
+          escalationLevel: 0,
+          deliveryState: 'DISPATCHED',
+          responseNote: '',
+          responderPhone: '',
+          responderName: '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      alertsWritten = uniqueDonorIds.length;
+    } catch (err) {
+      console.warn('Partial alert fan-out fallback:', err);
+      // Fallback per-donor write in case one donor doc was deleted concurrently
+      for (const donorUid of uniqueDonorIds) {
+        try {
+          await setDoc(doc(db, 'requestAlerts', `${createdId}__${donorUid}`), {
+            requestId: createdId,
+            authorUid: user.uid,
+            donorUid,
+            bloodGroup: request.bloodGroup,
+            hospitalName: clampStr(request.hospitalName, 2, 120, 'Hospital Emergency'),
+            district: clampStr(request.district, 2, 40, 'dhaka'),
+            urgency: request.urgency || 'CRITICAL',
+            seekerCallbackPhone: cleanCallback,
+            escalationLevel: 0,
+            deliveryState: 'DISPATCHED',
+            responseNote: '',
+            responderPhone: '',
+            responderName: '',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          alertsWritten += 1;
+        } catch {}
+      }
+    }
+  }
+
+  return {
+    requestId: createdId,
+    syncedToCloud: true,
+    alertsWritten,
+    pushChannelState,
+    smsChannelState,
+    smsSentCount,
+    honestNotice:
+      serverNote ||
+      `Dispatched ${alertsWritten} concurrent real-time in-app alerts. Note: A dispatched alert does not guarantee a donor has read it—call opted-in donors directly in parallel.`,
+  };
+}
+
+export async function escalateBloodRequestInFirestore(params: {
+  requestId: string;
+  nextEscalationLevel: number;
+  nextRadiusKm: number;
+  additionalCloudDonorIds: string[];
+  seekerCallbackPhone?: string;
+}): Promise<{ ok: boolean; newlyNotified: number }> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return { ok: false, newlyNotified: 0 };
+
+  const safeId = params.requestId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  const reqRef = doc(db, 'requests', safeId);
+  const reqSnap = await getDoc(reqRef);
+  if (!reqSnap.exists()) return { ok: false, newlyNotified: 0 };
+  const prev = reqSnap.data();
+  if (prev.status !== 'ACTIVE' || prev.authorUid !== user.uid) {
+    return { ok: false, newlyNotified: 0 };
+  }
+
+  const cleanNewIds = Array.from(
+    new Set(
+      params.additionalCloudDonorIds.filter(
+        (id) =>
+          id &&
+          id !== user.uid &&
+          !/^(d|donor-)\d+$/.test(id) &&
+          /^[a-zA-Z0-9_-]{4,128}$/.test(id)
+      )
+    )
+  ).slice(0, 25);
+
+  try {
+    const idToken = await user.getIdToken();
+    await fetch('/api/emergency/escalate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        requestId: safeId,
+        bloodGroup: prev.bloodGroup,
+        hospitalName: prev.hospitalName,
+        district: prev.district,
+        nextLevel: params.nextEscalationLevel,
+        newRadiusKm: params.nextRadiusKm,
+        newlyMatchedDonorIds: cleanNewIds,
+      }),
+    }).catch(() => null);
+  } catch {}
+
+  let newlyNotified = 0;
+  const cleanCallback = clampStr(
+    normalizeAsciiDigits(params.seekerCallbackPhone || '').trim(),
+    0,
+    24,
+    ''
+  );
+
+  for (const donorUid of cleanNewIds) {
+    const alertId = `${safeId}__${donorUid}`;
+    try {
+      const alertRef = doc(db, 'requestAlerts', alertId);
+      const existingAlert = await getDoc(alertRef);
+      if (!existingAlert.exists()) {
+        await setDoc(alertRef, {
+          requestId: safeId,
+          authorUid: user.uid,
+          donorUid,
+          bloodGroup: prev.bloodGroup,
+          hospitalName: clampStr(prev.hospitalName, 2, 120, 'Hospital Emergency'),
+          district: clampStr(prev.district, 2, 40, 'dhaka'),
+          urgency: prev.urgency || 'CRITICAL',
+          seekerCallbackPhone: cleanCallback,
+          escalationLevel: clampNum(params.nextEscalationLevel, 1, 10, 1),
+          deliveryState: 'DISPATCHED',
+          responseNote: '',
+          responderPhone: '',
+          responderName: '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        newlyNotified += 1;
+      }
+    } catch {}
+  }
+
+  const totalNotified = clampNum((Number(prev.notifiedCount) || 0) + newlyNotified, 0, 5000, 0);
+  const nextLifecycle: RequestLifecycleState =
+    Number(prev.respondedCount) > 0
+      ? 'RESPONSES_RECEIVED'
+      : totalNotified > 0
+        ? 'DONORS_NOTIFIED'
+        : 'NO_RESPONSE';
+
+  await setDoc(reqRef, {
+    ...prev,
+    escalationLevel: clampNum(params.nextEscalationLevel, 1, 10, 1),
+    searchRadiusKm: clampNum(params.nextRadiusKm, 1, 1000, 25),
+    notifiedCount: totalNotified,
+    lifecycleState: nextLifecycle,
+    updatedAt: serverTimestamp(),
+  });
+
+  return { ok: true, newlyNotified };
+}
+
+export async function updateBloodRequestTrackingInFirestore(params: {
+  requestId: string;
+  status?: 'ACTIVE' | 'FULFILLED' | 'CANCELLED' | 'EXPIRED';
+  lifecycleState?: RequestLifecycleState;
+  incrementContactAttempt?: boolean;
+  confirmedDonorId?: string;
+  confirmedDonorName?: string;
+}): Promise<boolean> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return false;
+
+  const safeId = params.requestId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  const reqRef = doc(db, 'requests', safeId);
+  const snap = await getDoc(reqRef);
+  if (!snap.exists()) return false;
+  const prev = snap.data();
+  if (prev.status !== 'ACTIVE') return false;
+
+  const isAdmin = await checkIsVerifiedAdminInFirestore(user);
+  if (prev.authorUid !== user.uid && !isAdmin) return false;
+
+  const nextStatus = params.status || prev.status || 'ACTIVE';
+  const nextAttempts = params.incrementContactAttempt
+    ? clampNum((Number(prev.contactAttemptsCount) || 0) + 1, 1, 5000, 1)
+    : clampNum(Number(prev.contactAttemptsCount) || 0, 0, 5000, 0);
+  const nextConfirmedId =
+    params.confirmedDonorId !== undefined
+      ? clampStr(params.confirmedDonorId, 0, 128, '')
+      : clampStr(prev.confirmedDonorId || '', 0, 128, '');
+  const nextConfirmedName =
+    params.confirmedDonorName !== undefined
+      ? clampStr(params.confirmedDonorName, 0, 80, '')
+      : clampStr(prev.confirmedDonorName || '', 0, 80, '');
+
+  const nextLifecycle: RequestLifecycleState =
+    nextStatus === 'FULFILLED'
+      ? 'FULFILLED'
+      : nextStatus === 'CANCELLED'
+        ? 'CANCELLED'
+        : nextStatus === 'EXPIRED'
+          ? 'EXPIRED'
+          : params.lifecycleState ||
+            (nextConfirmedId
+              ? 'DONOR_CONFIRMED'
+              : nextAttempts > 0
+                ? 'CONTACT_ATTEMPTED'
+                : (prev.lifecycleState as RequestLifecycleState) || 'SEARCHING');
+
+  await setDoc(reqRef, {
+    ...prev,
+    status: nextStatus,
+    lifecycleState: nextLifecycle,
+    unitsCollected: nextStatus === 'FULFILLED' ? prev.unitsNeeded : prev.unitsCollected,
+    contactAttemptsCount: nextAttempts,
+    confirmedDonorId: nextConfirmedId,
+    confirmedDonorName: nextConfirmedName,
+    updatedAt: serverTimestamp(),
+  });
+
+  // If terminal state reached (FULFILLED, CANCELLED, EXPIRED), stop server escalations & mark active alerts stopped
+  if (nextStatus !== 'ACTIVE') {
+    try {
+      const idToken = await user.getIdToken();
+      await fetch('/api/emergency/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          requestId: safeId,
+          reason: nextStatus,
+        }),
+      }).catch(() => null);
+    } catch {}
+
+    try {
+      const alertsSnap = await getDocs(
+        query(collection(db, 'requestAlerts'), where('authorUid', '==', user.uid))
+      );
+      const batch = writeBatch(db);
+      let count = 0;
+      alertsSnap.docs.forEach((d) => {
+        const ad = d.data();
+        if (ad.requestId === safeId && ad.deliveryState !== 'STOPPED_RESOLVED') {
+          batch.set(doc(db, 'requestAlerts', d.id), {
+            ...ad,
+            deliveryState: 'STOPPED_RESOLVED',
+            updatedAt: serverTimestamp(),
+          });
+          count += 1;
+        }
+      });
+      if (count > 0) {
+        await batch.commit();
+      }
+    } catch {}
+  }
+
+  return true;
+}
+
+export function subscribeAlertsForAuthorRequests(
+  authorUid: string,
+  onData: (alerts: RequestAlertItem[]) => void
+): () => void {
+  return attachSnapshotAfterBoot(() => {
+    const q = query(collection(db, 'requestAlerts'), where('authorUid', '==', authorUid));
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list: RequestAlertItem[] = snap.docs.map((d) => {
+          const x = d.data();
+          const createdAtMs =
+            x.createdAt instanceof Timestamp ? x.createdAt.toMillis() : Date.now();
+          const updatedAtMs =
+            x.updatedAt instanceof Timestamp ? x.updatedAt.toMillis() : createdAtMs;
+          return {
+            id: d.id,
+            requestId: String(x.requestId || ''),
+            authorUid: String(x.authorUid || ''),
+            donorUid: String(x.donorUid || ''),
+            bloodGroup: (x.bloodGroup as BloodGroup) || 'O+',
+            hospitalName: String(x.hospitalName || ''),
+            district: String(x.district || ''),
+            urgency: (x.urgency as 'CRITICAL' | 'URGENT' | 'STANDARD') || 'CRITICAL',
+            seekerCallbackPhone: x.seekerCallbackPhone ? String(x.seekerCallbackPhone) : undefined,
+            escalationLevel: Number(x.escalationLevel) || 0,
+            deliveryState: x.deliveryState || 'DISPATCHED',
+            responseNote: x.responseNote ? String(x.responseNote) : undefined,
+            responderPhone: x.responderPhone ? String(x.responderPhone) : undefined,
+            responderName: x.responderName ? String(x.responderName) : undefined,
+            createdAtMs,
+            updatedAtMs,
+          };
+        });
+        list.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+        onData(list);
+      },
+      () => onData([])
+    );
+  });
+}
+
+export function subscribeIncomingAlertsForDonor(
+  donorUid: string,
+  onData: (alerts: RequestAlertItem[]) => void
+): () => void {
+  return attachSnapshotAfterBoot(() => {
+    const q = query(collection(db, 'requestAlerts'), where('donorUid', '==', donorUid));
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list: RequestAlertItem[] = snap.docs.map((d) => {
+          const x = d.data();
+          const createdAtMs =
+            x.createdAt instanceof Timestamp ? x.createdAt.toMillis() : Date.now();
+          const updatedAtMs =
+            x.updatedAt instanceof Timestamp ? x.updatedAt.toMillis() : createdAtMs;
+          return {
+            id: d.id,
+            requestId: String(x.requestId || ''),
+            authorUid: String(x.authorUid || ''),
+            donorUid: String(x.donorUid || ''),
+            bloodGroup: (x.bloodGroup as BloodGroup) || 'O+',
+            hospitalName: String(x.hospitalName || ''),
+            district: String(x.district || ''),
+            urgency: (x.urgency as 'CRITICAL' | 'URGENT' | 'STANDARD') || 'CRITICAL',
+            seekerCallbackPhone: x.seekerCallbackPhone ? String(x.seekerCallbackPhone) : undefined,
+            escalationLevel: Number(x.escalationLevel) || 0,
+            deliveryState: x.deliveryState || 'DISPATCHED',
+            responseNote: x.responseNote ? String(x.responseNote) : undefined,
+            responderPhone: x.responderPhone ? String(x.responderPhone) : undefined,
+            responderName: x.responderName ? String(x.responderName) : undefined,
+            createdAtMs,
+            updatedAtMs,
+          };
+        });
+        list.sort((a, b) => b.createdAtMs - a.createdAtMs);
+        onData(list);
+      },
+      () => onData([])
+    );
+  });
+}
+
+export async function respondToRequestAlertInFirestore(params: {
+  alertId: string;
+  action: 'VIEWED' | 'RESPONDED_ACCEPT' | 'RESPONDED_DECLINE';
+  responderName?: string;
+  responderPhone?: string;
+  responseNote?: string;
+}): Promise<boolean> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return false;
+
+  const ref = doc(db, 'requestAlerts', params.alertId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return false;
+  const prev = snap.data();
+  if (prev.donorUid !== user.uid || prev.deliveryState === 'STOPPED_RESOLVED') return false;
+
+  await setDoc(ref, {
+    ...prev,
+    deliveryState: params.action,
+    responderName: clampStr(params.responderName || prev.responderName || '', 0, 80, ''),
+    responderPhone:
+      params.action === 'RESPONDED_ACCEPT'
+        ? clampStr(normalizeAsciiDigits(params.responderPhone || '').trim(), 0, 24, '')
+        : '',
+    responseNote: clampStr(params.responseNote || prev.responseNote || '', 0, 200, ''),
+    updatedAt: serverTimestamp(),
+  });
+
+  if (params.action === 'RESPONDED_ACCEPT') {
+    await pledgeBloodRequestUnitInFirestore(String(prev.requestId || '')).catch(() => false);
+  }
+  return true;
 }
 
 // ============================================================================
@@ -2778,6 +4011,7 @@ export async function submitScamReportInFirestore(params: {
   if (!user || !isUserVerifiedForWrites(user)) {
     return { syncedToCloud: false };
   }
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
 
   const reportId = `scam_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   try {
@@ -2983,6 +4217,7 @@ export async function createGratitudeNoteInFirestore(params: {
   if (!user || !isUserVerifiedForWrites(user)) {
     return { syncedToCloud: false, note: localObj };
   }
+  await ensureUserAutoSyncedInFirestore(user).catch(() => null);
 
   try {
     await setDoc(doc(db, 'gratitudeNotes', noteId), {
@@ -3000,4 +4235,454 @@ export async function createGratitudeNoteInFirestore(params: {
     handleFirestoreError(error, OperationType.CREATE, `gratitudeNotes/${noteId}`);
   }
 }
+
+// ============================================================================
+// 11. SMART DATABASE ARCHITECTURE INSPECTOR, LIVE PENETRATION TEST & HYGIENE
+// ============================================================================
+export interface DatabaseCollectionMeta {
+  id: string;
+  path: string;
+  titleBn: string;
+  titleEn: string;
+  tier: 'PRIVATE_PII' | 'OWNER_VAULT' | 'ADMIN_ONLY' | 'PUBLIC_MASKED' | 'PARTICIPANT_LOCKED';
+  tierLabelBn: string;
+  tierLabelEn: string;
+  fieldsSummary: string;
+  smartBehaviorBn: string;
+  smartBehaviorEn: string;
+}
+
+export const DATABASE_COLLECTION_ARCHITECTURES: DatabaseCollectionMeta[] = [
+  {
+    id: 'users',
+    path: '/users/{userId}',
+    titleBn: 'প্রাইভেট ইউজার ও PII ভল্ট',
+    titleEn: 'Private User & PII Vault',
+    tier: 'PRIVATE_PII',
+    tierLabelBn: '🔒 প্রাইভেট PII (List সম্পূর্ণ বন্ধ)',
+    tierLabelEn: '🔒 Strict Private PII (No List)',
+    fieldsSummary: 'uid, name, email, phone, whatsappPhone, facebookUrl, bloodGroup, panelType',
+    smartBehaviorBn:
+      'আসল মোবাইল নম্বর, ইমেইল ও WhatsApp এখানে আলাদা করে লক থাকে। অন্য কোনো সাধারণ ইউজার বা স্ক্র্যাপার কখনোই অন্যের ডকুমেন্ট বা পুরো তালিকা পড়তে পারে না।',
+    smartBehaviorEn:
+      'Isolates raw phone, email & WhatsApp. Bulk listing is unconditionally denied (`allow list: if false`).',
+  },
+  {
+    id: 'donors',
+    path: '/donors/{donorId}',
+    titleBn: 'পাবলিক ডোনার ডিরেক্টরি (মাস্কড)',
+    titleEn: 'Public Donor Directory (Masked)',
+    tier: 'PUBLIC_MASKED',
+    tierLabelBn: '🌐 পাবলিক সার্চ (নম্বর মাস্কড **)',
+    tierLabelEn: '🌐 Public Search (Masked Phone)',
+    fieldsSummary: 'ownerUid, name, bloodGroup, division, district, upazila, maskedPhone, available',
+    smartBehaviorBn:
+      '১ অ্যাকাউন্ট = ১ ডোনার কার্ড (`donorId == uid`), নম্বর অবশ্যই `**` দিয়ে মাস্কড থাকে এবং রক্তদানের ৯০ দিন পূর্ণ হলে অটোমেটিক আবার "প্রস্তুত" হয়ে যায়।',
+    smartBehaviorEn:
+      'Enforces 1-UID-1-Card anti-Sybil lock, mandatory `**` phone masking, and smart 90-day medical recovery unlock.',
+  },
+  {
+    id: 'donorDirectContacts',
+    path: '/donorDirectContacts/{donorId}',
+    titleBn: 'কনসেন্ট-লকড ডিরেক্ট কল/WhatsApp ভল্ট',
+    titleEn: 'Consent-Gated Direct Contact Vault',
+    tier: 'PRIVATE_PII',
+    tierLabelBn: '🔒 শুধু ডোনার অপ্ট-ইন করলে গেট খোলে (List নিষিদ্ধ)',
+    tierLabelEn: '🔒 Consent Opt-In Get Only (No List)',
+    fieldsSummary: 'ownerUid, phone, whatsappPhone, shareDirectContact, contactVisibility, availabilityStatus',
+    smartBehaviorBn:
+      'ডোনার নিজে সম্মতি (`shareDirectContact == true`) দিলে রক্তপ্রার্থী সরাসরি কল/WhatsApp করতে পারেন, কিন্তু বাল্ক স্ক্র্যাপিং (`list`) সম্পূর্ণ নিষিদ্ধ এবং DND মোডে অটো-লক হয়ে যায়।',
+    smartBehaviorEn:
+      'Enables zero-friction direct Call/WhatsApp ONLY when donor explicitly opts in and is not in DND; bulk `list` is unconditionally denied.',
+  },
+  {
+    id: 'contactRequests',
+    path: '/contactRequests/{seekerUid__donorUid}',
+    titleBn: 'প্রাইভেট ডোনার কনসেন্ট রিকোয়েস্ট',
+    titleEn: 'Consent-Based Contact Requests',
+    tier: 'PARTICIPANT_LOCKED',
+    tierLabelBn: 'রক্তপ্রার্থী ও ডোনার ১-টু-১ লক',
+    tierLabelEn: 'Seeker-Donor Pair Locked',
+    fieldsSummary: 'seekerUid, donorUid, bloodGroupNeeded, hospitalName, urgency, status, approvedPhone',
+    smartBehaviorBn:
+      'যারা সরাসরি নম্বর প্রকাশ করেন না (`REQUEST_ONLY`), তাদের কাছে ১-ক্লিকে কনসেন্ট রিকোয়েস্ট যায়; ডোনার অনুমোদন করলেই কেবল ঐ প্রার্থীর জন্য নম্বর আনলক হয়।',
+    smartBehaviorEn:
+      'Allows seekers to request contact consent from private donors without exposing PII until explicitly approved.',
+  },
+  {
+    id: 'requestAlerts',
+    path: '/requestAlerts/{requestId__donorUid}',
+    titleBn: 'মাল্টি-ডোনার কনকারেন্ট SOS অ্যালার্ট',
+    titleEn: 'Concurrent Multi-Donor SOS Alerts',
+    tier: 'PARTICIPANT_LOCKED',
+    tierLabelBn: 'ডিটারমিনিস্টিক অ্যান্টি-স্প্যাম ফ্যান-আউট',
+    tierLabelEn: 'Deterministic Anti-Spam Fan-Out',
+    fieldsSummary: 'requestId, authorUid, donorUid, escalationLevel, deliveryState, responderPhone',
+    smartBehaviorBn:
+      'একসাথে একাধিক ম্যাচিং ডোনারকে রিয়েল-টাইম অ্যালার্ট পাঠায়, ডুপ্লিকেট স্প্যাম আটকায় এবং রিকোয়েস্ট Fulfilled/Cancelled হলে সাথে সাথে অ্যালার্ট বন্ধ করে দেয়।',
+    smartBehaviorEn:
+      'Concurrent multi-donor alert dispatch with deterministic IDs (`requestId__donorUid`) and immediate stop on cancel/fulfill.',
+  },
+  {
+    id: 'requests',
+    path: '/requests/{requestId}',
+    titleBn: 'জরুরি রক্তের আবেদন (SOS)',
+    titleEn: 'Emergency SOS Blood Requests',
+    tier: 'PUBLIC_MASKED',
+    tierLabelBn: '🚨 ভেরিফাইড রাইট + টার্মিনাল লক',
+    tierLabelEn: '🚨 Verified Write + Terminal Lock',
+    fieldsSummary: 'authorUid, patientName, bloodGroup, unitsNeeded, unitsCollected, hospitalName, status',
+    smartBehaviorBn:
+      'নিবন্ধিত ভেরিফাইড ইউজার ছাড়া কেউ পোস্ট করতে পারে না। রক্তের ব্যাগ পূর্ণ (`FULFILLED`) হলে কার্ড স্বয়ংক্রিয়ভাবে লক হয়ে যায়।',
+    smartBehaviorEn:
+      'Requires registered `/users/{uid}` profile, blocks self-pledge spoofing, and locks terminal `FULFILLED` states.',
+  },
+  {
+    id: 'bloodStock',
+    path: '/bloodStock/{groupId}',
+    titleBn: 'কেন্দ্রীয় ব্লাড ব্যাংক ইনভেন্টরি',
+    titleEn: 'Central Blood Bank Stock',
+    tier: 'ADMIN_ONLY',
+    tierLabelBn: '🛡️ শুধুমাত্র অ্যাডমিন আপডেট',
+    tierLabelEn: '🛡️ Admin-Only Mutation',
+    fieldsSummary: 'bloodGroup, unitsInStock, updatedByUid, updatedAt',
+    smartBehaviorBn:
+      'সকল ৮টি গ্রুপের (`A+` থেকে `O-`) লাইভ ইউনিট সংখ্যা সংরক্ষণ করে; শুধুমাত্র ভেরিফাইড অ্যাডমিন স্টক পরিবর্তন করতে পারেন।',
+    smartBehaviorEn:
+      'Real-time blood bag inventory across all 8 ABO/Rh groups; strictly writable by verified Admins.',
+  },
+  {
+    id: 'directChats',
+    path: '/directChats/{chatId}',
+    titleBn: '১-টু-১ প্রাইভেট ইনবক্স রুম',
+    titleEn: '1-to-1 Private Chat Rooms',
+    tier: 'PARTICIPANT_LOCKED',
+    tierLabelBn: 'শুধু ২ জন চ্যাট অংশগ্রহণকারী',
+    tierLabelEn: 'Participant-Pair Locked',
+    fieldsSummary: 'participantOneUid, participantTwoUid, lastMessage, lastSenderUid, updatedAt',
+    smartBehaviorBn:
+      'ডিটারমিনিস্টিক `uidA__uidB` রুম লক—রোগী ও রক্তদাতা ছাড়া তৃতীয় কোনো ব্যক্তি রুমের অস্তিত্বও দেখতে পান না।',
+    smartBehaviorEn:
+      'Deterministic `uidA__uidB` room lock isolating private coordination strictly to the two participants.',
+  },
+  {
+    id: 'directChatMessages',
+    path: '/directChats/{chatId}/messages/{messageId}',
+    titleBn: 'প্রাইভেট ইনবক্স মেসেজ ও প্রেসক্রিপশন ছবি',
+    titleEn: 'Private Inbox Messages Subcollection',
+    tier: 'PARTICIPANT_LOCKED',
+    tierLabelBn: 'মাস্টার-গেট প্যারেন্ট ভেরিফাইড',
+    tierLabelEn: 'Master-Gate Parent Verified',
+    fieldsSummary: 'chatId, senderUid, participantOneUid, participantTwoUid, text, attachmentUrl',
+    smartBehaviorBn:
+      'প্রতিটি মেসেজ পড়া ও লেখার সময় প্যারেন্ট রুম যাচাই (`get`/`getAfter`), `isSafeMediaUri` এবং অ্যান্টি-XSS শিল্ড কার্যকর থাকে।',
+    smartBehaviorEn:
+      'Enforces relational Master-Gate parent verification, safe HTTPS/image media URIs, and immutable history.',
+  },
+  {
+    id: 'communityMessages',
+    path: '/communityMessages/{messageId}',
+    titleBn: 'কমিউনিটি রক্তযোদ্ধা লাইভ রুম',
+    titleEn: 'Community Blood Warriors Stream',
+    tier: 'PUBLIC_MASKED',
+    tierLabelBn: '💬 অ্যান্টি-XSS ফিল্টারড চ্যাট',
+    tierLabelEn: '💬 Anti-XSS Filtered Stream',
+    fieldsSummary: 'senderUid, senderName, senderBloodGroup, text, attachmentUrl, createdAt',
+    smartBehaviorBn:
+      'সার্ভার কার্নেলে `<script>` ও ক্ষতিকর কোড অটো-ব্লক করা হয় এবং মেসেজ পাঠানোর পর কেউ তা টেম্পার (`update: false`) করতে পারে না।',
+    smartBehaviorEn:
+      'Kernel-enforced `isSafeText` XSS firewall and immutable append-only message history.',
+  },
+  {
+    id: 'admins',
+    path: '/admins/{userId}',
+    titleBn: 'ভেরিফাইড অ্যাডমিন রোস্টার',
+    titleEn: 'Verified Admin Roster',
+    tier: 'OWNER_VAULT',
+    tierLabelBn: '👑 সুপার ওনার নিয়ন্ত্রিত',
+    tierLabelEn: '👑 Super-Owner Controlled',
+    fieldsSummary: 'uid, name, idCardNumber, district, secretProofHash, registryKey',
+    smartBehaviorBn:
+      'শুধুমাত্র সুপার ওনার (`shamimrakib015@gmail.com`) অথবা ওনারের তৈরি সক্রিয় SHA-256 ইনভাইট কোড থাকলেই এখানে নাম যুক্ত হয়।',
+    smartBehaviorEn:
+      'Zero client secrets; requires server-verified `/adminInviteLocks/{proofHash}` or Super Owner JWT.',
+  },
+  {
+    id: 'adminInviteLocks',
+    path: '/adminInviteLocks/{proofHash}',
+    titleBn: 'ওনার SHA-256 সিক্রেট ইনভাইট ভল্ট',
+    titleEn: 'Owner SHA-256 Invite Lock Vault',
+    tier: 'OWNER_VAULT',
+    tierLabelBn: '👑 একচেটিয়া সুপার ওনার ভল্ট',
+    tierLabelEn: '👑 Exclusive Owner Vault',
+    fieldsSummary: 'proofHash (64-hex SHA256), label, ownerUid, active',
+    smartBehaviorBn:
+      'আসল কোড কখনোই ডাটাবেসে বা কোডে থাকে না—শুধু ৬৪ অক্ষরের Salted SHA-256 হ্যাশ থাকে, যা ওনার ১-ক্লিকে বন্ধ বা ডিলিট করতে পারেন।',
+    smartBehaviorEn:
+      'Stores only salted 64-char SHA-256 digests; list/write/delete locked strictly to `shamimrakib015@gmail.com`.',
+  },
+  {
+    id: 'scamReports',
+    path: '/scamReports/{reportId}',
+    titleBn: 'অ্যান্টি-বিকাশ/দালাল স্ক্যাম ভল্ট',
+    titleEn: 'Anti-bKash/Broker Scam Vault',
+    tier: 'ADMIN_ONLY',
+    tierLabelBn: '🛡️ অ্যাডমিন মডারেশন ভল্ট',
+    tierLabelEn: '🛡️ Admin Moderation Vault',
+    fieldsSummary: 'reporterUid, suspectPhone, suspectName, reason, status',
+    smartBehaviorBn:
+      'অগ্রিম গাড়িভাড়া বা বিকাশ প্রতারকের রিপোর্ট জমা হলে তা সাধারণ মানুষের আড়ালে সরাসরি অ্যাডমিন মডারেশন ভল্টে জমা হয়।',
+    smartBehaviorEn:
+      'Verified users can file reports (`OPEN`), while listing and blocking are restricted strictly to Admins.',
+  },
+  {
+    id: 'announcements',
+    path: '/announcements/{announcementId}',
+    titleBn: 'লাইভ মেগাফোন ও সিস্টেম কনফিগ',
+    titleEn: 'Live Megaphone & Global Config',
+    tier: 'ADMIN_ONLY',
+    tierLabelBn: '📢 অ্যাডমিন ব্রডকাস্ট',
+    tierLabelEn: '📢 Admin Broadcast',
+    fieldsSummary: 'title, message, urgency, active, updatedByUid',
+    smartBehaviorBn:
+      'অ্যাডমিন প্যানেল থেকে জরুরি ঘোষণা বা "১০০% রিয়েল ইউজার মোড" অন করলে মুহূর্তেই সব ডিভাইসে সিঙ্ক হয়।',
+    smartBehaviorEn:
+      'Powers instant nationwide emergency banners and global 100% real-user-only mode flag.',
+  },
+  {
+    id: 'gratitudeNotes',
+    path: '/gratitudeNotes/{noteId}',
+    titleBn: 'রোগীর পরিবারের দোয়া ও কৃতজ্ঞতা দেয়াল',
+    titleEn: 'Patient Family Gratitude Wall',
+    tier: 'PUBLIC_MASKED',
+    tierLabelBn: '🤲 ভেরিফাইড ইমিউটেবল নোট',
+    tierLabelEn: '🤲 Verified Immutable Wall',
+    fieldsSummary: 'authorUid, authorName, donorName, bloodGroup, hospitalName, message',
+    smartBehaviorBn:
+      'জীবন বাঁচানোর পর রোগীর স্বজনদের দোয়া সংরক্ষিত থাকে (কোনো গোপন ফোন নম্বর ছাড়া)।',
+    smartBehaviorEn:
+      'Append-only public gratitude notes with zero PII exposure and anti-XSS text validation.',
+  },
+];
+
+export interface SecurityPenetrationProbeResult {
+  id: string;
+  nameBn: string;
+  nameEn: string;
+  attackVector: string;
+  blockedAsExpected: boolean;
+  serverVerdict: string;
+}
+
+export interface SmartDatabaseHealthReport {
+  checkedAt: string;
+  latencyMs: number;
+  online: boolean;
+  projectId: string;
+  databaseId: string;
+  appCheckActive: boolean;
+  counts: {
+    publicDonors: number;
+    publicRequests: number;
+    fulfilledOrCancelledRequests: number;
+    bloodStockGroups: number;
+    communityMessages: number;
+    gratitudeNotes: number;
+  };
+  probes: SecurityPenetrationProbeResult[];
+}
+
+/**
+ * Runs a real, non-destructive live health & Zero-Trust penetration self-test
+ * directly against Cloud Firestore so the Owner/User can visually verify protection.
+ */
+export async function runSmartDatabaseHealthAndSecurityAudit(): Promise<SmartDatabaseHealthReport> {
+  await waitForHealthyAuthBoot();
+  const t0 = performance.now();
+  let online = true;
+
+  try {
+    await getDocFromServer(doc(db, 'announcements', 'global_megaphone'));
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    if (msg.includes('client is offline')) {
+      online = false;
+    }
+  }
+  const latencyMs = Math.max(1, Math.round(performance.now() - t0));
+
+  let publicDonors = 0;
+  let publicRequests = 0;
+  let fulfilledOrCancelledRequests = 0;
+  let bloodStockGroups = 0;
+  let communityMessages = 0;
+  let gratitudeNotes = 0;
+
+  try {
+    const [dSnap, rSnap, sSnap, cSnap, gSnap] = await Promise.all([
+      getDocs(query(collection(db, 'donors'), where('isPublic', '==', true))),
+      getDocs(query(collection(db, 'requests'), where('isPublic', '==', true))),
+      getDocs(query(collection(db, 'bloodStock'), where('unitsInStock', '>=', 0))),
+      getDocs(query(collection(db, 'communityMessages'), where('isPublic', '==', true))),
+      getDocs(query(collection(db, 'gratitudeNotes'), where('isPublic', '==', true))),
+    ]);
+    publicDonors = dSnap.size;
+    publicRequests = rSnap.size;
+    fulfilledOrCancelledRequests = rSnap.docs.filter((x) => x.data().status !== 'ACTIVE').length;
+    bloodStockGroups = sSnap.size;
+    communityMessages = cSnap.size;
+    gratitudeNotes = gSnap.size;
+  } catch {}
+
+  const probes: SecurityPenetrationProbeResult[] = [];
+
+  // Probe 1: Attempt bulk scraping of private /users collection (`allow list: if false`)
+  try {
+    await getDocs(collection(db, 'users'));
+    probes.push({
+      id: 'probe-users-list',
+      nameBn: 'প্রাইভেট ইউজার ফোন নম্বর বাল্ক স্ক্র্যাপিং রোধ',
+      nameEn: 'Private /users Bulk PII Scrape Shield',
+      attackVector: 'LIST /users',
+      blockedAsExpected: false,
+      serverVerdict: 'UNEXPECTED_ALLOW',
+    });
+  } catch (e: any) {
+    const denied =
+      String(e?.code || '').includes('permission-denied') ||
+      String(e?.message || '').includes('Missing or insufficient permissions');
+    probes.push({
+      id: 'probe-users-list',
+      nameBn: 'প্রাইভেট ইউজার ফোন নম্বর বাল্ক স্ক্র্যাপিং রোধ',
+      nameEn: 'Private /users Bulk PII Scrape Shield',
+      attackVector: 'LIST /users',
+      blockedAsExpected: denied,
+      serverVerdict: denied ? 'PERMISSION_DENIED (100% সুরক্ষিত)' : 'NETWORK_GUARDED',
+    });
+  }
+
+  // Probe 2: Attempt reading a private DirectChat room not belonging to caller
+  try {
+    await getDocFromServer(doc(db, 'directChats', 'intruderUidA__intruderUidB'));
+    const amAdmin = await checkIsVerifiedAdminInFirestore(auth.currentUser);
+    probes.push({
+      id: 'probe-private-chat',
+      nameBn: 'অন্যের প্রাইভেট ইনবক্স মেসেজ গোপনীয়তা শিল্ড',
+      nameEn: 'Foreign 1-to-1 Inbox Isolation Shield',
+      attackVector: 'GET /directChats/intruderUidA__intruderUidB',
+      blockedAsExpected: amAdmin,
+      serverVerdict: amAdmin
+        ? 'ADMIN_AUDIT_AUTHORIZED (সুপার অ্যাডমিন)'
+        : 'UNEXPECTED_ALLOW',
+    });
+  } catch (e: any) {
+    const denied =
+      String(e?.code || '').includes('permission-denied') ||
+      String(e?.message || '').includes('Missing or insufficient permissions');
+    probes.push({
+      id: 'probe-private-chat',
+      nameBn: 'অন্যের প্রাইভেট ইনবক্স মেসেজ গোপনীয়তা শিল্ড',
+      nameEn: 'Foreign 1-to-1 Inbox Isolation Shield',
+      attackVector: 'GET /directChats/intruderUidA__intruderUidB',
+      blockedAsExpected: denied,
+      serverVerdict: denied ? 'PERMISSION_DENIED (100% সুরক্ষিত)' : 'NETWORK_GUARDED',
+    });
+  }
+
+  // Probe 3: Attempt reading catch-all unknown shadow collection (`match /{document=**}`)
+  try {
+    await getDocFromServer(doc(db, 'shadow_hack_probe', 'test_doc'));
+    probes.push({
+      id: 'probe-catchall',
+      nameBn: 'অজানা শ্যাডো কালেকশন ও ডিফল্ট-ডিনাই গেট',
+      nameEn: 'Global Default-Deny Catch-All Gate',
+      attackVector: 'GET /shadow_hack_probe/test_doc',
+      blockedAsExpected: false,
+      serverVerdict: 'UNEXPECTED_ALLOW',
+    });
+  } catch (e: any) {
+    const denied =
+      String(e?.code || '').includes('permission-denied') ||
+      String(e?.message || '').includes('Missing or insufficient permissions');
+    probes.push({
+      id: 'probe-catchall',
+      nameBn: 'অজানা শ্যাডো কালেকশন ও ডিফল্ট-ডিনাই গেট',
+      nameEn: 'Global Default-Deny Catch-All Gate',
+      attackVector: 'GET /shadow_hack_probe/test_doc',
+      blockedAsExpected: denied,
+      serverVerdict: denied ? 'PERMISSION_DENIED (100% সুরক্ষিত)' : 'NETWORK_GUARDED',
+    });
+  }
+
+  // Probe 4: Attempt bulk scraping of /donorDirectContacts (`allow list: if false`)
+  try {
+    await getDocs(collection(db, 'donorDirectContacts'));
+    probes.push({
+      id: 'probe-direct-contacts-list',
+      nameBn: 'ডোনার ডিরেক্ট কন্টাক্ট বাল্ক স্ক্র্যাপিং রোধ',
+      nameEn: 'Direct Contact Vault Bulk Scrape Shield',
+      attackVector: 'LIST /donorDirectContacts',
+      blockedAsExpected: false,
+      serverVerdict: 'UNEXPECTED_ALLOW',
+    });
+  } catch (e: any) {
+    const denied =
+      String(e?.code || '').includes('permission-denied') ||
+      String(e?.message || '').includes('Missing or insufficient permissions');
+    probes.push({
+      id: 'probe-direct-contacts-list',
+      nameBn: 'ডোনার ডিরেক্ট কন্টাক্ট বাল্ক স্ক্র্যাপিং রোধ',
+      nameEn: 'Direct Contact Vault Bulk Scrape Shield',
+      attackVector: 'LIST /donorDirectContacts',
+      blockedAsExpected: denied,
+      serverVerdict: denied ? 'PERMISSION_DENIED (100% সুরক্ষিত)' : 'NETWORK_GUARDED',
+    });
+  }
+
+  return {
+    checkedAt: new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }),
+    latencyMs,
+    online,
+    projectId: FIREBASE_PROJECT_ID,
+    databaseId: FIRESTORE_DATABASE_ID,
+    appCheckActive: IS_APP_CHECK_CONFIGURED,
+    counts: {
+      publicDonors,
+      publicRequests,
+      fulfilledOrCancelledRequests,
+      bloodStockGroups,
+      communityMessages,
+      gratitudeNotes,
+    },
+    probes,
+  };
+}
+
+/**
+ * Smart Database Auto-Hygiene for Verified Admins:
+ * Removes completed (`FULFILLED` / `CANCELLED`) SOS requests from active cloud storage
+ * so emergency feeds stay ultra-fast and free-tier read quotas remain minimal.
+ */
+export async function adminSmartCleanupCompletedRequestsInFirestore(): Promise<number> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return 0;
+  const isAdmin = await checkIsVerifiedAdminInFirestore(user);
+  if (!isAdmin) return 0;
+
+  const snap = await getDocs(query(collection(db, 'requests'), where('isPublic', '==', true)));
+  let cleaned = 0;
+  for (const d of snap.docs) {
+    const status = d.data().status;
+    if (status === 'FULFILLED' || status === 'CANCELLED') {
+      await deleteDoc(doc(db, 'requests', d.id));
+      cleaned += 1;
+    }
+  }
+  return cleaned;
+}
+
 

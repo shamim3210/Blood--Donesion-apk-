@@ -44,9 +44,16 @@ import {
   AdminInviteLockItem,
   RegisteredAdminItem,
   BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
+  DATABASE_COLLECTION_ARCHITECTURES,
+  FIREBASE_DATA_CONSOLE_URL,
+  FIREBASE_PROJECT_ID,
+  FIRESTORE_DATABASE_ID,
   FIREBASE_SETTINGS_URL,
   FIREBASE_RULES_CONSOLE_URL,
   GCP_API_CREDENTIALS_URL,
+  SmartDatabaseHealthReport,
+  adminSmartCleanupCompletedRequestsInFirestore,
+  runSmartDatabaseHealthAndSecurityAudit,
   User,
 } from '../../firebase';
 import { getSecurityDiagnostics } from '../../utils/securityShield';
@@ -70,6 +77,8 @@ import {
   ShieldAlert,
   Megaphone,
   Download,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -113,9 +122,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [confirmRevokeAdminUid, setConfirmRevokeAdminUid] = useState<string | null>(null);
 
   const [adminTab, setAdminTab] = useState<
-    'donors' | 'sos' | 'inventory' | 'megaphone' | 'scam' | 'vault' | 'audit'
+    'donors' | 'sos' | 'inventory' | 'megaphone' | 'scam' | 'database' | 'vault' | 'audit'
   >('donors');
   const [searchDonorQuery, setSearchDonorQuery] = useState('');
+  const [dbHealth, setDbHealth] = useState<SmartDatabaseHealthReport | null>(null);
+  const [isScanningDb, setIsScanningDb] = useState(false);
+  const [isCleaningFulfilled, setIsCleaningFulfilled] = useState(false);
 
   // Owner Megaphone & Anti-Scam Moderation States
   const [announcements, setAnnouncements] = useState<OwnerAnnouncementItem[]>([]);
@@ -288,6 +300,49 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       showTempToast('ক্লাউড টেস্ট ডাটা পরিষ্কার করা যায়নি।');
     } finally {
       setIsPurgingCloudTest(false);
+    }
+  };
+
+  const handleRunSmartDbDiagnostic = async () => {
+    setIsScanningDb(true);
+    try {
+      const report = await runSmartDatabaseHealthAndSecurityAudit();
+      setDbHealth(report);
+      onLogAudit('STATUS_CHANGE', `Ran Smart Database Zero-Trust Penetration Audit (${report.latencyMs}ms)`);
+    } catch {
+      showTempToast(
+        lang === 'bn' ? 'ডাটাবেস স্ক্যান সম্পন্ন করা যায়নি।' : 'Database diagnostic scan failed.'
+      );
+    } finally {
+      setIsScanningDb(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAdminAuthenticated && adminTab === 'database' && !dbHealth && !isScanningDb) {
+      handleRunSmartDbDiagnostic();
+    }
+  }, [isAdminAuthenticated, adminTab]);
+
+  const handleSmartCleanCompletedSos = async () => {
+    if (isCleaningFulfilled) return;
+    setIsCleaningFulfilled(true);
+    try {
+      const removed = await adminSmartCleanupCompletedRequestsInFirestore();
+      setRequests((prev) => prev.filter((r) => r.status === 'ACTIVE'));
+      onLogAudit('STATUS_CHANGE', `Smart DB Hygiene: cleaned ${removed} completed/cancelled SOS records`);
+      showTempToast(
+        lang === 'bn'
+          ? `✓ ডাটাবেস অপ্টিমাইজড! ${removed}টি সম্পন্ন/বাতিল SOS রেকর্ড পরিষ্কার করা হয়েছে`
+          : `✓ Database optimized! Cleaned ${removed} completed/cancelled SOS records`
+      );
+      await handleRunSmartDbDiagnostic();
+    } catch {
+      showTempToast(
+        lang === 'bn' ? 'SOS ক্লিনআপ সম্পন্ন করা যায়নি।' : 'Failed to clean completed SOS requests.'
+      );
+    } finally {
+      setIsCleaningFulfilled(false);
     }
   };
 
@@ -901,6 +956,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 ? `🛡️ স্ক্যাম ও আইডি যাচাই (${scamReports.filter((r) => r.status === 'OPEN').length})`
                 : `Scam & ID (${scamReports.filter((r) => r.status === 'OPEN').length})`,
           },
+          { id: 'database', label: lang === 'bn' ? '🗄️ স্মার্ট ডাটাবেস ও শিল্ড' : 'Smart Database' },
           { id: 'vault', label: lang === 'bn' ? '👑 ওনার সিকিউরিটি ভল্ট' : 'Owner Vault' },
           { id: 'audit', label: lang === 'bn' ? '🔒 অডিট লগ' : 'Audit Logs' },
         ].map((tab) => (
@@ -1682,6 +1738,273 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB: SMART DATABASE EXPLORER, AUTO-HYGIENE & ZERO-TRUST PENETRATION SHIELD */}
+      {adminTab === 'database' && (
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white flex items-center gap-2">
+                  <Database className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>
+                    {lang === 'bn'
+                      ? 'লাইভ ক্লাউড ডাটাবেস কন্ট্রোল সেন্টার ও স্মার্ট অটোমেশন'
+                      : 'Live Cloud Database Control Center & Smart Automation'}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 font-mono">
+                  Project: {FIREBASE_PROJECT_ID} · DB: {FIRESTORE_DATABASE_ID}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <a
+                  href={FIREBASE_DATA_CONSOLE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>{lang === 'bn' ? 'Firebase ডাটাবেস টেবিল খুলুন' : 'Open Firebase Data'}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+
+                <a
+                  href={FIREBASE_RULES_CONSOLE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                >
+                  <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{lang === 'bn' ? 'সিকিউরিটি রুলস দেখুন' : 'Inspect Rules'}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            </div>
+
+            {/* Live Cloud Counts & Latency */}
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 block">
+                  {lang === 'bn' ? 'সার্ভার পিং' : 'Latency'}
+                </span>
+                <span className="text-lg font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {dbHealth ? `${dbHealth.latencyMs} ms` : '—'}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 block">
+                  {lang === 'bn' ? 'ক্লাউড ডোনার' : 'Cloud Donors'}
+                </span>
+                <span className="text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                  {dbHealth ? dbHealth.counts.publicDonors : '—'}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 block">
+                  {lang === 'bn' ? 'মোট SOS কার্ড' : 'Cloud SOS'}
+                </span>
+                <span className="text-lg font-bold font-mono tabular-nums text-rose-600 dark:text-rose-400">
+                  {dbHealth ? dbHealth.counts.publicRequests : '—'}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 block">
+                  {lang === 'bn' ? 'সম্পন্ন SOS' : 'Completed SOS'}
+                </span>
+                <span className="text-lg font-bold font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                  {dbHealth ? dbHealth.counts.fulfilledOrCancelledRequests : '—'}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 block">
+                  {lang === 'bn' ? 'চ্যাট মেসেজ' : 'Community Msgs'}
+                </span>
+                <span className="text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                  {dbHealth ? dbHealth.counts.communityMessages : '—'}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 block">
+                  {lang === 'bn' ? 'কৃতজ্ঞতা নোট' : 'Gratitude'}
+                </span>
+                <span className="text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                  {dbHealth ? dbHealth.counts.gratitudeNotes : '—'}
+                </span>
+              </div>
+            </div>
+
+            {/* Smart Database Operations Bar: Live Penetration Scan + Completed SOS Hygiene + CSV/JSON Backups */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRunSmartDbDiagnostic}
+                  disabled={isScanningDb}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isScanningDb ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isScanningDb
+                      ? lang === 'bn'
+                        ? 'সিকিউরিটি স্ক্যান চলছে...'
+                        : 'Scanning...'
+                      : lang === 'bn'
+                        ? 'জিরো-ট্রাস্ট পেনিট্রেশন টেস্ট চালান'
+                        : 'Run Penetration Test'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSmartCleanCompletedSos}
+                  disabled={isCleaningFulfilled}
+                  className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>
+                    {isCleaningFulfilled
+                      ? lang === 'bn'
+                        ? 'পরিষ্কার হচ্ছে...'
+                        : 'Cleaning...'
+                      : lang === 'bn'
+                        ? 'সম্পন্ন SOS অটো-ক্লিন করুন (কোটা সাশ্রয়)'
+                        : 'Clean Completed SOS'}
+                  </span>
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportCsvBackup}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{lang === 'bn' ? 'ডোনার ব্যাকআপ (.CSV)' : 'Export .CSV'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportJsonBackup}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{lang === 'bn' ? 'সম্পূর্ণ স্ন্যাপশট (.JSON)' : 'Full Backup .JSON'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Penetration Probe Verdict Table */}
+            {dbHealth && (
+              <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-[#0f172a] border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                      <th className="py-2.5 px-3 font-semibold">
+                        {lang === 'bn' ? 'সিকিউরিটি শিল্ড টেস্ট' : 'Security Probe'}
+                      </th>
+                      <th className="py-2.5 px-3 font-semibold font-mono">
+                        {lang === 'bn' ? 'অ্যাটাক ভেক্টর' : 'Vector'}
+                      </th>
+                      <th className="py-2.5 px-3 font-semibold">
+                        {lang === 'bn' ? 'লাইভ সার্ভার ফলাফল' : 'Server Verdict'}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                    {dbHealth.probes.map((p) => (
+                      <tr key={p.id}>
+                        <td className="py-2.5 px-3 font-bold text-slate-900 dark:text-white">
+                          {lang === 'bn' ? p.nameBn : p.nameEn}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-slate-600 dark:text-slate-400">
+                          {p.attackVector}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold">
+                          <span
+                            className={
+                              p.blockedAsExpected
+                                ? 'text-emerald-700 dark:text-emerald-400'
+                                : 'text-rose-600 dark:text-rose-400'
+                            }
+                          >
+                            {p.blockedAsExpected ? '✓ ' : '✕ '}
+                            {p.serverVerdict}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Complete 12-Path Firestore Architecture Reference */}
+          <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 sm:p-5 space-y-3">
+            <div>
+              <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                {lang === 'bn'
+                  ? `ডাটাবেস কালেকশন ম্যাপ ও স্মার্ট সুরক্ষা নিয়মাবলি (${DATABASE_COLLECTION_ARCHITECTURES.length}টি পাথ)`
+                  : `Cloud Firestore Collection Architecture (${DATABASE_COLLECTION_ARCHITECTURES.length} Paths)`}
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {lang === 'bn'
+                  ? 'প্রতিটি টেবিল/কালেকশন কীভাবে কাজ করে এবং হ্যাকার বা বট থেকে কীভাবে সুরক্ষিত তা নিচে দেখুন'
+                  : 'Detailed breakdown of schema fields, access gates, and smart automated rules'}
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-700 text-slate-500">
+                    <th className="py-2.5 px-3 font-semibold">
+                      {lang === 'bn' ? 'কালেকশন পাথ ও ফিল্ড' : 'Collection Path & Fields'}
+                    </th>
+                    <th className="py-2.5 px-3 font-semibold">
+                      {lang === 'bn' ? 'অ্যাক্সেস পলিসি' : 'Access Gate'}
+                    </th>
+                    <th className="py-2.5 px-3 font-semibold">
+                      {lang === 'bn' ? 'স্মার্ট অটোমেশন ও ফায়ারওয়াল' : 'Smart Behavior & Firewall'}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {DATABASE_COLLECTION_ARCHITECTURES.map((col) => (
+                    <tr key={col.id} className="align-top">
+                      <td className="py-3 px-3 min-w-[200px]">
+                        <div className="font-bold text-slate-900 dark:text-white">
+                          {lang === 'bn' ? col.titleBn : col.titleEn}
+                        </div>
+                        <div className="font-mono text-[11px] text-rose-600 dark:text-rose-400 mt-0.5">
+                          {col.path}
+                        </div>
+                        <div className="font-mono text-[11px] text-slate-500 mt-1">
+                          {col.fieldsSummary}
+                        </div>
+                      </td>
+                      <td className="py-3 px-3 whitespace-nowrap font-semibold text-slate-700 dark:text-slate-300">
+                        {lang === 'bn' ? col.tierLabelBn : col.tierLabelEn}
+                      </td>
+                      <td className="py-3 px-3 text-slate-600 dark:text-slate-300 leading-relaxed min-w-[250px]">
+                        {lang === 'bn' ? col.smartBehaviorBn : col.smartBehaviorEn}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

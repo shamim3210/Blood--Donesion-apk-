@@ -1,7 +1,8 @@
 /**
  * Firestore Security Rules Verification Suite — Dirty Dozen Payloads
- * Verifies that all 12 adversarial attacks against Identity, Integrity, PII Isolation,
- * Chat Privacy, and State Transitions are rejected with PERMISSION_DENIED.
+ * Verifies that all adversarial attacks against Identity, Integrity, PII Isolation,
+ * Direct Contact Consent, Concurrent Alerts, Chat Privacy, and State Transitions
+ * are rejected with PERMISSION_DENIED.
  */
 
 export interface DirtyDozenTestCase {
@@ -15,6 +16,7 @@ export interface DirtyDozenTestCase {
     email_verified?: boolean;
     sign_in_provider?: string;
   } | null;
+  existingDoc?: Record<string, unknown>;
   payload?: Record<string, unknown>;
   expectedOutcome: 'PERMISSION_DENIED';
 }
@@ -54,36 +56,48 @@ export const DIRTY_DOZEN_TESTS: DirtyDozenTestCase[] = [
   },
   {
     id: 4,
-    name: 'Cross-User PII Read on /users/{otherUid} & Non-Participant /directChats/{b__c}',
-    collectionPath: '/directChats/userB__userC',
+    name: 'Unauthorized Read on Non-Opted-In /donorDirectContacts/{donorId} (REQUEST_ONLY / DND)',
+    collectionPath: '/donorDirectContacts/donor_private',
     operation: 'get',
-    auth: { uid: 'userA', email: 'usera@gmail.com', email_verified: true },
+    auth: { uid: 'seeker_uid', email: 'seeker@gmail.com', email_verified: true },
+    existingDoc: {
+      ownerUid: 'donor_private',
+      shareDirectContact: false,
+      contactVisibility: 'REQUEST_ONLY',
+      availabilityStatus: 'DND',
+      phone: '+8801712345678',
+    },
     expectedOutcome: 'PERMISSION_DENIED',
   },
   {
     id: 5,
-    name: 'Bulk List Scraping on /users PII collection',
-    collectionPath: '/users',
+    name: 'Bulk List Scraping on /donorDirectContacts & /users PII collections',
+    collectionPath: '/donorDirectContacts',
     operation: 'list',
-    auth: { uid: 'other_user_uid', email: 'other@gmail.com', email_verified: true },
+    auth: { uid: 'scraper_uid', email: 'scraper@gmail.com', email_verified: true },
     expectedOutcome: 'PERMISSION_DENIED',
   },
   {
     id: 6,
-    name: 'Shadow Ghost Field Injection on /communityMessages create',
-    collectionPath: '/communityMessages/msg_1',
+    name: 'Shadow Ghost Field Injection on /requestAlerts create',
+    collectionPath: '/requestAlerts/req_1__donor_1',
     operation: 'create',
-    auth: { uid: 'user_1', email: 'u1@gmail.com', email_verified: true },
-    payload: { senderUid: 'user_1', text: 'Hi', ghostAdminFlag: true },
+    auth: { uid: 'author_1', email: 'u1@gmail.com', email_verified: true },
+    payload: {
+      requestId: 'req_1',
+      authorUid: 'author_1',
+      donorUid: 'donor_1',
+      ghostAdminFlag: true,
+    },
     expectedOutcome: 'PERMISSION_DENIED',
   },
   {
     id: 7,
-    name: 'Canonical Room ID Spoofing on /directChats create',
-    collectionPath: '/directChats/spoofed_room_id',
+    name: 'Canonical Pair ID Spoofing on /contactRequests create',
+    collectionPath: '/contactRequests/spoofed_req_id',
     operation: 'create',
-    auth: { uid: 'userA', email: 'u1@gmail.com', email_verified: true },
-    payload: { participantOneUid: 'userA', participantTwoUid: 'userB' },
+    auth: { uid: 'seekerA', email: 'u1@gmail.com', email_verified: true },
+    payload: { seekerUid: 'seekerA', donorUid: 'donorB', status: 'PENDING' },
     expectedOutcome: 'PERMISSION_DENIED',
   },
   {
@@ -105,19 +119,21 @@ export const DIRTY_DOZEN_TESTS: DirtyDozenTestCase[] = [
   },
   {
     id: 10,
-    name: 'Peer Contact Tampering & Immortal Field Mutation on /directChats',
-    collectionPath: '/directChats/userA__userB',
+    name: 'Seeker Self-Approving /contactRequests to bypass Donor Consent',
+    collectionPath: '/contactRequests/seekerA__donorB',
     operation: 'update',
-    auth: { uid: 'userA', email: 'u1@gmail.com', email_verified: true },
-    payload: { participantTwoWhatsapp: '+8801999999999' },
+    auth: { uid: 'seekerA', email: 'u1@gmail.com', email_verified: true },
+    existingDoc: { seekerUid: 'seekerA', donorUid: 'donorB', status: 'PENDING' },
+    payload: { status: 'APPROVED', approvedPhone: '+8801711111111' },
     expectedOutcome: 'PERMISSION_DENIED',
   },
   {
     id: 11,
-    name: 'Terminal State Unlocking on FULFILLED BloodRequest',
+    name: 'Terminal State Unlocking on FULFILLED or CANCELLED BloodRequest',
     collectionPath: '/requests/req_fulfilled',
     operation: 'update',
     auth: { uid: 'user_1', email: 'u1@gmail.com', email_verified: true },
+    existingDoc: { authorUid: 'user_1', status: 'CANCELLED' },
     payload: { status: 'ACTIVE' },
     expectedOutcome: 'PERMISSION_DENIED',
   },

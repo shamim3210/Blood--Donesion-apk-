@@ -67,7 +67,8 @@ export const PlayStoreGuideModal: React.FC<PlayStoreGuideModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       const origin = typeof window !== 'undefined' ? window.location.origin : '';
-      if (origin && !customLiveUrl) {
+      const isPreviewHost = origin.includes('://ais-dev-') || origin.includes('://ais-pre-');
+      if (origin && !isPreviewHost && !customLiveUrl) {
         setCustomLiveUrl(origin);
       }
       runReadinessScan();
@@ -77,9 +78,12 @@ export const PlayStoreGuideModal: React.FC<PlayStoreGuideModalProps> = ({
   if (!isOpen) return null;
 
   const diag = getSecurityDiagnostics();
-  const effectiveUrl = (customLiveUrl || diag.origin || 'https://fifth-receiver-v5v9p.web.app')
+  const rawCandidate = (customLiveUrl || diag.origin || 'https://fifth-receiver-v5v9p.web.app')
     .trim()
     .replace(/\/+$/, '');
+  const isPreviewGateUrl =
+    rawCandidate.includes('ais-dev-') || rawCandidate.includes('ais-pre-');
+  const effectiveUrl = rawCandidate;
 
   const extractedHostname = (() => {
     try {
@@ -337,27 +341,50 @@ export const PlayStoreGuideModal: React.FC<PlayStoreGuideModalProps> = ({
                   </span>
                   <span>
                     {lang === 'bn'
-                      ? 'সবচেয়ে সহজ ডিপ্লয় (কোনো কোডিং ছাড়াই মাত্র ৩০ সেকেন্ডে)'
-                      : 'Step 1: Easiest 1-Click Publish (Zero Coding)'}
+                      ? 'প্রথমে আসল Live Link তৈরি করুন (কোনো কার্ড ছাড়া ১০০% ফ্রি উপায়সহ)'
+                      : 'Step 1: Publish a Real Public URL (Free Options)'}
                   </span>
                 </div>
-                <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                <div className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed space-y-1.5">
                   {lang === 'bn' ? (
                     <>
-                      স্ক্রিনের একদম উপরের ডান কোণায় থাকা <strong>Deploy (Cloud Run)</strong> অথবা{' '}
-                      <strong>Share</strong> বাটনে ক্লিক করুন → Google Cloud প্রজেক্ট{' '}
-                      <code className="font-mono font-bold">fifth-receiver-v5v9p</code> সিলেক্ট করে{' '}
-                      <strong>Deploy</strong> চাপুন। ৩০–৬০ সেকেন্ডের মধ্যে আপনি একটি স্থায়ী{' '}
-                      <code className="font-mono">https://...run.app</code> পাবলিক লিংক পেয়ে যাবেন!
+                      <p>
+                        <strong>উপায় ক (কার্ড বা বিলিং ছাড়া ১০০% ফ্রি — সেরা উপায়):</strong> উপরের ডান কোণায়{' '}
+                        <strong>Save to GitHub</strong> (অথবা Download ZIP) চাপুন →{' '}
+                        <a
+                          href="https://vercel.com/new"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-bold text-emerald-700 dark:text-emerald-300 underline"
+                        >
+                          vercel.com/new ↗
+                        </a>
+                        -এ GitHub দিয়ে ঢুকে প্রজেক্টটি <strong>Import → Deploy</strong> চাপুন। ১ মিনিটে আজীবনের ফ্রি আসল লিংক (<code className="font-mono">https://...vercel.app</code>) পেয়ে যাবেন!
+                      </p>
+                      <p>
+                        <strong>উপায় খ (Google Cloud Run):</strong> উপরের ডান কোণায় <strong>Deploy (🚀)</strong> বাটনে ক্লিক করে <code className="font-mono font-bold">fifth-receiver-v5v9p</code> সিলেক্ট করে ডিপ্লয় করুন।
+                      </p>
                     </>
                   ) : (
                     <>
-                      Click the <strong>Deploy</strong> button at the top-right corner of AI Studio, choose project{' '}
-                      <code className="font-mono font-bold">fifth-receiver-v5v9p</code>, and copy your live{' '}
-                      <code className="font-mono">https://...run.app</code> link!
+                      <p>
+                        <strong>Option A (100% Free, No Card Needed):</strong> Click <strong>Save to GitHub</strong> at top-right → open{' '}
+                        <a
+                          href="https://vercel.com/new"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-bold text-emerald-700 dark:text-emerald-300 underline"
+                        >
+                          vercel.com/new ↗
+                        </a>{' '}
+                        and click <strong>Import → Deploy</strong> to get your permanent <code className="font-mono">.vercel.app</code> link!
+                      </p>
+                      <p>
+                        <strong>Option B (Cloud Run):</strong> Click <strong>Deploy</strong> at the top-right corner of AI Studio.
+                      </p>
                     </>
                   )}
-                </p>
+                </div>
               </div>
 
               {/* STEP 2: PASTE LIVE LINK & AUTHORIZE IN FIREBASE */}
@@ -376,16 +403,26 @@ export const PlayStoreGuideModal: React.FC<PlayStoreGuideModalProps> = ({
                 <div>
                   <label className="text-[11px] font-bold text-slate-600 dark:text-slate-400 block mb-1">
                     {lang === 'bn'
-                      ? 'আপনার ডিপ্লয় করা নতুন লিংকটি এখানে পেস্ট করুন (অটো APK ও শেয়ার লিংক তৈরি হবে):'
-                      : 'Paste your deployed live HTTPS URL here:'}
+                      ? 'আপনার ডিপ্লয় করা আসল লিংকটি এখানে পেস্ট করুন (যেমন: https://bloodsearch-bd.vercel.app):'
+                      : 'Paste your deployed live HTTPS URL here (e.g. https://bloodsearch-bd.vercel.app):'}
                   </label>
                   <input
                     type="url"
                     value={customLiveUrl}
                     onChange={(e) => setCustomLiveUrl(e.target.value)}
-                    placeholder="https://your-app-name.asia-east1.run.app"
+                    placeholder="https://bloodsearch-bd.vercel.app"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 font-mono text-xs text-slate-900 dark:text-white focus:outline-none focus:border-rose-500"
                   />
+                  {isPreviewGateUrl && (
+                    <p className="mt-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-start gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>
+                        {lang === 'bn'
+                          ? 'লক্ষ্য করুন: ais-pre-... বা ais-dev-... হলো প্রিভিউ লিংক—এটিতে সিকিউরিটি গেট থাকায় PWABuilder স্ক্যান করতে পারে না ("Missing Name / Timed out" দেখায়)। APK বানাতে উপরের ধাপ ১ অনুযায়ী Vercel বা Cloud Run-এর আসল লিংক পেস্ট করুন।'
+                          : 'Note: ais-pre / ais-dev preview URLs have an auth gate that blocks PWABuilder ("Missing Name / Timed out"). Paste your real Vercel or Cloud Run URL above first.'}
+                      </span>
+                    </p>
+                  )}
                 </div>
 
                 <div className="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">

@@ -2,7 +2,30 @@ export type BloodGroup = 'A+' | 'A-' | 'B+' | 'B-' | 'AB+' | 'AB-' | 'O+' | 'O-'
 
 export type UrgencyLevel = 'CRITICAL' | 'URGENT' | 'STANDARD';
 
+export type RequiredTimeWindow = 'IMMEDIATE_2H' | 'TODAY_6H' | 'WITHIN_24H' | 'SCHEDULED';
+
 export type RequestStatus = 'PENDING' | 'ACTIVE' | 'ACCEPTED' | 'FULFILLED' | 'CANCELLED' | 'EXPIRED';
+
+export type RequestLifecycleState =
+  | 'SEARCHING'
+  | 'DONORS_NOTIFIED'
+  | 'RESPONSES_RECEIVED'
+  | 'CONTACT_ATTEMPTED'
+  | 'DONOR_CONFIRMED'
+  | 'FULFILLED'
+  | 'NO_RESPONSE'
+  | 'CANCELLED'
+  | 'EXPIRED';
+
+export type DonorAvailabilityStatus = 'AVAILABLE' | 'TEMPORARILY_UNAVAILABLE' | 'DND';
+
+export type AvailabilityConfidence =
+  | 'CONFIRMED_RECENT'
+  | 'UNKNOWN_UNCONFIRMED'
+  | 'TEMPORARILY_UNAVAILABLE'
+  | 'DND';
+
+export type ContactVisibility = 'PUBLIC_OPT_IN' | 'VERIFIED_SEEKERS' | 'REQUEST_ONLY';
 
 export type PortalMode = 'showcase' | 'donor_app' | 'command_center' | 'blood_bank' | 'admin' | 'architecture';
 
@@ -16,8 +39,17 @@ export interface Responder {
   avatar?: string;
 }
 
+export interface ContactAttemptOutcome {
+  donorId: string;
+  donorName: string;
+  channel: 'CALL' | 'WHATSAPP' | 'SMS' | 'CHAT' | 'CONSENT_REQUEST';
+  outcome: 'NO_ANSWER' | 'BUSY_UNAVAILABLE' | 'CONTACTED_AWAITING' | 'CONFIRMED';
+  timestampIso: string;
+}
+
 export interface BloodRequest {
   id: string;
+  authorUid?: string;
   patientName: string;
   patientAge: number;
   bloodGroup: BloodGroup;
@@ -28,13 +60,28 @@ export interface BloodRequest {
   district: string;
   upazila: string;
   urgency: UrgencyLevel;
+  requiredTimeWindow?: RequiredTimeWindow;
   contactName: string;
   contactPhone: string;
+  seekerSharePhone?: boolean;
   requiredDate: string;
   reason: string;
   responders: Responder[];
   createdAt: string;
+  createdAtMs?: number;
+  expiresAtMs?: number;
   status: RequestStatus;
+  lifecycleState?: RequestLifecycleState;
+  notifiedCount?: number;
+  viewedCount?: number;
+  respondedCount?: number;
+  contactAttemptsCount?: number;
+  confirmedDonorId?: string;
+  confirmedDonorName?: string;
+  escalationLevel?: number;
+  searchRadiusKm?: number;
+  escalationIntervalMinutes?: number;
+  lastEscalatedAtMs?: number;
   prescriptionImage?: string;
   distanceKm?: number;
   exchangeAllowed?: boolean;
@@ -59,6 +106,17 @@ export interface Donor {
   upazila: string;
   phone: string;
   available: boolean;
+  availabilityStatus?: DonorAvailabilityStatus;
+  availabilityConfirmedAtMs?: number;
+  updatedAtMs?: number;
+  shareDirectContact?: boolean;
+  contactVisibility?: ContactVisibility;
+  allowCall?: boolean;
+  allowWhatsApp?: boolean;
+  allowSms?: boolean;
+  allowInAppChat?: boolean;
+  emergencyAlertsOptIn?: boolean;
+  alertsPaused?: boolean;
   lastDonatedDate: string; // YYYY-MM-DD
   totalDonations: number;
   verifiedBadge: boolean;
@@ -74,11 +132,62 @@ export interface Donor {
   reliabilityScore?: number; // 0 - 100%
   facebookUrl?: string;
   whatsappPhone?: string;
+  isCloudRecord?: boolean;
+}
+
+export interface RequestAlertItem {
+  id: string;
+  requestId: string;
+  authorUid: string;
+  donorUid: string;
+  bloodGroup: BloodGroup;
+  hospitalName: string;
+  district: string;
+  urgency: UrgencyLevel;
+  escalationLevel: number;
+  seekerCallbackPhone?: string;
+  deliveryState:
+    | 'DISPATCHED'
+    | 'VIEWED'
+    | 'RESPONDED_ACCEPT'
+    | 'RESPONDED_DECLINE'
+    | 'STOPPED_RESOLVED';
+  responseNote?: string;
+  responderPhone?: string;
+  responderName?: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ContactConsentRequestItem {
+  id: string;
+  seekerUid: string;
+  seekerName: string;
+  seekerPhone: string;
+  donorUid: string;
+  donorName: string;
+  bloodGroupNeeded: BloodGroup;
+  hospitalName: string;
+  urgency: UrgencyLevel;
+  status: 'PENDING' | 'APPROVED' | 'DECLINED';
+  approvedPhone?: string;
+  approvedWhatsApp?: string;
+  createdAtMs: number;
+  updatedAtMs: number;
 }
 
 export interface AuditLogEntry {
   id: string;
-  action: 'UNMASK_PHONE' | 'CREATE_SOS' | 'RESPOND_SOS' | 'STATUS_CHANGE' | 'DONOR_REGISTERED' | 'DISPATCH_INCIDENT' | 'STOCK_UPDATE';
+  action:
+    | 'UNMASK_PHONE'
+    | 'CREATE_SOS'
+    | 'RESPOND_SOS'
+    | 'STATUS_CHANGE'
+    | 'DONOR_REGISTERED'
+    | 'DISPATCH_INCIDENT'
+    | 'STOCK_UPDATE'
+    | 'ESCALATE_SOS'
+    | 'CONTACT_ATTEMPT';
   actorName: string;
   targetDetails: string;
   timestamp: string;
@@ -167,6 +276,15 @@ export interface UserAccount {
   gender: 'MALE' | 'FEMALE' | 'OTHER';
   weightKg: number;
   availableToDonate: boolean;
+  availabilityStatus?: DonorAvailabilityStatus;
+  availabilityConfirmedAtMs?: number;
+  shareDirectContact?: boolean;
+  contactVisibility?: ContactVisibility;
+  allowCall?: boolean;
+  allowWhatsApp?: boolean;
+  allowSms?: boolean;
+  emergencyAlertsOptIn?: boolean;
+  alertsPaused?: boolean;
   lastDonationDate?: string;
   totalDonations: number;
   emergencyContactName?: string;
@@ -176,19 +294,19 @@ export interface UserAccount {
   createdAt: string;
 }
 
-export type ActiveTab = 
-  | 'home' 
-  | 'onboarding' 
-  | 'search' 
-  | 'sos' 
-  | 'requests' 
-  | 'compatibility' 
-  | 'eligibility' 
-  | 'security' 
-  | 'chat' 
-  | 'badges' 
-  | 'profile' 
-  | 'map' 
+export type ActiveTab =
+  | 'home'
+  | 'onboarding'
+  | 'search'
+  | 'sos'
+  | 'requests'
+  | 'compatibility'
+  | 'eligibility'
+  | 'security'
+  | 'chat'
+  | 'badges'
+  | 'profile'
+  | 'map'
   | 'admin';
 
 export type Language = 'bn' | 'en';

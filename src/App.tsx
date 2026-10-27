@@ -6,6 +6,7 @@ import {
   BloodRequest,
   AuditLogEntry,
   BloodGroup,
+  RequestAlertItem,
 } from './types';
 import {
   INITIAL_DONORS,
@@ -44,6 +45,9 @@ import {
   subscribeCommunityMessages,
   createBloodRequestInFirestore,
   pledgeBloodRequestUnitInFirestore,
+  subscribeIncomingAlertsForDonor,
+  respondToRequestAlertInFirestore,
+  updateBloodRequestTrackingInFirestore,
   signInWithGoogleReal,
   signOutReal,
   getTokenServiceAlert,
@@ -255,6 +259,10 @@ export default function App() {
   const [tokenServiceAlert, setTokenServiceAlert] = useState<TokenServiceAlertInfo | null>(() =>
     getTokenServiceAlert()
   );
+  const [incomingDonorAlerts, setIncomingDonorAlerts] = useState<RequestAlertItem[]>([]);
+  const [unsuccessfulDonorIds, setUnsuccessfulDonorIds] = useState<string[]>([]);
+  const [confirmedDonorId, setConfirmedDonorId] = useState<string | null>(null);
+  const markedViewedAlertIdsRef = React.useRef<Set<string>>(new Set());
 
   // Live SOS Sound & Real-Time Matching Radar
   const [sosSoundEnabled, setSosSoundEnabled] = useState<boolean>(() => {
@@ -280,13 +288,23 @@ export default function App() {
     }
 
     let myGroup: BloodGroup = 'O-';
+    let alertsPausedOrDnd = false;
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.bloodGroup) myGroup = parsed.bloodGroup;
+        if (
+          parsed?.alertsPaused === true ||
+          parsed?.availabilityStatus === 'DND' ||
+          parsed?.emergencyAlertsOptIn === false
+        ) {
+          alertsPausedOrDnd = true;
+        }
       }
     } catch {}
+
+    if (alertsPausedOrDnd) return;
 
     for (const req of requests) {
       if (req.status === 'ACTIVE' && !seenRequestIdsRef.current.has(req.id)) {
@@ -312,12 +330,17 @@ export default function App() {
     completeRealGmailSignInIfPresent().catch(() => {});
 
     let unsubProfile: (() => void) | null = null;
+    let unsubDonorAlerts: (() => void) | null = null;
 
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
       setLiveFirebaseUser(u);
       if (unsubProfile) {
         unsubProfile();
         unsubProfile = null;
+      }
+      if (unsubDonorAlerts) {
+        unsubDonorAlerts();
+        unsubDonorAlerts = null;
       }
       if (u) {
         try {
@@ -333,7 +356,28 @@ export default function App() {
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(liveProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
           });
+          unsubDonorAlerts = subscribeIncomingAlertsForDonor(u.uid, (alerts) => {
+            const activePending = alerts.filter(
+              (a) => a.deliveryState === 'DISPATCHED' || a.deliveryState === 'VIEWED'
+            );
+            setIncomingDonorAlerts(activePending);
+            // Acknowledge VIEWED state once when displayed so seeker gets honest viewed count
+            for (const al of activePending.slice(0, 3)) {
+              if (
+                al.deliveryState === 'DISPATCHED' &&
+                !markedViewedAlertIdsRef.current.has(al.id)
+              ) {
+                markedViewedAlertIdsRef.current.add(al.id);
+                respondToRequestAlertInFirestore({
+                  alertId: al.id,
+                  action: 'VIEWED',
+                }).catch(() => {});
+              }
+            }
+          });
         } catch {}
+      } else {
+        setIncomingDonorAlerts([]);
       }
     });
 
@@ -414,6 +458,7 @@ export default function App() {
       window.removeEventListener('bloodsearch_real_mode_changed', syncRealOnlyMode);
       unsubAuth();
       if (unsubProfile) unsubProfile();
+      if (unsubDonorAlerts) unsubDonorAlerts();
       if (unsubDonors) unsubDonors();
       if (unsubRequests) unsubRequests();
       if (unsubAnnouncements) unsubAnnouncements();
@@ -517,9 +562,9 @@ export default function App() {
     setIsPhoneModalOpen(true);
   }, []);
 
-  // SOS Creation Action (Evicts 1 fake request automatically!)
+  // SOS Creation Action (Evicts 1 fake request automatically & avoids double-write if already dispatched)
   const handleSubmitSOS = useCallback(
-    (newRequest: BloodRequest) => {
+    (newRequest: BloodRequest, opts?: { alreadySyncedToCloud?: boolean }) => {
       setRequests((prev) => {
         const realReqs = [
           newRequest,
@@ -527,10 +572,67 @@ export default function App() {
         ];
         return evictSeedsProgressively(realReqs, INITIAL_REQUESTS);
       });
-      createBloodRequestInFirestore(newRequest).catch(() => {});
+      if (!opts?.alreadySyncedToCloud) {
+        createBloodRequestInFirestore(newRequest).catch(() => {});
+      }
       handleSelectTab('requests');
     },
     [handleSelectTab]
+  );
+
+  const handleUpdateRequestLocal = useCallback(
+    (reqId: string, patch: Partial<BloodRequest>) => {
+      setRequests((prev) =>
+        prev.map((r) => (r.id === reqId ? { ...r, ...patch } : r))
+      );
+    },
+    []
+  );
+
+  const handleRecordContactOutcome = useCallback(
+    (donor: Donor, outcome: 'CONFIRMED' | 'NO_ANSWER') => {
+      if (outcome === 'NO_ANSWER') {
+        setUnsuccessfulDonorIds((prev) =>
+          prev.includes(donor.id) ? prev : [...prev, donor.id]
+        );
+      } else {
+        setConfirmedDonorId(donor.id);
+      }
+
+      // Also sync contact tracking to the seeker's newest active blood request if present
+      const myUid = auth.currentUser?.uid;
+      const myActiveReq = requests.find(
+        (r) =>
+          r.status === 'ACTIVE' &&
+          ((myUid && r.authorUid === myUid) || (!r.authorUid && r.id.startsWith('sos_')))
+      );
+      if (myActiveReq) {
+        if (outcome === 'CONFIRMED') {
+          handleUpdateRequestLocal(myActiveReq.id, {
+            lifecycleState: 'DONOR_CONFIRMED',
+            confirmedDonorId: donor.id,
+            confirmedDonorName: donor.name,
+          });
+          updateBloodRequestTrackingInFirestore({
+            requestId: myActiveReq.id,
+            lifecycleState: 'DONOR_CONFIRMED',
+            confirmedDonorId: donor.id,
+            confirmedDonorName: donor.name,
+          }).catch(() => {});
+        } else {
+          handleUpdateRequestLocal(myActiveReq.id, {
+            lifecycleState: 'CONTACT_ATTEMPTED',
+            contactAttemptsCount: (myActiveReq.contactAttemptsCount || 0) + 1,
+          });
+          updateBloodRequestTrackingInFirestore({
+            requestId: myActiveReq.id,
+            lifecycleState: 'CONTACT_ATTEMPTED',
+            incrementContactAttempt: true,
+          }).catch(() => {});
+        }
+      }
+    },
+    [requests, handleUpdateRequestLocal]
   );
 
   // Volunteer Response to SOS
@@ -758,6 +860,79 @@ export default function App() {
             </div>
           )}
 
+          {/* Actionable Concurrent Donor Emergency Alert Inbox Banner */}
+          {incomingDonorAlerts.slice(0, 1).map((alertItem) => (
+            <div
+              key={alertItem.id}
+              className="mb-3.5 p-3.5 rounded-2xl bg-rose-700 text-white shadow-sm flex flex-wrap items-center justify-between gap-2.5 text-left"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold text-rose-100">
+                  {lang === 'bn'
+                    ? `জরুরি রক্তের আহ্বান (${alertItem.bloodGroup}) · ${alertItem.district}`
+                    : `Direct Donor Alert (${alertItem.bloodGroup}) · ${alertItem.district}`}
+                </div>
+                <div className="text-xs sm:text-sm font-bold truncate mt-0.5">
+                  {alertItem.hospitalName}
+                  {alertItem.seekerCallbackPhone
+                    ? ` · ${alertItem.seekerCallbackPhone}`
+                    : ''}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    let myName = liveUserLabel || 'Donor';
+                    let myPhone = '';
+                    try {
+                      const raw = localStorage.getItem('bloodsearch_current_user');
+                      if (raw) {
+                        const p = JSON.parse(raw);
+                        if (p?.name) myName = p.name;
+                        if (p?.phone) myPhone = p.phone;
+                      }
+                    } catch {}
+                    await respondToRequestAlertInFirestore({
+                      alertId: alertItem.id,
+                      action: 'RESPONDED_ACCEPT',
+                      responderName: myName,
+                      responderPhone: myPhone,
+                      responseNote: 'Available to donate',
+                    });
+                    setIncomingDonorAlerts((prev) =>
+                      prev.filter((x) => x.id !== alertItem.id)
+                    );
+                    setAppShareToast(
+                      lang === 'bn'
+                        ? '✓ আপনার সাড়া ও কলব্যাক নম্বর রোগীর স্বজনের কাছে পাঠানো হয়েছে।'
+                        : '✓ Your response and callback number have been shared with the seeker.'
+                    );
+                    window.setTimeout(() => setAppShareToast(null), 3500);
+                  }}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white text-rose-700 font-bold text-xs cursor-pointer whitespace-nowrap"
+                >
+                  {lang === 'bn' ? 'আমি রক্ত দিতে প্রস্তুত' : 'I Can Donate'}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await respondToRequestAlertInFirestore({
+                      alertId: alertItem.id,
+                      action: 'RESPONDED_DECLINE',
+                    });
+                    setIncomingDonorAlerts((prev) =>
+                      prev.filter((x) => x.id !== alertItem.id)
+                    );
+                  }}
+                  className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-black/25 hover:bg-black/35 text-white font-semibold text-xs cursor-pointer whitespace-nowrap"
+                >
+                  {lang === 'bn' ? 'এখন সম্ভব নয়' : 'Unavailable'}
+                </button>
+              </div>
+            </div>
+          ))}
+
           {/* Live Incoming Compatible SOS Radar Banner */}
           {liveSosBannerReq && (
             <div className="mb-3.5 p-3.5 rounded-2xl bg-gradient-to-r from-red-600 to-rose-700 text-white shadow-md flex flex-wrap items-center justify-between gap-2.5 text-left">
@@ -877,6 +1052,9 @@ export default function App() {
                 handleSelectTab('chat');
               }}
               onOpenRegister={() => setIsRegisterModalOpen(true)}
+              unsuccessfulDonorIds={unsuccessfulDonorIds}
+              confirmedDonorId={confirmedDonorId}
+              onRecordContactOutcome={handleRecordContactOutcome}
             />
           )}
 
@@ -884,9 +1062,12 @@ export default function App() {
           {activeTab === 'requests' && (
             <RequestsFeed
               requests={requests}
+              donors={donors}
               lang={lang}
               onOpenSOSModal={() => setIsSOSWizardOpen(true)}
               onRespondToRequest={handleRespondToRequest}
+              onRevealPhone={handleRevealPhone}
+              onUpdateRequestLocal={handleUpdateRequestLocal}
               initialRespondRequest={pendingRespondRequest}
               onClearInitialRespondRequest={() => setPendingRespondRequest(null)}
             />
@@ -1002,6 +1183,11 @@ export default function App() {
           onClose={() => setIsPhoneModalOpen(false)}
           lang={lang}
           onLogAudit={addAuditLog}
+          onStartChatWithDonor={(donor) => {
+            setActiveDonorForChat(donor);
+            handleSelectTab('chat');
+          }}
+          onRecordContactOutcome={handleRecordContactOutcome}
         />
       )}
 
@@ -1010,8 +1196,10 @@ export default function App() {
           isOpen={isSOSWizardOpen}
           onClose={() => setIsSOSWizardOpen(false)}
           lang={lang}
+          donors={donors}
           onSubmitSOS={handleSubmitSOS}
           onLogAudit={addAuditLog}
+          onRevealPhone={handleRevealPhone}
         />
       )}
 

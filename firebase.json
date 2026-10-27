@@ -7,7 +7,9 @@
     "public": "dist",
     "ignore": [
       "firebase.json",
-      "**/.*",
+      ".git",
+      ".firebase/**",
+      ".env*",
       "**/node_modules/**"
     ],
     "headers": [
