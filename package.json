@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
+  "name": "bloodsearch-emergency-network",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.5.0",
+  "description": "Enterprise emergency blood donor matching, multi-donor SOS dispatch, and white-label transfusion network platform.",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -9,7 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "tsx --test tests/*.test.ts",
-    "clean": "rm -rf dist server.js",
+    "package:buyer": "node scripts/package-buyer.mjs",
+    "clean": "rm -rf dist server.js buyer-release",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

@@ -144,6 +144,41 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       setStep(1);
       setFormError(null);
       setAdminError('');
+      try {
+        const raw = localStorage.getItem('bloodsearch_current_user');
+        if (raw) {
+          const saved = JSON.parse(raw) as Partial<UserAccount>;
+          if (saved.name) setName(saved.name);
+          if (saved.phone && saved.phone !== '01700000000') setPhone(saved.phone);
+          if (saved.whatsappPhone && saved.whatsappPhone !== '01700000000') {
+            setWhatsappPhone(saved.whatsappPhone);
+          }
+          if (
+            saved.facebookUrl &&
+            saved.facebookUrl !== 'https://facebook.com/bloodsearch.bd'
+          ) {
+            setFacebookUrl(saved.facebookUrl);
+          }
+          if (saved.email) setEmail(saved.email);
+          if (saved.bloodGroup) setBloodGroup(saved.bloodGroup);
+          if (saved.division) setDivision(saved.division);
+          if (saved.district && saved.district !== 'ঢাকা') setDistrict(saved.district);
+          if (saved.upazila && saved.upazila !== 'সদর') setUpazila(saved.upazila);
+          if (saved.age) setAge(saved.age);
+          if (saved.gender) setGender(saved.gender);
+          if (saved.weightKg) setWeightKg(saved.weightKg);
+          if (typeof saved.availableToDonate === 'boolean') setAvailable(saved.availableToDonate);
+          if (saved.lastDonationDate) setLastDonatedDate(saved.lastDonationDate);
+          if (saved.contactVisibility) setContactVisibility(saved.contactVisibility);
+          if (typeof saved.allowCall === 'boolean') setAllowCall(saved.allowCall);
+          if (typeof saved.allowWhatsApp === 'boolean') setAllowWhatsApp(saved.allowWhatsApp);
+          if (typeof saved.allowSms === 'boolean') setAllowSms(saved.allowSms);
+          if (typeof saved.emergencyAlertsOptIn === 'boolean') {
+            setEmergencyAlertsOptIn(saved.emergencyAlertsOptIn);
+          }
+          if (saved.photoUrl) setPhotoUrl(saved.photoUrl);
+        }
+      } catch {}
     }
   }, [initialRole, isOpen]);
 
@@ -284,17 +319,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         setStep(2);
         setFormError(
           lang === 'bn'
-            ? 'হোয়াটসঅ্যাপ নম্বর দেওয়া বাধ্যতামূলক।'
-            : 'WhatsApp number is mandatory.'
-        );
-        return;
-      }
-      if (fb.length < 5) {
-        setStep(2);
-        setFormError(
-          lang === 'bn'
-            ? 'ফেসবুক প্রোফাইল লিংক দেওয়া বাধ্যতামূলক (নিচের বাটনে ট্যাপ করে বসাতে পারেন)।'
-            : 'Facebook profile link is mandatory.'
+            ? 'সঠিক মোবাইল অথবা হোয়াটসঅ্যাপ নম্বর দিন।'
+            : 'Please provide a valid mobile or WhatsApp number.'
         );
         return;
       }
@@ -340,18 +366,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       setStep(2);
       setFormError(
         lang === 'bn'
-          ? 'হোয়াটসঅ্যাপ নম্বর দেওয়া বাধ্যতামূলক।'
-          : 'WhatsApp number is mandatory for emergency coordination.'
-      );
-      return;
-    }
-
-    if (fb.length < 5) {
-      setStep(2);
-      setFormError(
-        lang === 'bn'
-          ? 'ফেসবুক প্রোফাইল লিংক (FB ID Link) দেওয়া বাধ্যতামূলক।'
-          : 'Facebook Profile URL is mandatory for identity verification.'
+          ? 'সঠিক মোবাইল অথবা হোয়াটসঅ্যাপ নম্বর দিন।'
+          : 'Please provide a valid mobile or WhatsApp number.'
       );
       return;
     }
@@ -399,18 +415,44 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         verifiedProofHash = cloudCheck.proofHash;
       }
 
+      let existingSaved: Partial<UserAccount> | null = null;
+      try {
+        const raw = localStorage.getItem('bloodsearch_current_user');
+        if (raw) {
+          const p = JSON.parse(raw);
+          if (p && p.id === activeFirebaseUser.uid) existingSaved = p;
+        }
+      } catch {}
+
       const randomSerial = Math.floor(1000 + Math.random() * 9000);
-      const generatedId =
-        accountRole === 'ADMIN'
+      const keepExistingId =
+        existingSaved?.idCardNumber &&
+        !existingSaved.idCardNumber.startsWith('BD-AUTO-') &&
+        (accountRole === 'ADMIN'
+          ? existingSaved.idCardNumber.startsWith('ADMIN-')
+          : !existingSaved.idCardNumber.startsWith('ADMIN-'));
+
+      const generatedId = keepExistingId
+        ? existingSaved!.idCardNumber!
+        : accountRole === 'ADMIN'
           ? `ADMIN-BD-${new Date().getFullYear()}-${randomSerial}`
           : `USER-BD-${new Date().getFullYear()}-${randomSerial}`;
 
-      const normalizedFb = fb.startsWith('http') ? fb : `https://${fb}`;
+      const normalizedFb =
+        fb.length >= 5
+          ? fb.startsWith('http')
+            ? fb
+            : `https://${fb}`
+          : existingSaved?.facebookUrl || 'https://facebook.com/bloodsearch.bd';
 
       const availabilityStatus: DonorAvailabilityStatus = available
         ? 'AVAILABLE'
         : 'TEMPORARILY_UNAVAILABLE';
       const shareDirectContact = contactVisibility !== 'REQUEST_ONLY';
+      const preservedDonations = Math.max(
+        existingSaved?.totalDonations || 0,
+        lastDonatedDate ? 1 : 0
+      );
 
       const newAccount: UserAccount = {
         id: activeFirebaseUser.uid,
@@ -444,8 +486,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         emergencyAlertsOptIn,
         alertsPaused: false,
         lastDonationDate: lastDonatedDate || undefined,
-        totalDonations: lastDonatedDate ? 1 : 0,
-        createdAt: new Date().toISOString(),
+        totalDonations: preservedDonations,
+        createdAt: existingSaved?.createdAt || new Date().toISOString(),
       };
 
       const newDonor: Donor = {
@@ -469,10 +511,10 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         emergencyAlertsOptIn,
         alertsPaused: false,
         lastDonatedDate: lastDonatedDate || '',
-        totalDonations: lastDonatedDate ? 1 : 0,
+        totalDonations: preservedDonations,
         verifiedBadge: accountRole === 'ADMIN',
         rating: 5.0,
-        reviewsCount: 1,
+        reviewsCount: 0,
         age: Number(age) || 24,
         gender,
         weightKg: Number(weightKg) || 62,

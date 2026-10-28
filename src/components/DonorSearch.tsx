@@ -45,13 +45,22 @@ import {
   SkipForward,
   Expand,
   AlertTriangle,
+  SlidersHorizontal,
+  Bookmark,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface DonorSearchProps {
   donors: Donor[];
   lang: Language;
+  presetGroup?: BloodGroup | 'ALL';
+  presetDistrict?: string;
+  presetNonce?: number;
   onRevealPhone: (donor: Donor) => void;
-  onOpenSOSModal: () => void;
+  onOpenSOSModal: (context?: { bloodGroup?: BloodGroup; district?: string }) => void;
   onStartChatWithDonor?: (donor: Donor) => void;
   onOpenRegister?: () => void;
   unsuccessfulDonorIds?: string[];
@@ -63,7 +72,12 @@ const PAGE_CHUNK = 24;
 
 function matchesSelectedUpazila(donor: Donor, selectedDistrict: string, selectedUpazila: string): boolean {
   if (selectedUpazila === 'ALL') return true;
-  const distObj = DISTRICTS.find((d) => d.id === selectedDistrict);
+  const distObj = DISTRICTS.find(
+    (d) =>
+      d.id === selectedDistrict.toLowerCase() ||
+      d.nameBn === selectedDistrict.trim() ||
+      d.nameEn.toLowerCase() === selectedDistrict.trim().toLowerCase()
+  );
   const upzObj = distObj?.upazilas.find((u) => u.id === selectedUpazila);
   const dUpz = (donor.upazila || '').trim().toLowerCase();
   if (dUpz === selectedUpazila.toLowerCase()) return true;
@@ -79,6 +93,9 @@ function matchesSelectedUpazila(donor: Donor, selectedDistrict: string, selected
 const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   donors,
   lang,
+  presetGroup,
+  presetDistrict,
+  presetNonce,
   onRevealPhone,
   onOpenSOSModal,
   onStartChatWithDonor,
@@ -89,15 +106,66 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
 }) => {
   const t = getTranslation(lang);
 
-  const [selectedGroup, setSelectedGroup] = useState<BloodGroup | 'ALL'>('ALL');
+  const [selectedGroup, setSelectedGroup] = useState<BloodGroup | 'ALL'>(
+    presetGroup || 'ALL'
+  );
   const [includeCompatible, setIncludeCompatible] = useState<boolean>(true);
   const [selectedDivision, setSelectedDivision] = useState<string>('ALL');
-  const [selectedDistrict, setSelectedDistrict] = useState<string>('ALL');
+  const [selectedDistrict, setSelectedDistrict] = useState<string>(
+    presetDistrict || 'ALL'
+  );
   const [selectedUpazila, setSelectedUpazila] = useState<string>('ALL');
   const [urgency, setUrgency] = useState<UrgencyLevel>('CRITICAL');
   const [requiredTimeWindow, setRequiredTimeWindow] =
     useState<RequiredTimeWindow>('IMMEDIATE_2H');
   const [includeNearbyDistricts, setIncludeNearbyDistricts] = useState<boolean>(false);
+
+  // Progressive-disclosure advanced filters & saved shortlist
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState<boolean>(false);
+  const [onlyShortlisted, setOnlyShortlisted] = useState<boolean>(false);
+  const [shortlistedIds, setShortlistedIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('bloodsearch_shortlisted_donors');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.filter((x) => typeof x === 'string');
+      }
+    } catch {}
+    return [];
+  });
+  const [copiedDonorId, setCopiedDonorId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (presetGroup !== undefined) {
+      setSelectedGroup(presetGroup);
+    }
+    if (presetDistrict !== undefined) {
+      setSelectedDistrict(presetDistrict);
+      setSelectedUpazila('ALL');
+    }
+  }, [presetGroup, presetDistrict, presetNonce]);
+
+  const toggleShortlistDonor = useCallback((donorId: string) => {
+    setShortlistedIds((prev) => {
+      const next = prev.includes(donorId)
+        ? prev.filter((id) => id !== donorId)
+        : [donorId, ...prev];
+      try {
+        localStorage.setItem('bloodsearch_shortlisted_donors', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleCopyDirectPhone = useCallback((donorId: string, rawPhone: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(rawPhone).catch(() => {});
+      setCopiedDonorId(donorId);
+      window.setTimeout(() => {
+        setCopiedDonorId((curr) => (curr === donorId ? null : curr));
+      }, 2200);
+    }
+  }, []);
 
   // Location Anchor (Live GPS vs Manual District Fallback when GPS is unavailable)
   const [locationMode, setLocationMode] = useState<'GPS' | 'MANUAL'>('GPS');
@@ -302,7 +370,30 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     setOnlyRareNegative(false);
     setOnlyNightReady(false);
     setOnlyCampusClub(false);
+    setOnlyShortlisted(false);
   };
+
+  const activeAdvancedFilterCount = useMemo(() => {
+    let count = 0;
+    if (selectedDivision !== 'ALL') count += 1;
+    if (selectedUpazila !== 'ALL') count += 1;
+    if (urgency !== 'CRITICAL') count += 1;
+    if (requiredTimeWindow !== 'IMMEDIATE_2H') count += 1;
+    if (onlyVerified) count += 1;
+    if (onlyRareNegative) count += 1;
+    if (onlyNightReady) count += 1;
+    if (onlyCampusClub) count += 1;
+    return count;
+  }, [
+    selectedDivision,
+    selectedUpazila,
+    urgency,
+    requiredTimeWindow,
+    onlyVerified,
+    onlyRareNegative,
+    onlyNightReady,
+    onlyCampusClub,
+  ]);
 
   const combinedUnsuccessfulSet = useMemo(() => {
     const s = new Set<string>(localUnsuccessfulIds);
@@ -328,7 +419,9 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
 
   // Pre-filter secondary toggles, then run multi-factor emergency ranker (`rankDonorsForSeeker`)
   const rankedResults = useMemo(() => {
+    const shortlistSet = new Set(shortlistedIds);
     const prefiltered = donors.filter((donor) => {
+      if (onlyShortlisted && !shortlistSet.has(donor.id)) return false;
       if (!includeNearbyDistricts && !matchesSelectedUpazila(donor, selectedDistrict, selectedUpazila)) {
         return false;
       }
@@ -386,6 +479,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     });
   }, [
     donors,
+    onlyShortlisted,
+    shortlistedIds,
     selectedGroup,
     includeCompatible,
     selectedDivision,
@@ -479,17 +574,17 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
         </div>
       )}
 
-      {/* Search & Emergency Matching Panel */}
-      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 sm:p-6 transition-colors shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200/60 dark:border-slate-800/60">
+      {/* Search & Emergency Matching Panel (Clean Progressive Disclosure) */}
+      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 sm:p-5 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3.5 border-b border-slate-100 dark:border-slate-800">
           <div>
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white">
               {t.searchTitle}
             </h1>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
               {lang === 'bn'
-                ? 'রক্তের গ্রুপ, আনুমানিক দূরত্ব, বর্তমান প্রস্তুতি ও সাম্প্রতিক সক্রিয়তা অনুযায়ী র‍্যাঙ্ককৃত ফলাফল'
-                : 'Ranked by blood compatibility, approximate distance, confirmed availability, and recent activity'}
+                ? 'রক্তের গ্রুপ ও জেলা নির্বাচন করলেই সবচেয়ে নিকটস্থ প্রস্তুত ডোনার সবার উপরে দেখাবে'
+                : 'Select blood group & district to see closest confirmed donors first'}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -497,33 +592,38 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               <button
                 type="button"
                 onClick={onOpenRegister}
-                className="min-h-[40px] flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+                className="min-h-[42px] flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl btn-emerald cursor-pointer whitespace-nowrap shrink-0"
               >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>{lang === 'bn' ? '+ ডোনার আইডি' : '+ Register Donor'}</span>
+                <UserPlus className="w-4 h-4 shrink-0" />
+                <span>{lang === 'bn' ? '+ ডোনার হোন' : '+ Register Donor'}</span>
               </button>
             )}
             <button
               type="button"
               onClick={handleResetFilters}
-              className="min-h-[40px] flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+              className="min-h-[42px] flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl btn-surface cursor-pointer whitespace-nowrap shrink-0"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
+              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
               <span>{lang === 'bn' ? 'রিসেট' : 'Reset'}</span>
             </button>
             <button
               type="button"
-              onClick={onOpenSOSModal}
-              className="min-h-[40px] flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition-colors cursor-pointer whitespace-nowrap"
+              onClick={() =>
+                onOpenSOSModal({
+                  bloodGroup: selectedGroup !== 'ALL' ? selectedGroup : undefined,
+                  district: selectedDistrict !== 'ALL' ? selectedDistrict : undefined,
+                })
+              }
+              className="min-h-[42px] flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl btn-crimson cursor-pointer whitespace-nowrap shrink-0"
             >
-              <Heart className="w-3.5 h-3.5 fill-white" />
+              <Heart className="w-3.5 h-3.5 fill-white shrink-0" />
               <span>{lang === 'bn' ? 'জরুরি ব্রডকাস্ট (SOS)' : 'Emergency Broadcast'}</span>
             </button>
           </div>
         </div>
 
-        {/* Blood Group Segmented Selector */}
-        <div className="pt-4 space-y-2.5">
+        {/* Step 1: 1-Tap Blood Group Segmented Selector */}
+        <div className="pt-3.5 space-y-2">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
               {t.selectBloodGroup}
@@ -552,10 +652,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             <button
               type="button"
               onClick={() => setSelectedGroup('ALL')}
-              className={`min-h-[44px] px-3.5 sm:px-4 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
-                selectedGroup === 'ALL'
-                  ? 'bg-rose-600 text-white shadow-xs'
-                  : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+              className={`min-h-[44px] px-3.5 sm:px-4 py-2 text-xs font-bold rounded-xl cursor-pointer whitespace-nowrap shrink-0 ${
+                selectedGroup === 'ALL' ? 'btn-crimson' : 'btn-surface'
               }`}
             >
               {t.allBloodGroups}
@@ -568,10 +666,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                   type="button"
                   key={group}
                   onClick={() => setSelectedGroup(group)}
-                  className={`min-h-[44px] min-w-[50px] px-3 py-2 text-xs sm:text-sm font-bold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
-                    isSelected
-                      ? 'bg-rose-600 text-white shadow-xs'
-                      : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:bg-rose-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+                  className={`min-h-[44px] min-w-[50px] px-3 py-2 text-xs sm:text-sm font-bold rounded-xl cursor-pointer whitespace-nowrap shrink-0 ${
+                    isSelected ? 'btn-crimson' : 'btn-surface'
                   }`}
                 >
                   {group}
@@ -581,131 +677,16 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
           </div>
         </div>
 
-        {/* Urgency, Required Time & Location Anchor Row */}
-        <div className="pt-3 grid grid-cols-1 @md:grid-cols-3 gap-2.5">
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {lang === 'bn' ? 'জরুরিতার মাত্রা (Urgency)' : 'Urgency Level'}
-            </label>
-            <select
-              value={urgency}
-              onChange={(e) => setUrgency(e.target.value as UrgencyLevel)}
-              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-            >
-              <option value="CRITICAL">
-                {lang === 'bn' ? 'জীবন-মরণ জরুরি (Critical)' : 'Critical (Immediate)'}
-              </option>
-              <option value="URGENT">
-                {lang === 'bn' ? 'জরুরি (Urgent)' : 'Urgent (Today)'}
-              </option>
-              <option value="STANDARD">
-                {lang === 'bn' ? 'সাধারণ / নির্ধারিত (Standard)' : 'Standard / Scheduled'}
-              </option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {lang === 'bn' ? 'কখন রক্ত প্রয়োজন (Required Time)' : 'Required Time'}
-            </label>
-            <select
-              value={requiredTimeWindow}
-              onChange={(e) => setRequiredTimeWindow(e.target.value as RequiredTimeWindow)}
-              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-            >
-              <option value="IMMEDIATE_2H">
-                {lang === 'bn' ? 'এখনই / ২ ঘণ্টার মধ্যে' : 'Immediate (Within 2 hours)'}
-              </option>
-              <option value="TODAY_6H">
-                {lang === 'bn' ? 'আজ ৬ ঘণ্টার মধ্যে' : 'Today (Within 6 hours)'}
-              </option>
-              <option value="WITHIN_24H">
-                {lang === 'bn' ? '২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
-              </option>
-              <option value="SCHEDULED">
-                {lang === 'bn' ? 'নির্ধারিত সার্জারি / তারিখ' : 'Scheduled Surgery / Later'}
-              </option>
-            </select>
-          </div>
-
-          {/* GPS vs Manual Location Anchor */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {lang === 'bn'
-                ? 'দূরত্ব গণনার অবস্থান (GPS না থাকলে ম্যানুয়াল জেলা)'
-                : 'Distance Origin (GPS or Manual Fallback)'}
-            </label>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={handleLocateLiveGps}
-                disabled={isLocatingGps}
-                className={`min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
-                  locationMode === 'GPS' && gpsAvailable
-                    ? 'bg-emerald-600 text-white border-emerald-600'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700'
-                }`}
-              >
-                <Navigation className="w-3.5 h-3.5" />
-                <span>
-                  {isLocatingGps
-                    ? '...'
-                    : locationMode === 'GPS' && gpsAvailable
-                    ? lang === 'bn'
-                      ? 'GPS সক্রিয়'
-                      : 'Live GPS'
-                    : lang === 'bn'
-                    ? 'GPS চালু করুন'
-                    : 'Use GPS'}
-                </span>
-              </button>
-              <select
-                value={selectedDistrict !== 'ALL' ? selectedDistrict : manualAnchorDistrict}
-                onChange={(e) => {
-                  setLocationMode('MANUAL');
-                  setManualAnchorDistrict(e.target.value);
-                }}
-                aria-label="Manual Location Anchor District"
-                className="w-full h-11 px-2.5 text-xs rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-              >
-                {DISTRICTS.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {lang === 'bn' ? `কেন্দ্র: ${d.nameBn}` : `Origin: ${d.nameEn}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Geographic & Area Filter Row */}
-        <div className="pt-2.5 grid grid-cols-1 @md:grid-cols-2 @xl:grid-cols-4 gap-2.5">
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {t.selectDivision}
-            </label>
-            <select
-              value={selectedDivision}
-              onChange={(e) => handleDivisionChange(e.target.value)}
-              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-            >
-              <option value="ALL">{t.allDivisions}</option>
-              {DIVISIONS.map((div) => (
-                <option key={div.id} value={div.id}>
-                  {lang === 'bn' ? div.nameBn : div.nameEn}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
+        {/* Step 2: Essential Primary Filter Bar (District + Area/Voice + GPS + Advanced Toggle) */}
+        <div className="pt-3 grid grid-cols-1 @md:grid-cols-12 gap-2.5 items-end">
+          <div className="@md:col-span-4">
             <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
               {t.selectDistrict}
             </label>
             <select
               value={selectedDistrict}
               onChange={(e) => handleDistrictChange(e.target.value)}
-              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
             >
               <option value="ALL">{t.allDistricts}</option>
               {availableDistricts.map((dist) => (
@@ -716,28 +697,9 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             </select>
           </div>
 
-          <div>
+          <div className="@md:col-span-5">
             <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {t.selectUpazila}
-            </label>
-            <select
-              value={selectedUpazila}
-              disabled={selectedDistrict === 'ALL' || availableUpazilas.length === 0}
-              onChange={(e) => setSelectedUpazila(e.target.value)}
-              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-50 cursor-pointer"
-            >
-              <option value="ALL">{t.allUpazilas}</option>
-              {availableUpazilas.map((upz) => (
-                <option key={upz.id} value={upz.id}>
-                  {lang === 'bn' ? upz.nameBn : upz.nameEn}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {lang === 'bn' ? 'এলাকা, হাসপাতাল বা নাম' : 'Area, Hospital or Name'}
+              {lang === 'bn' ? 'এলাকা, হাসপাতাল বা নাম (ভয়েস সহ)' : 'Area, Hospital or Name'}
             </label>
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-3.5 text-slate-400" />
@@ -752,7 +714,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 }
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className={`w-full h-11 pl-9 pr-11 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder:text-slate-400 border transition-colors focus:outline-none focus:ring-2 focus:ring-rose-500 ${
+                className={`w-full h-11 pl-9 pr-11 text-xs sm:text-sm rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white placeholder:text-slate-400 border transition-colors focus:outline-none focus:ring-2 focus:ring-rose-500 ${
                   isListening
                     ? 'border-rose-500 ring-2 ring-rose-500/30'
                     : 'border-slate-300 dark:border-slate-700'
@@ -777,91 +739,262 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               </p>
             )}
           </div>
+
+          <div className="@md:col-span-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleLocateLiveGps}
+              disabled={isLocatingGps}
+              className={`flex-1 min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                locationMode === 'GPS' && gpsAvailable ? 'btn-emerald' : 'btn-surface'
+              }`}
+              title={lang === 'bn' ? 'লাইভ GPS দূরত্ব গণনা' : 'Calculate live GPS distance'}
+            >
+              <Navigation className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {isLocatingGps
+                  ? '...'
+                  : locationMode === 'GPS' && gpsAvailable
+                  ? lang === 'bn'
+                    ? 'GPS সক্রিয়'
+                    : 'GPS On'
+                  : 'GPS'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowAdvancedFilters((v) => !v)}
+              className={`flex-1 min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                showAdvancedFilters || activeAdvancedFilterCount > 0
+                  ? 'btn-obsidian'
+                  : 'btn-surface'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {lang === 'bn' ? 'ফিল্টার' : 'Filters'}
+                {activeAdvancedFilterCount > 0 ? ` (${activeAdvancedFilterCount})` : ''}
+              </span>
+              {showAdvancedFilters ? (
+                <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* Quick Toggles + 1-Click Expand Radius / Nearby Districts */}
-        <div className="pt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-slate-300 min-h-[36px]">
-              <input
-                type="checkbox"
-                checked={onlyAvailable}
-                onChange={(e) => setOnlyAvailable(e.target.checked)}
-                className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4"
-              />
-              <span>{t.availableOnly}</span>
-            </label>
+        {/* Progressive-Disclosure Collapsible Advanced Filters */}
+        {showAdvancedFilters && (
+          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+            <div className="grid grid-cols-1 @md:grid-cols-2 @xl:grid-cols-5 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  {t.selectDivision}
+                </label>
+                <select
+                  value={selectedDivision}
+                  onChange={(e) => handleDivisionChange(e.target.value)}
+                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                >
+                  <option value="ALL">{t.allDivisions}</option>
+                  {DIVISIONS.map((div) => (
+                    <option key={div.id} value={div.id}>
+                      {lang === 'bn' ? div.nameBn : div.nameEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-slate-300 min-h-[36px]">
-              <input
-                type="checkbox"
-                checked={onlyVerified}
-                onChange={(e) => setOnlyVerified(e.target.checked)}
-                className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4"
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  {t.selectUpazila}
+                </label>
+                <select
+                  value={selectedUpazila}
+                  disabled={selectedDistrict === 'ALL' || availableUpazilas.length === 0}
+                  onChange={(e) => setSelectedUpazila(e.target.value)}
+                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-50 cursor-pointer"
+                >
+                  <option value="ALL">{t.allUpazilas}</option>
+                  {availableUpazilas.map((upz) => (
+                    <option key={upz.id} value={upz.id}>
+                      {lang === 'bn' ? upz.nameBn : upz.nameEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  {lang === 'bn' ? 'জরুরিতার মাত্রা' : 'Urgency Level'}
+                </label>
+                <select
+                  value={urgency}
+                  onChange={(e) => setUrgency(e.target.value as UrgencyLevel)}
+                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                >
+                  <option value="CRITICAL">
+                    {lang === 'bn' ? 'জীবন-মরণ জরুরি (Critical)' : 'Critical (Immediate)'}
+                  </option>
+                  <option value="URGENT">
+                    {lang === 'bn' ? 'জরুরি (Urgent)' : 'Urgent (Today)'}
+                  </option>
+                  <option value="STANDARD">
+                    {lang === 'bn' ? 'সাধারণ / নির্ধারিত' : 'Standard / Scheduled'}
+                  </option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  {lang === 'bn' ? 'কখন রক্ত প্রয়োজন' : 'Required Time'}
+                </label>
+                <select
+                  value={requiredTimeWindow}
+                  onChange={(e) => setRequiredTimeWindow(e.target.value as RequiredTimeWindow)}
+                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                >
+                  <option value="IMMEDIATE_2H">
+                    {lang === 'bn' ? 'এখনই / ২ ঘণ্টার মধ্যে' : 'Immediate (Within 2h)'}
+                  </option>
+                  <option value="TODAY_6H">
+                    {lang === 'bn' ? 'আজ ৬ ঘণ্টার মধ্যে' : 'Today (Within 6h)'}
+                  </option>
+                  <option value="WITHIN_24H">
+                    {lang === 'bn' ? '২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
+                  </option>
+                  <option value="SCHEDULED">
+                    {lang === 'bn' ? 'নির্ধারিত তারিখ' : 'Scheduled Later'}
+                  </option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  {lang === 'bn' ? 'ম্যানুয়াল দূরত্ব কেন্দ্র' : 'Manual Distance Origin'}
+                </label>
+                <select
+                  value={selectedDistrict !== 'ALL' ? selectedDistrict : manualAnchorDistrict}
+                  onChange={(e) => {
+                    setLocationMode('MANUAL');
+                    setManualAnchorDistrict(e.target.value);
+                  }}
+                  aria-label="Manual Location Anchor District"
+                  className="w-full h-11 px-2.5 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                >
+                  {DISTRICTS.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {lang === 'bn' ? `কেন্দ্র: ${d.nameBn}` : `Origin: ${d.nameEn}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-slate-300 min-h-[38px] px-2.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800">
+                <input
+                  type="checkbox"
+                  checked={onlyVerified}
+                  onChange={(e) => setOnlyVerified(e.target.checked)}
+                  className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4"
+                />
+                <span>{t.verifiedOnly}</span>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => setOnlyRareNegative((v) => !v)}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  onlyRareNegative ? 'btn-crimson' : 'btn-surface'
+                }`}
+              >
+                <span>{lang === 'bn' ? 'নেগেটিভ গ্রুপ' : 'Rare Negative'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOnlyNightReady((v) => !v)}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  onlyNightReady ? 'btn-obsidian' : 'btn-surface'
+                }`}
+              >
+                <Moon className="w-3.5 h-3.5" />
+                <span>{lang === 'bn' ? 'গভীর রাতে প্রস্তুত' : 'Night Ready'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOnlyCampusClub((v) => !v)}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  onlyCampusClub ? 'btn-obsidian' : 'btn-surface'
+                }`}
+              >
+                <GraduationCap className="w-3.5 h-3.5" />
+                <span>{lang === 'bn' ? 'ক্যাম্পাস ক্লাব' : 'Campus & Clubs'}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Essential Quick Status Bar: Available Only + Saved Shortlist + Expand Nearby + Live Count */}
+        <div className="pt-3 mt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setOnlyAvailable((v) => !v)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                onlyAvailable ? 'btn-emerald' : 'btn-surface'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>{t.availableOnly}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setOnlyShortlisted((v) => !v)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                onlyShortlisted ? 'btn-crimson' : 'btn-surface'
+              }`}
+              title={
+                lang === 'bn'
+                  ? 'বুকমার্ক করে রাখা ডোনারদের তালিকা'
+                  : 'View bookmarked/shortlisted donors'
+              }
+            >
+              <Bookmark
+                className={`w-3.5 h-3.5 shrink-0 ${onlyShortlisted ? 'fill-white' : ''}`}
               />
-              <span>{t.verifiedOnly}</span>
-            </label>
+              <span className="tabular-nums">
+                {lang === 'bn'
+                  ? `সংরক্ষিত (${shortlistedIds.length})`
+                  : `Saved (${shortlistedIds.length})`}
+              </span>
+            </button>
 
             {selectedDistrict !== 'ALL' && (
               <button
                 type="button"
                 onClick={() => setIncludeNearbyDistricts((v) => !v)}
-                className={`min-h-[36px] px-3 py-1.5 rounded-lg font-bold inline-flex items-center gap-1.5 border cursor-pointer transition-colors whitespace-nowrap ${
-                  includeNearbyDistricts
-                    ? 'bg-emerald-600 text-white border-emerald-600'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-emerald-500'
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  includeNearbyDistricts ? 'btn-emerald' : 'btn-surface'
                 }`}
               >
-                <Expand className="w-3.5 h-3.5" />
+                <Expand className="w-3.5 h-3.5 shrink-0" />
                 <span>
                   {lang === 'bn'
                     ? includeNearbyDistricts
                       ? '✓ পার্শ্ববর্তী জেলা যুক্ত (৮৫ কিমি)'
                       : '+ পার্শ্ববর্তী জেলা যুক্ত করুন'
                     : includeNearbyDistricts
-                    ? '✓ Nearby Districts Included (85 km)'
-                    : '+ Include Nearby Districts'}
+                    ? '✓ Nearby Districts (85 km)'
+                    : '+ Nearby Districts'}
                 </span>
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={() => setOnlyRareNegative((v) => !v)}
-              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg font-bold inline-flex items-center gap-1.5 border cursor-pointer transition-colors whitespace-nowrap ${
-                onlyRareNegative
-                  ? 'bg-rose-600 text-white border-rose-600'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-rose-500'
-              }`}
-            >
-              <span>{lang === 'bn' ? 'নেগেটিভ গ্রুপ' : 'Rare Negative'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setOnlyNightReady((v) => !v)}
-              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg font-bold inline-flex items-center gap-1.5 border cursor-pointer transition-colors whitespace-nowrap ${
-                onlyNightReady
-                  ? 'bg-indigo-600 text-white border-indigo-600'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-indigo-500'
-              }`}
-            >
-              <Moon className="w-3.5 h-3.5" />
-              <span>{lang === 'bn' ? 'গভীর রাতে প্রস্তুত' : 'Night Ready'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setOnlyCampusClub((v) => !v)}
-              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg font-bold inline-flex items-center gap-1.5 border cursor-pointer transition-colors whitespace-nowrap ${
-                onlyCampusClub
-                  ? 'bg-amber-600 text-white border-amber-600'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-500'
-              }`}
-            >
-              <GraduationCap className="w-3.5 h-3.5" />
-              <span>{lang === 'bn' ? 'ক্যাম্পাস ক্লাব' : 'Campus & Clubs'}</span>
-            </button>
           </div>
 
           {/* Clean Tabular Count Summary */}
@@ -881,21 +1014,29 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
 
       {/* Donors Card Grid */}
       {rankedResults.length === 0 ? (
-        <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-8 sm:p-12 text-center space-y-4 shadow-sm">
-          <div className="w-14 h-14 mx-auto rounded-full bg-rose-50 dark:bg-rose-950/40 flex items-center justify-center text-rose-500">
-            <Search className="w-7 h-7" />
+        <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-8 sm:p-12 text-center space-y-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 dark:bg-rose-950/40 flex items-center justify-center text-rose-600">
+            <Search className="w-6 h-6" />
           </div>
           <div>
             <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-              {t.noDonorsFound}
+              {donors.length === 0
+                ? lang === 'bn'
+                  ? 'এখনো কোনো নিবন্ধিত রক্তদাতা যুক্ত হননি'
+                  : 'No Registered Donors Yet'
+                : t.noDonorsFound}
             </h3>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto mt-1">
-              {lang === 'bn'
-                ? 'এই ফিল্টারে কোনো রক্তদাতা পাওয়া যায়নি। এক ক্লিকে পার্শ্ববর্তী জেলা যুক্ত করুন অথবা জরুরি ব্রডকাস্ট পাঠান।'
-                : 'No matching donors in this narrow area. Expand your search radius in one click or send an emergency broadcast.'}
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto mt-1 leading-relaxed">
+              {donors.length === 0
+                ? lang === 'bn'
+                  ? 'সব ফেইক ডাটা মুছে ১০০% রিয়েল-ইউজার মোড চালু আছে। নতুন রক্তদাতা লগইন বা রেজিস্ট্রেশন করলেই অটোমেটিক এখানে সেভ হয়ে দেখাবে।'
+                  : '100% real-user mode is active. Every new donor who signs in or registers will automatically save and appear here.'
+                : lang === 'bn'
+                  ? 'এই ফিল্টারে কোনো রক্তদাতা পাওয়া যায়নি। এক ক্লিকে পার্শ্ববর্তী জেলা যুক্ত করুন অথবা জরুরি ব্রডকাস্ট পাঠান।'
+                  : 'No matching donors in this narrow area. Expand your search radius in one click or send an emergency broadcast.'}
             </p>
           </div>
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
+          <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
             {(selectedDistrict !== 'ALL' || selectedDivision !== 'ALL' || onlyAvailable) && (
               <button
                 type="button"
@@ -909,9 +1050,9 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                     setOnlyAvailable(false);
                   }
                 }}
-                className="min-h-[44px] px-4 py-2.5 bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer inline-flex items-center gap-2"
+                className="min-h-[44px] px-4 py-2.5 btn-obsidian font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
               >
-                <Expand className="w-4 h-4" />
+                <Expand className="w-4 h-4 shrink-0" />
                 <span>
                   {lang === 'bn'
                     ? 'সার্চ পরিধি ও পার্শ্ববর্তী জেলা প্রসারিত করুন'
@@ -919,12 +1060,29 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 </span>
               </button>
             )}
+            {onOpenRegister && (
+              <button
+                type="button"
+                onClick={onOpenRegister}
+                className="min-h-[44px] px-4 py-2.5 btn-emerald font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
+              >
+                <UserPlus className="w-4 h-4 shrink-0" />
+                <span>
+                  {lang === 'bn' ? '+ ডোনার হিসেবে নাম যুক্ত করুন' : '+ Register as Donor'}
+                </span>
+              </button>
+            )}
             <button
               type="button"
-              onClick={onOpenSOSModal}
-              className="min-h-[44px] px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer inline-flex items-center gap-2"
+              onClick={() =>
+                onOpenSOSModal({
+                  bloodGroup: selectedGroup !== 'ALL' ? selectedGroup : undefined,
+                  district: selectedDistrict !== 'ALL' ? selectedDistrict : undefined,
+                })
+              }
+              className="min-h-[44px] px-4 py-2.5 btn-crimson font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
             >
-              <Heart className="w-4 h-4 fill-white" />
+              <Heart className="w-4 h-4 fill-white shrink-0" />
               <span>{t.createSosTitle}</span>
             </button>
           </div>
@@ -1002,19 +1160,19 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               return (
                 <div
                   key={donor.id}
-                  className={`cv-auto bg-white dark:bg-[#1e293b] border rounded-2xl p-3.5 sm:p-4 transition-colors shadow-sm flex flex-col justify-between ${
+                  className={`cv-auto bg-white dark:bg-[#111827] border rounded-2xl p-4 sm:p-5 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)] flex flex-col justify-between ${
                     isConfirmedMatch
                       ? 'border-emerald-500 ring-1 ring-emerald-500'
                       : wasAttemptedUnsuccessfully
                       ? 'border-slate-200 dark:border-slate-800 opacity-75'
-                      : 'border-slate-300 dark:border-slate-700 hover:border-rose-500'
+                      : 'border-slate-200/90 dark:border-slate-800/90 hover:border-rose-400 dark:hover:border-rose-600'
                   }`}
                 >
                   <div>
                     {/* Top Row: Blood Group, Name & Clear Availability Confidence */}
                     <div className="flex items-start justify-between gap-3 mb-2.5">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className="w-12 h-12 rounded-2xl bg-rose-600 flex flex-col items-center justify-center text-white font-black text-lg tracking-tight shrink-0">
+                        <div className="w-12 h-12 rounded-2xl btn-crimson flex flex-col items-center justify-center font-black text-lg tracking-tight shrink-0">
                           <span>{donor.bloodGroup}</span>
                         </div>
                         <div className="min-w-0 flex-1">
@@ -1052,28 +1210,62 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                         </div>
                       </div>
 
-                      {/* Availability Confidence + Distance (Tabular, No Decorative Pulsing Dots) */}
-                      <div className="shrink-0 text-right">
-                        {availabilityConfidence === 'CONFIRMED_RECENT' ? (
-                          <div className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
-                            {lang === 'bn' ? 'প্রস্তুতি নিশ্চিত' : 'Confirmed Available'}
+                      {/* Availability Confidence + Distance + 1-Tap Bookmark */}
+                      <div className="shrink-0 flex items-start gap-2">
+                        <div className="text-right">
+                          {availabilityConfidence === 'CONFIRMED_RECENT' ? (
+                            <div className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
+                              {lang === 'bn' ? 'প্রস্তুতি নিশ্চিত' : 'Confirmed Available'}
+                            </div>
+                          ) : availabilityConfidence === 'UNKNOWN_UNCONFIRMED' ? (
+                            <div className="text-xs font-bold text-amber-700 dark:text-amber-400">
+                              {lang === 'bn' ? 'স্ট্যাটাস অজানা' : 'Status Unknown'}
+                            </div>
+                          ) : availabilityConfidence === 'DND' ? (
+                            <div className="text-xs font-bold text-slate-500">
+                              {lang === 'bn' ? 'বিরত (DND)' : 'Do Not Disturb'}
+                            </div>
+                          ) : (
+                            <div className="text-xs font-bold text-slate-500">
+                              {lang === 'bn' ? 'সাময়িক অনুপস্থিত' : 'Unavailable'}
+                            </div>
+                          )}
+                          <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
+                            ~{formatDistance(distanceKm, lang)}
                           </div>
-                        ) : availabilityConfidence === 'UNKNOWN_UNCONFIRMED' ? (
-                          <div className="text-xs font-bold text-amber-700 dark:text-amber-400">
-                            {lang === 'bn' ? 'স্ট্যাটাস অজানা' : 'Status Unknown'}
-                          </div>
-                        ) : availabilityConfidence === 'DND' ? (
-                          <div className="text-xs font-bold text-slate-500">
-                            {lang === 'bn' ? 'বিরত (DND)' : 'Do Not Disturb'}
-                          </div>
-                        ) : (
-                          <div className="text-xs font-bold text-slate-500">
-                            {lang === 'bn' ? 'সাময়িক অনুপস্থিত' : 'Unavailable'}
-                          </div>
-                        )}
-                        <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
-                          ~{formatDistance(distanceKm, lang)}
                         </div>
+
+                        <button
+                          type="button"
+                          onClick={() => toggleShortlistDonor(donor.id)}
+                          aria-label={
+                            shortlistedIds.includes(donor.id)
+                              ? 'Remove from shortlist'
+                              : 'Save donor to shortlist'
+                          }
+                          title={
+                            lang === 'bn'
+                              ? shortlistedIds.includes(donor.id)
+                                ? 'সংরক্ষিত তালিকা থেকে সরান'
+                                : 'ডোনার সংরক্ষণ (শর্টলিস্ট) করুন'
+                              : shortlistedIds.includes(donor.id)
+                              ? 'Saved in shortlist'
+                              : 'Save to shortlist'
+                          }
+                          className={`min-h-[38px] min-w-[38px] rounded-xl flex items-center justify-center cursor-pointer shrink-0 ${
+                            shortlistedIds.includes(donor.id)
+                              ? 'btn-soft-rose'
+                              : 'btn-surface'
+                          }`}
+                        >
+                          <Bookmark
+                            className={`w-4 h-4 ${
+                              shortlistedIds.includes(donor.id)
+                                ? 'fill-rose-600 text-rose-600 dark:fill-rose-400 dark:text-rose-400'
+                                : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                          />
+                        </button>
                       </div>
                     </div>
 
@@ -1087,10 +1279,14 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           </span>
                         </div>
                         <div className="flex items-center gap-2 font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                          <span>
-                            {donor.totalDonations} {t.donationsCount}
-                          </span>
-                          <span aria-hidden="true">·</span>
+                          {donor.totalDonations > 0 && (
+                            <>
+                              <span>
+                                {donor.totalDonations} {t.donationsCount}
+                              </span>
+                              <span aria-hidden="true">·</span>
+                            </>
+                          )}
                           <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400 font-bold">
                             <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                             {donor.rating.toFixed(1)}
@@ -1175,71 +1371,102 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
 
                     {/* Primary Contact Buttons */}
                     {consentCheck.allowed ? (
-                      <div className="grid grid-cols-3 gap-2">
-                        {directCallHref ? (
-                          <a
-                            href={directCallHref}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                            title={lang === 'bn' ? 'ফোন ডায়ালার খুলবে' : 'Opens Phone Dialer'}
-                          >
-                            <Phone className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">
-                              {lang === 'bn' ? 'কল করুন' : 'Call'}
-                            </span>
-                          </a>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                          >
-                            <Phone className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">{t.callDonor}</span>
-                          </button>
-                        )}
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-3 gap-2">
+                          {directCallHref ? (
+                            <a
+                              href={directCallHref}
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                              title={lang === 'bn' ? 'ফোন ডায়ালার খুলবে' : 'Opens Phone Dialer'}
+                            >
+                              <Phone className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">
+                                {lang === 'bn' ? 'কল করুন' : 'Call'}
+                              </span>
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onRevealPhone(donor)}
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            >
+                              <Phone className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">{t.callDonor}</span>
+                            </button>
+                          )}
 
-                        {directWaHref ? (
-                          <a
-                            href={directWaHref}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-colors flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
-                            title={lang === 'bn' ? 'WhatsApp খুলবে' : 'Opens WhatsApp'}
-                          >
-                            <span className="truncate">WhatsApp</span>
-                          </a>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-colors flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
-                          >
-                            <span className="truncate">WhatsApp</span>
-                          </button>
-                        )}
+                          {directWaHref ? (
+                            <a
+                              href={directWaHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                              title={lang === 'bn' ? 'WhatsApp খুলবে' : 'Opens WhatsApp'}
+                            >
+                              <span className="truncate">WhatsApp</span>
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onRevealPhone(donor)}
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                            >
+                              <span className="truncate">WhatsApp</span>
+                            </button>
+                          )}
 
-                        {onStartChatWithDonor ? (
-                          <button
-                            type="button"
-                            onClick={() => onStartChatWithDonor(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                          >
-                            <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">
-                              {lang === 'bn' ? 'চ্যাট / SMS' : 'Chat'}
-                            </span>
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl bg-slate-800 hover:bg-slate-900 text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                          >
-                            <span className="truncate">
-                              {lang === 'bn' ? 'বিস্তারিত' : 'Options'}
-                            </span>
-                          </button>
-                        )}
+                          {effectiveRawPhone ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCopyDirectPhone(donor.id, effectiveRawPhone)}
+                              className={`w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                                copiedDonorId === donor.id ? 'btn-soft-emerald' : 'btn-obsidian'
+                              }`}
+                              title={
+                                lang === 'bn'
+                                  ? 'অন্য ফোন থেকে কল করতে নম্বর কপি করুন'
+                                  : 'Copy phone number'
+                              }
+                            >
+                              {copiedDonorId === donor.id ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate">
+                                    {lang === 'bn' ? 'কপি হয়েছে' : 'Copied'}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate">
+                                    {lang === 'bn' ? 'নম্বর কপি' : 'Copy No.'}
+                                  </span>
+                                </>
+                              )}
+                            </button>
+                          ) : onStartChatWithDonor ? (
+                            <button
+                              type="button"
+                              onClick={() => onStartChatWithDonor(donor)}
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">
+                                {lang === 'bn' ? 'চ্যাট / SMS' : 'Chat'}
+                              </span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onRevealPhone(donor)}
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            >
+                              <span className="truncate">
+                                {lang === 'bn' ? 'বিস্তারিত' : 'Options'}
+                              </span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       /* Non-Opted-In / Request-Only / DND Fallback Actions (Never broken masked links!) */
@@ -1248,7 +1475,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           type="button"
                           onClick={() => onRevealPhone(donor)}
                           disabled={availabilityConfidence === 'DND'}
-                          className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl bg-slate-900 hover:bg-black dark:bg-slate-700 dark:hover:bg-slate-600 text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                          className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                         >
                           <Lock className="w-3.5 h-3.5 shrink-0" />
                           <span className="truncate">
@@ -1265,7 +1492,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           <button
                             type="button"
                             onClick={() => onStartChatWithDonor(donor)}
-                            className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl bg-[#075e54] hover:bg-[#064e46] text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageSquare className="w-3.5 h-3.5 shrink-0" />
                             <span className="truncate">
@@ -1286,7 +1513,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               <button
                 type="button"
                 onClick={() => setVisibleCount((prev) => prev + PAGE_CHUNK)}
-                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs cursor-pointer transition-colors"
+                className="min-h-[44px] px-5 py-2.5 rounded-xl btn-obsidian font-bold text-xs cursor-pointer"
               >
                 {lang === 'bn'
                   ? `আরও রক্তদাতা দেখুন (${rankedResults.length - visibleCount} জন বাকি)`

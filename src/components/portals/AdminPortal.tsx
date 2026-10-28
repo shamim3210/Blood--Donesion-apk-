@@ -33,13 +33,17 @@ import {
   subscribeActiveAnnouncements,
   adminPublishAnnouncementInFirestore,
   adminDeactivateAnnouncementInFirestore,
+  subscribeRemoteAppUpdate,
+  adminPublishAppUpdateInFirestore,
+  adminDeactivateAppUpdateInFirestore,
   isGlobalRealOnlyModeActive,
   adminSetGlobalRealOnlyModeInFirestore,
-  ownerPurgeTestCloudRecordsInFirestore,
+  ownerPurgeFakeCloudRecordsOnlyInFirestore,
   subscribeAdminScamReports,
   adminUpdateScamReportStatusInFirestore,
   adminDeleteScamReportInFirestore,
   OwnerAnnouncementItem,
+  RemoteAppUpdateRelease,
   ScamReportItem,
   AdminInviteLockItem,
   RegisteredAdminItem,
@@ -57,6 +61,7 @@ import {
   User,
 } from '../../firebase';
 import { getSecurityDiagnostics } from '../../utils/securityShield';
+import { CURRENT_APP_VERSION } from '../../utils/appUpdateManager';
 import {
   ShieldCheck,
   Lock,
@@ -137,6 +142,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     'CRITICAL'
   );
   const [isPublishingBroadcast, setIsPublishingBroadcast] = useState(false);
+  const [liveAppRelease, setLiveAppRelease] = useState<RemoteAppUpdateRelease | null>(null);
+  const [releaseVersionInput, setReleaseVersionInput] = useState(() => {
+    const parts = CURRENT_APP_VERSION.split('.').map((n) => Number.parseInt(n, 10) || 0);
+    return `${parts[0] || 2}.${(parts[1] || 5) + 1}.0`;
+  });
+  const [releaseModeInput, setReleaseModeInput] = useState<'OPTIONAL' | 'REQUIRED'>('OPTIONAL');
+  const [releaseNotesInput, setReleaseNotesInput] = useState('');
+  const [releaseApkUrlInput, setReleaseApkUrlInput] = useState('');
+  const [isPublishingAppUpdate, setIsPublishingAppUpdate] = useState(false);
   const [scamReports, setScamReports] = useState<ScamReportItem[]>([]);
   const [donorIdLookupQuery, setDonorIdLookupQuery] = useState('');
   const [realOnlyMode, setRealOnlyMode] = useState<boolean>(() => isGlobalRealOnlyModeActive());
@@ -151,14 +165,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isCreatingLock, setIsCreatingLock] = useState(false);
 
   const [bloodStock, setBloodStock] = useState<Record<BloodGroup, number>>({
-    'A+': 34,
-    'A-': 8,
-    'B+': 42,
-    'B-': 6,
-    'AB+': 18,
-    'AB-': 3,
-    'O+': 56,
-    'O-': 5,
+    'A+': 0,
+    'A-': 0,
+    'B+': 0,
+    'B-': 0,
+    'AB+': 0,
+    'AB-': 0,
+    'O+': 0,
+    'O-': 0,
   });
 
   const isSuperOwner = isBootstrappedAdminUser(firebaseUser);
@@ -213,16 +227,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     };
   }, [firebaseUser]);
 
-  // Subscribe to Active Announcements & Real-Only Mode Flag
+  // Subscribe to Active Announcements, Remote App Update Release & Real-Only Mode Flag
   useEffect(() => {
     let unsubAnn: (() => void) | null = null;
+    let unsubAppUpd: (() => void) | null = null;
     try {
       unsubAnn = subscribeActiveAnnouncements(setAnnouncements);
+      unsubAppUpd = subscribeRemoteAppUpdate(setLiveAppRelease);
     } catch {}
     const syncRealFlag = () => setRealOnlyMode(isGlobalRealOnlyModeActive());
     window.addEventListener('bloodsearch_real_mode_changed', syncRealFlag);
     return () => {
       if (unsubAnn) unsubAnn();
+      if (unsubAppUpd) unsubAppUpd();
       window.removeEventListener('bloodsearch_real_mode_changed', syncRealFlag);
     };
   }, []);
@@ -285,19 +302,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (!isSuperOwner || isPurgingCloudTest) return;
     setIsPurgingCloudTest(true);
     try {
-      const res = await ownerPurgeTestCloudRecordsInFirestore();
+      const res = await ownerPurgeFakeCloudRecordsOnlyInFirestore();
       await adminSetGlobalRealOnlyModeInFirestore(true);
       setRealOnlyMode(true);
       setConfirmPurgeCloudTest(false);
       onLogAudit(
         'STATUS_CHANGE',
-        `Purged test cloud records (${res.deletedDonors} donors, ${res.deletedRequests} SOS, ${res.deletedMessages} chats)`
+        `Purged fake/test cloud records (${res.deletedDonors} fake donors, ${res.deletedRequests} fake SOS, ${res.deletedMessages} fake chats) while keeping real users intact`
       );
       showTempToast(
-        `✓ ডাটাবেস থেকে ${res.deletedDonors}টি টেস্ট ডোনার ও ${res.deletedRequests}টি পুরনো পোস্ট মুছে ১০০% ফ্রেশ করা হয়েছে!`
+        `✓ ডাটাবেস থেকে ${res.deletedDonors}টি ফেইক/টেস্ট ডোনার ও ${res.deletedRequests}টি ফেইক পোস্ট মুছে ফেলা হয়েছে (আসল ইউজার অক্ষত আছে)!`
       );
     } catch {
-      showTempToast('ক্লাউড টেস্ট ডাটা পরিষ্কার করা যায়নি।');
+      showTempToast('ক্লাউড ফেইক ডাটা পরিষ্কার করা যায়নি।');
     } finally {
       setIsPurgingCloudTest(false);
     }
@@ -453,6 +470,38 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       );
     } finally {
       setIsPublishingBroadcast(false);
+    }
+  };
+
+  const handlePublishAppUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!releaseVersionInput.trim() || !releaseNotesInput.trim() || isPublishingAppUpdate) return;
+    setIsPublishingAppUpdate(true);
+    try {
+      await adminPublishAppUpdateInFirestore({
+        version: releaseVersionInput.trim(),
+        mode: releaseModeInput,
+        changelog: releaseNotesInput.trim(),
+        apkUrl: releaseApkUrlInput.trim() || undefined,
+      });
+      setReleaseNotesInput('');
+      onLogAudit(
+        'STATUS_CHANGE',
+        `Published App/APK Update v${releaseVersionInput.trim()} (${releaseModeInput})`
+      );
+      showTempToast(
+        lang === 'bn'
+          ? `✓ অ্যাপ আপডেট v${releaseVersionInput.trim()} সকল ইউজারের ফোনে পুশ করা হয়েছে!`
+          : `✓ App Update v${releaseVersionInput.trim()} pushed to all users!`
+      );
+    } catch {
+      showTempToast(
+        lang === 'bn'
+          ? 'অ্যাপ আপডেট প্রকাশ করা যায়নি।'
+          : 'Failed to publish app update.'
+      );
+    } finally {
+      setIsPublishingAppUpdate(false);
     }
   };
 
@@ -948,25 +997,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           { id: 'donors', label: lang === 'bn' ? '🩸 ডোনার ভেরিফিকেশন' : 'Donors' },
           { id: 'sos', label: lang === 'bn' ? '🚨 SOS মডারেশন' : 'SOS Requests' },
           { id: 'inventory', label: lang === 'bn' ? '🏥 ব্লাড স্টক' : 'Blood Stock' },
-          { id: 'megaphone', label: lang === 'bn' ? '📢 মেগাফোন ঘোষণা' : 'Megaphone' },
+          {
+            id: 'megaphone',
+            label: lang === 'bn' ? 'অ্যাপ আপডেট ও মেগাফোন' : 'App Update & Broadcast',
+          },
           {
             id: 'scam',
             label:
               lang === 'bn'
-                ? `🛡️ স্ক্যাম ও আইডি যাচাই (${scamReports.filter((r) => r.status === 'OPEN').length})`
+                ? `স্ক্যাম ও আইডি যাচাই (${scamReports.filter((r) => r.status === 'OPEN').length})`
                 : `Scam & ID (${scamReports.filter((r) => r.status === 'OPEN').length})`,
           },
-          { id: 'database', label: lang === 'bn' ? '🗄️ স্মার্ট ডাটাবেস ও শিল্ড' : 'Smart Database' },
-          { id: 'vault', label: lang === 'bn' ? '👑 ওনার সিকিউরিটি ভল্ট' : 'Owner Vault' },
-          { id: 'audit', label: lang === 'bn' ? '🔒 অডিট লগ' : 'Audit Logs' },
+          { id: 'database', label: lang === 'bn' ? 'স্মার্ট ডাটাবেস ও শিল্ড' : 'Smart Database' },
+          { id: 'vault', label: lang === 'bn' ? 'ওনার সিকিউরিটি ভল্ট' : 'Owner Vault' },
+          { id: 'audit', label: lang === 'bn' ? 'অডিট লগ' : 'Audit Logs' },
         ].map((tab) => (
           <button
             key={tab.id}
             onClick={() => setAdminTab(tab.id as any)}
             className={`px-3 py-2 rounded-lg transition-all cursor-pointer whitespace-nowrap ${
               adminTab === tab.id
-                ? 'bg-rose-600 text-white shadow-xs'
-                : 'text-slate-700 dark:text-slate-300'
+                ? 'btn-crimson'
+                : 'text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
             {tab.label}
@@ -1472,137 +1524,299 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
       )}
 
-      {/* TAB: LIVE MEGAPHONE BROADCAST */}
+      {/* TAB: LIVE APP / APK UPDATE PUSH & MEGAPHONE BROADCAST */}
       {adminTab === 'megaphone' && (
-        <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
-          <div className="flex items-center gap-2.5 border-b border-slate-200 dark:border-slate-700 pb-3">
-            <Megaphone className="w-5 h-5 text-rose-600 shrink-0" />
-            <div>
-              <h3 className="font-bold text-sm text-slate-900 dark:text-white">
-                {lang === 'bn'
-                  ? 'লাইভ মেগাফোন ঘোষণা (সকল ইউজারের স্ক্রিনে তাৎক্ষণিক ব্যানার)'
-                  : 'Live Global Megaphone Broadcast'}
-              </h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                {lang === 'bn'
-                  ? 'জাতীয় দুর্যোগ, ডেঙ্গু জরুরি রক্তের ডাক বা রক্তদান ক্যাম্পের নোটিশ ১-ক্লিকে পুরো অ্যাপে পাঠান'
-                  : 'Push urgent announcements or blood camp alerts to all connected users in real time'}
-              </p>
+        <div className="space-y-4">
+          {/* 1. Live OTA & APK Update Release Control */}
+          <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-2.5 border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                  <RefreshCw className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
+                    {lang === 'bn'
+                      ? 'লাইভ অ্যাপ ও APK আপডেট রিলিজ সেন্টার (OTA Update Push)'
+                      : 'Live App & APK Update Release Center (OTA Push)'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {lang === 'bn'
+                      ? `বর্তমান অ্যাপ বিল্ড: v${CURRENT_APP_VERSION} · ভবিষ্যতে যেকোনো ফিচার অ্যাড বা ডিলিট করে ডিপ্লয় দিলে অটো আপডেট পপআপ যাবে, অথবা এখান থেকে নতুন APK লিংকসহ আপডেট নোটিশ পুশ করতে পারবেন।`
+                      : `Current Build: v${CURRENT_APP_VERSION} · Auto-detects new deployments or lets you push optional/required APK update prompts.`}
+                  </p>
+                </div>
+              </div>
             </div>
+
+            {liveAppRelease?.active && (
+              <div className="p-3.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="text-xs font-black text-emerald-950 dark:text-emerald-200 font-mono tabular-nums">
+                    {lang === 'bn'
+                      ? `সক্রিয় রিলিজ: v${liveAppRelease.version} (${
+                          liveAppRelease.mode === 'REQUIRED' ? 'বাধ্যতামূলক আপডেট' : 'ঐচ্ছিক আপডেট'
+                        })`
+                      : `Active Release: v${liveAppRelease.version} (${liveAppRelease.mode})`}
+                  </div>
+                  <p className="text-xs text-emerald-900/90 dark:text-emerald-200/90">
+                    {liveAppRelease.changelog}
+                  </p>
+                  {liveAppRelease.apkUrl && (
+                    <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400 truncate">
+                      APK: {liveAppRelease.apkUrl}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    adminDeactivateAppUpdateInFirestore()
+                      .then(() =>
+                        showTempToast(
+                          lang === 'bn'
+                            ? '✓ রিমোট আপডেট পপআপ বন্ধ করা হয়েছে'
+                            : '✓ Deactivated remote update prompt'
+                        )
+                      )
+                      .catch(() => {});
+                  }}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl btn-soft-rose text-xs font-bold shrink-0 cursor-pointer whitespace-nowrap"
+                >
+                  {lang === 'bn' ? 'আপডেট নোটিশ বন্ধ করুন' : 'Stop Update Prompt'}
+                </button>
+              </div>
+            )}
+
+            <form onSubmit={handlePublishAppUpdate} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                    {lang === 'bn' ? 'নতুন ভার্সন নম্বর *' : 'New Version *'}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={20}
+                    value={releaseVersionInput}
+                    onChange={(e) => setReleaseVersionInput(e.target.value)}
+                    placeholder="2.6.0"
+                    className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                    {lang === 'bn' ? 'আপডেট মোড (ঐচ্ছিক নাকি বাধ্যতামূলক)' : 'Update Mode'}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setReleaseModeInput('OPTIONAL')}
+                      className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-bold cursor-pointer whitespace-nowrap ${
+                        releaseModeInput === 'OPTIONAL' ? 'btn-emerald' : 'btn-surface'
+                      }`}
+                    >
+                      {lang === 'bn' ? 'ঐচ্ছিক আপডেট কার্ড' : 'Optional Card'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReleaseModeInput('REQUIRED')}
+                      className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-bold cursor-pointer whitespace-nowrap ${
+                        releaseModeInput === 'REQUIRED' ? 'btn-crimson' : 'btn-surface'
+                      }`}
+                    >
+                      {lang === 'bn' ? 'বাধ্যতামূলক APK আপডেট' : 'Required Force Update'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                  {lang === 'bn'
+                    ? 'কী কী নতুন যুক্ত বা পরিবর্তন হয়েছে (Changelog) *'
+                    : 'Release Notes / Changelog *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={360}
+                  value={releaseNotesInput}
+                  onChange={(e) => setReleaseNotesInput(e.target.value)}
+                  placeholder={
+                    lang === 'bn'
+                      ? 'যেমন: নতুন হাসপাতাল লিস্ট, দ্রুত কলিং ও ডিজাইন আপডেট যুক্ত করা হয়েছে।'
+                      : 'e.g. Added new features, faster donor search, and bug fixes.'
+                  }
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                  {lang === 'bn'
+                    ? 'সরাসরি নতুন .APK ডাউনলোড লিংক (ঐচ্ছিক — শুধু https:// লিংক)'
+                    : 'Direct .APK / Play Store URL (Optional, https://)'}
+                </label>
+                <input
+                  type="url"
+                  maxLength={200}
+                  value={releaseApkUrlInput}
+                  onChange={(e) => setReleaseApkUrlInput(e.target.value)}
+                  placeholder="https://example.com/bloodsearch-latest.apk"
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isPublishingAppUpdate || !releaseNotesInput.trim()}
+                className="min-h-[44px] px-5 py-2.5 rounded-xl btn-crimson font-bold text-xs inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+              >
+                <Smartphone className="w-4 h-4 shrink-0" />
+                <span>
+                  {isPublishingAppUpdate
+                    ? lang === 'bn'
+                      ? 'আপডেট পাঠানো হচ্ছে...'
+                      : 'Publishing Update...'
+                    : lang === 'bn'
+                    ? 'সকল ইউজারের কাছে অ্যাপ/APK আপডেট পুশ করুন'
+                    : 'Push App / APK Update to All Users'}
+                </span>
+              </button>
+            </form>
           </div>
 
-          <form onSubmit={handlePublishAnnouncement} className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {(
-                [
-                  { id: 'CRITICAL', label: '🚨 জরুরি রক্তের ডাক (CRITICAL)' },
-                  { id: 'CAMPAIGN', label: '⛺ রক্তদান ক্যাম্পেইন (CAMPAIGN)' },
-                  { id: 'INFO', label: 'ℹ️ সাধারণ বিজ্ঞপ্তি (INFO)' },
-                ] as const
-              ).map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setBroadcastUrgency(p.id)}
-                  className={`py-2 px-3 rounded-xl text-xs font-bold border cursor-pointer transition-colors ${
-                    broadcastUrgency === p.id
-                      ? 'bg-rose-600 text-white border-rose-500'
-                      : 'bg-slate-50 dark:bg-[#0f172a] text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
+          {/* 2. Live Global Megaphone Broadcast */}
+          <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+            <div className="flex items-center gap-2.5 border-b border-slate-200 dark:border-slate-800 pb-3">
+              <Megaphone className="w-5 h-5 text-rose-600 shrink-0" />
+              <div>
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+                  {lang === 'bn'
+                    ? 'লাইভ মেগাফোন ঘোষণা (সকল ইউজারের স্ক্রিনে তাৎক্ষণিক ব্যানার)'
+                    : 'Live Global Megaphone Broadcast'}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {lang === 'bn'
+                    ? 'জাতীয় দুর্যোগ, ডেঙ্গু জরুরি রক্তের ডাক বা রক্তদান ক্যাম্পের নোটিশ ১-ক্লিকে পুরো অ্যাপে পাঠান'
+                    : 'Push urgent announcements or blood camp alerts to all connected users in real time'}
+                </p>
+              </div>
             </div>
 
-            <div>
-              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                {lang === 'bn' ? 'শিরোনাম (ঐচ্ছিক)' : 'Title (Optional)'}
-              </label>
-              <input
-                type="text"
-                maxLength={120}
-                value={broadcastTitle}
-                onChange={(e) => setBroadcastTitle(e.target.value)}
-                placeholder="যেমন: জরুরি প্লাটিলেট ও রক্তের ডাক — ঢাকা ও চট্টগ্রাম"
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                {lang === 'bn' ? 'ঘোষণার মূল বার্তা *' : 'Broadcast Message *'}
-              </label>
-              <input
-                type="text"
-                required
-                maxLength={500}
-                value={broadcastMsg}
-                onChange={(e) => setBroadcastMsg(e.target.value)}
-                placeholder="যেমন: ডেঙ্গু ওয়ার্ডে জরুরি O- এবং B+ প্লাটিলেট ডোনার প্রয়োজন — আজই যোগাযোগ করুন!"
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isPublishingBroadcast || !broadcastMsg.trim()}
-              className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-black text-xs cursor-pointer"
-            >
-              {isPublishingBroadcast
-                ? lang === 'bn'
-                  ? 'প্রকাশিত হচ্ছে...'
-                  : 'Publishing...'
-                : lang === 'bn'
-                  ? '📢 এখনই পুরো অ্যাপে লাইভ ঘোষণা পাঠান'
-                  : '📢 Publish Live Broadcast Now'}
-            </button>
-          </form>
-
-          <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-            <div className="text-xs font-bold text-slate-700 dark:text-slate-300">
-              {lang === 'bn'
-                ? `বর্তমানে সক্রিয় ঘোষণাসমূহ (${announcements.length})`
-                : `Currently Active Broadcasts (${announcements.length})`}
-            </div>
-            {announcements.length === 0 ? (
-              <p className="text-xs text-slate-500">
-                {lang === 'bn'
-                  ? 'এই মুহূর্তে কোনো সক্রিয় মেগাফোন ব্যানার চালু নেই।'
-                  : 'No active megaphone broadcasts right now.'}
-              </p>
-            ) : (
-              announcements.map((ann) => (
-                <div
-                  key={ann.id}
-                  className="p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
-                      {ann.urgency} · {ann.title} · {ann.updatedAtLabel}
-                    </div>
-                    <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
-                      {ann.message}
-                    </div>
-                  </div>
+            <form onSubmit={handlePublishAnnouncement} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {(
+                  [
+                    { id: 'CRITICAL', label: 'জরুরি রক্তের ডাক (CRITICAL)' },
+                    { id: 'CAMPAIGN', label: 'রক্তদান ক্যাম্পেইন (CAMPAIGN)' },
+                    { id: 'INFO', label: 'সাধারণ বিজ্ঞপ্তি (INFO)' },
+                  ] as const
+                ).map((p) => (
                   <button
+                    key={p.id}
                     type="button"
-                    onClick={() => {
-                      adminDeactivateAnnouncementInFirestore(ann.id)
-                        .then(() =>
-                          showTempToast(
-                            lang === 'bn' ? '✓ ঘোষণা বন্ধ করা হয়েছে' : '✓ Broadcast deactivated'
-                          )
-                        )
-                        .catch(() => {});
-                    }}
-                    className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shrink-0 cursor-pointer"
+                    onClick={() => setBroadcastUrgency(p.id)}
+                    className={`min-h-[42px] py-2 px-3 rounded-xl text-xs font-bold cursor-pointer ${
+                      broadcastUrgency === p.id ? 'btn-crimson' : 'btn-surface'
+                    }`}
                   >
-                    {lang === 'bn' ? 'বন্ধ করুন' : 'Stop'}
+                    {p.label}
                   </button>
-                </div>
-              ))
-            )}
+                ))}
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                  {lang === 'bn' ? 'শিরোনাম (ঐচ্ছিক)' : 'Title (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  value={broadcastTitle}
+                  onChange={(e) => setBroadcastTitle(e.target.value)}
+                  placeholder="যেমন: জরুরি প্লাটিলেট ও রক্তের ডাক — ঢাকা ও চট্টগ্রাম"
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                  {lang === 'bn' ? 'ঘোষণার মূল বার্তা *' : 'Broadcast Message *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={500}
+                  value={broadcastMsg}
+                  onChange={(e) => setBroadcastMsg(e.target.value)}
+                  placeholder="যেমন: ডেঙ্গু ওয়ার্ডে জরুরি O- এবং B+ প্লাটিলেট ডোনার প্রয়োজন — আজই যোগাযোগ করুন!"
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isPublishingBroadcast || !broadcastMsg.trim()}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl btn-obsidian disabled:opacity-50 font-bold text-xs cursor-pointer"
+              >
+                {isPublishingBroadcast
+                  ? lang === 'bn'
+                    ? 'প্রকাশিত হচ্ছে...'
+                    : 'Publishing...'
+                  : lang === 'bn'
+                    ? 'এখনই পুরো অ্যাপে লাইভ ঘোষণা পাঠান'
+                    : 'Publish Live Broadcast Now'}
+              </button>
+            </form>
+
+            <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <div className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                {lang === 'bn'
+                  ? `বর্তমানে সক্রিয় ঘোষণাসমূহ (${announcements.length})`
+                  : `Currently Active Broadcasts (${announcements.length})`}
+              </div>
+              {announcements.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  {lang === 'bn'
+                    ? 'এই মুহূর্তে কোনো সক্রিয় মেগাফোন ব্যানার চালু নেই।'
+                    : 'No active megaphone broadcasts right now.'}
+                </p>
+              ) : (
+                announcements.map((ann) => (
+                  <div
+                    key={ann.id}
+                    className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                        {ann.urgency} · {ann.title} · {ann.updatedAtLabel}
+                      </div>
+                      <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
+                        {ann.message}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        adminDeactivateAnnouncementInFirestore(ann.id)
+                          .then(() =>
+                            showTempToast(
+                              lang === 'bn' ? '✓ ঘোষণা বন্ধ করা হয়েছে' : '✓ Broadcast deactivated'
+                            )
+                          )
+                          .catch(() => {});
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-xl btn-soft-rose text-xs font-bold shrink-0 cursor-pointer"
+                    >
+                      {lang === 'bn' ? 'বন্ধ করুন' : 'Stop'}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

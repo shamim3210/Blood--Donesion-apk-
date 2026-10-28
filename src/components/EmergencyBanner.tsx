@@ -47,7 +47,8 @@ export const EmergencyBanner: React.FC<EmergencyBannerProps> = ({
               {topRequest.bloodGroup} {lang === 'bn' ? 'রক্তের জরুরি প্রয়োজন:' : 'Blood Needed:'}
             </span>
             <span className="text-rose-100 truncate max-w-xs md:max-w-md">
-              {topRequest.hospitalName} ({topRequest.unitsNeeded - topRequest.unitsCollected} {lang === 'bn' ? 'ব্যাগ বাকি' : 'bags needed'})
+              {topRequest.hospitalName} ({Math.max(1, topRequest.unitsNeeded - topRequest.unitsCollected)}{' '}
+              {lang === 'bn' ? 'ব্যাগ বাকি' : 'bags needed'})
             </span>
           </div>
         </div>

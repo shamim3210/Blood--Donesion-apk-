@@ -607,6 +607,32 @@ export function createEmergencyApiApp(options?: {
     });
   });
 
+  app.get('/api/app-version', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    let pkgVersion = '2.5.0';
+    let distBuildId = '';
+    try {
+      const distVersionPath = path.join(__dirname, 'dist', 'version.json');
+      if (fs.existsSync(distVersionPath)) {
+        const parsed = JSON.parse(fs.readFileSync(distVersionPath, 'utf8')) as {
+          version?: string;
+          buildId?: string;
+        };
+        if (parsed.version) pkgVersion = parsed.version;
+        if (parsed.buildId) distBuildId = parsed.buildId;
+      } else {
+        const pkgPath = path.join(__dirname, 'package.json');
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+        if (pkg.version) pkgVersion = pkg.version;
+      }
+    } catch {}
+    res.json({
+      ok: true,
+      version: pkgVersion,
+      buildId: distBuildId || `${pkgVersion}-live`,
+    });
+  });
+
   app.get('/api/audit/summary', async (req: Request, res: Response) => {
     const caller = await verifyBearerToken(req);
     if (!caller) {
@@ -646,8 +672,17 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        setHeaders(res, filePath) {
+          if (filePath.endsWith('version.json') || filePath.endsWith('sw.js')) {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+          }
+        },
+      })
+    );
     app.get('*', (_req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

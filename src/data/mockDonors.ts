@@ -1,383 +1,197 @@
-import { BloodRequest, Donor } from '../types';
+import { AuditLogEntry, BloodRequest, Donor } from '../types';
 
-export const INITIAL_DONORS: Donor[] = [
-  {
-    id: 'donor-1',
-    name: 'তানভীর আহমেদ (Tanvir Ahmed)',
-    bloodGroup: 'O-',
-    division: 'dhaka',
-    district: 'dhaka',
-    upazila: 'dhanmondi',
-    phone: '+8801712345678',
-    available: true,
-    lastDonatedDate: '2026-06-15',
-    totalDonations: 8,
-    verifiedBadge: true,
-    rating: 4.95,
-    reviewsCount: 14,
-    age: 26,
-    gender: 'MALE',
-    weightKg: 68,
-    hospitalAffiliation: 'Sandhani (DMC Unit)',
-    bio: 'নিয়মিত রক্তদাতা ও সন্ধানীর সাবেক ভলান্টিয়ার। জরুরি যেকোনো প্রয়োজনে দ্রুত যোগাযোগ করতে পারেন।',
-  },
-  {
-    id: 'donor-2',
-    name: 'ফারহানা হক (Farhana Haque)',
-    bloodGroup: 'B+',
-    division: 'dhaka',
-    district: 'dhaka',
-    upazila: 'mirpur',
-    phone: '+8801823456789',
-    available: true,
-    lastDonatedDate: '2026-05-10',
-    totalDonations: 5,
-    verifiedBadge: true,
-    rating: 4.88,
-    reviewsCount: 9,
-    age: 24,
-    gender: 'FEMALE',
-    weightKg: 54,
-    hospitalAffiliation: 'Badhan (Mirpur College)',
-    bio: 'মিরপুর ও আশপাশের হাসপাতালে যেকোনো রক্তের রিকোয়েস্টে সাড়া দিতে প্রস্তুত।',
-  },
-  {
-    id: 'donor-3',
-    name: 'রাকিব হাসান (Rakib Hasan)',
-    bloodGroup: 'A+',
-    division: 'chattogram',
-    district: 'chattogram',
-    upazila: 'panchlaish',
-    phone: '+8801912987654',
-    available: true,
-    lastDonatedDate: '2026-07-02',
-    totalDonations: 11,
-    verifiedBadge: true,
-    rating: 5.0,
-    reviewsCount: 19,
-    age: 29,
-    gender: 'MALE',
-    weightKg: 74,
-    hospitalAffiliation: 'Chittagong Medical College Volunteer',
-    bio: 'চমেক বা পাঁচলাইশ সংলগ্ন যেকোনো প্রাইভেট ক্লিনিকে সরাসরি রক্তদানে সহযোগিতা করি।',
-  },
-  {
-    id: 'donor-4',
-    name: 'সাদিয়া ইসলাম (Sadia Islam)',
-    bloodGroup: 'AB+',
-    division: 'sylhet',
-    district: 'sylhet',
-    upazila: 'subidbazar',
-    phone: '+8801734567890',
-    available: false,
-    lastDonatedDate: '2026-09-20',
-    totalDonations: 4,
-    verifiedBadge: false,
-    rating: 4.75,
-    reviewsCount: 6,
-    age: 23,
-    gender: 'FEMALE',
-    weightKg: 52,
-    hospitalAffiliation: 'SUST Blood Circle',
-    bio: 'সর্বশেষ সেপ্টেম্বর মাসে রক্তদান করেছি। পরবর্তী অনুদান নভেম্বর ২০২৬-এ সম্ভব।',
-  },
-  {
-    id: 'donor-5',
-    name: 'মোস্তাফিজুর রহমান (Mostafizur Rahman)',
-    bloodGroup: 'O+',
-    division: 'rajshahi',
-    district: 'rajshahi',
-    upazila: 'motihar',
-    phone: '+8801552345678',
-    available: true,
-    lastDonatedDate: '2026-04-12',
-    totalDonations: 16,
-    verifiedBadge: true,
-    rating: 4.98,
-    reviewsCount: 28,
-    age: 32,
-    gender: 'MALE',
-    weightKg: 78,
-    hospitalAffiliation: 'RU Badhan Club',
-    bio: 'গোল্ড ব্যাজ ডোনার। ১৬ বার রক্তদান করেছি। রাজশাহী মেডিকেলের পাশেই থাকি।',
-  },
-  {
-    id: 'donor-6',
-    name: 'নাসরিন আক্তার (Nasrin Akhter)',
-    bloodGroup: 'A-',
-    division: 'khulna',
-    district: 'khulna',
-    upazila: 'khulna_sadar',
-    phone: '+8801678123456',
-    available: true,
-    lastDonatedDate: '2026-05-30',
-    totalDonations: 6,
-    verifiedBadge: true,
-    rating: 4.9,
-    reviewsCount: 11,
-    age: 27,
-    gender: 'FEMALE',
-    weightKg: 58,
-    hospitalAffiliation: 'Khulna Red Crescent',
-    bio: 'নেগেটিভ গ্রুপের রক্তের সংকটে সবসময় দ্রুত পৌঁছানোর চেষ্টা করি।',
-  },
-  {
-    id: 'donor-7',
-    name: 'আরিফুল হক (Ariful Haque)',
-    bloodGroup: 'B-',
-    division: 'dhaka',
-    district: 'dhaka',
-    upazila: 'uttara',
-    phone: '+8801799887766',
-    available: true,
-    lastDonatedDate: '2026-06-01',
-    totalDonations: 9,
-    verifiedBadge: true,
-    rating: 4.92,
-    reviewsCount: 15,
-    age: 28,
-    gender: 'MALE',
-    weightKg: 70,
-    hospitalAffiliation: 'Uttara Friends Club',
-    bio: 'উত্তরা ও টঙ্গী এরিয়ার হাসপাতালে তাৎক্ষণিক ডোনেশন করতে পারি।',
-  },
-  {
-    id: 'donor-8',
-    name: 'মাহমুদুল হাসান (Mahmudul Hasan)',
-    bloodGroup: 'AB-',
-    division: 'barishal',
-    district: 'barishal',
-    upazila: 'barishal_sadar',
-    phone: '+8801811223344',
-    available: true,
-    lastDonatedDate: '2026-03-18',
-    totalDonations: 7,
-    verifiedBadge: true,
-    rating: 4.86,
-    reviewsCount: 8,
-    age: 25,
-    gender: 'MALE',
-    weightKg: 65,
-    hospitalAffiliation: 'Sher-e-Bangla Medical Volunteer',
-    bio: 'এবি নেগেটিভের মতো অতি বিরল রক্ত দিতে সবসময় সচেষ্ট।',
-  },
-  {
-    id: 'donor-9',
-    name: 'সুমাইয়া জাহান (Sumaiya Jahan)',
-    bloodGroup: 'O+',
-    division: 'mymensingh',
-    district: 'mymensingh',
-    upazila: 'mymensingh_sadar',
-    phone: '+8801755667788',
-    available: true,
-    lastDonatedDate: '2026-05-15',
-    totalDonations: 3,
-    verifiedBadge: false,
-    rating: 4.7,
-    reviewsCount: 5,
-    age: 22,
-    gender: 'FEMALE',
-    weightKg: 50,
-    hospitalAffiliation: 'Mymensingh Medical Supporter',
-    bio: 'চরপাড়া ও মেডিকেল মোড়ে যেকোনো রোগীর রক্তের প্রয়োজনে যোগাযোগ করুন।',
-  },
-  {
-    id: 'donor-10',
-    name: 'জাহিদুল ইসলাম (Zahidul Islam)',
-    bloodGroup: 'B+',
-    division: 'rangpur',
-    district: 'rangpur',
-    upazila: 'dhap',
-    phone: '+8801922334455',
-    available: true,
-    lastDonatedDate: '2026-07-10',
-    totalDonations: 12,
-    verifiedBadge: true,
-    rating: 4.96,
-    reviewsCount: 21,
-    age: 30,
-    gender: 'MALE',
-    weightKg: 72,
-    hospitalAffiliation: 'Rangpur Medical College Badhan',
-    bio: '১২ বার রক্ত দিয়েছি। রক্তের বিশুদ্ধতা ও জরুরি সেবা নিশ্চিত করতে সবসময় প্রস্তুত।',
-  },
-];
+/**
+ * 100% Real-User Production Mode:
+ * All fake/demo seed arrays are permanently emptied so only genuine registered donors,
+ * real emergency SOS requests, and real security audit events appear in the app.
+ */
+export const INITIAL_DONORS: Donor[] = [];
 
-export const INITIAL_REQUESTS: BloodRequest[] = [
-  {
-    id: 'req-1',
-    patientName: 'সুলতানা পারভীন (Sultana Parveen)',
-    patientAge: 38,
-    bloodGroup: 'O-',
-    unitsNeeded: 2,
-    unitsCollected: 1,
-    hospitalName: 'ঢাকা মেডিকেল কলেজ হাসপাতাল (DMCH), নতুন ভবন ৩য় তলা',
-    division: 'dhaka',
-    district: 'dhaka',
-    upazila: 'shahbagh',
-    urgency: 'CRITICAL',
-    contactName: 'কামাল হোসেন (স্বামী)',
-    contactPhone: '+8801711223344',
-    requiredDate: 'আজ বিকেল ৫:০০ টার মধ্যে',
-    reason: 'জরুরি সিজারিয়ান অপারেশন ও রক্তক্ষরণ (Thalassemia complications)',
-    responders: [
-      {
-        id: 'resp-1',
-        name: 'তানভীর আহমেদ',
-        phone: '+8801712345678',
-        bloodGroup: 'O-',
-        timestamp: '১০ মিনিট আগে',
-        notes: 'আমি হাসপাতালের পথে রওনা দিয়েছি।',
-      },
-    ],
-    createdAt: '২৫ মিনিট আগে',
-    status: 'ACTIVE',
-  },
-  {
-    id: 'req-2',
-    patientName: 'মোহাম্মদ রফিক (Md. Rafiq)',
-    patientAge: 52,
-    bloodGroup: 'B-',
-    unitsNeeded: 3,
-    unitsCollected: 0,
-    hospitalName: 'চট্টগ্রাম ন্যাশনাল হাসপাতাল, পাঁচলাইশ',
-    division: 'chattogram',
-    district: 'chattogram',
-    upazila: 'panchlaish',
-    urgency: 'CRITICAL',
-    contactName: 'শরীফ রফিক (ছেলে)',
-    contactPhone: '+8801822334455',
-    requiredDate: 'আজ রাত ৮:০০ টার আগে',
-    reason: 'সড়ক দুর্ঘটনায় মারাত্মক জখম ও অভ্যন্তরীণ রক্তক্ষরণ',
-    responders: [],
-    createdAt: '৪৫ মিনিট আগে',
-    status: 'ACTIVE',
-  },
-  {
-    id: 'req-3',
-    patientName: 'আফসানা রহমান (Afsana Rahman)',
-    patientAge: 29,
-    bloodGroup: 'A+',
-    unitsNeeded: 1,
-    unitsCollected: 1,
-    hospitalName: 'ইবনে সিনা হাসপাতাল, ধানমন্ডি',
-    division: 'dhaka',
-    district: 'dhaka',
-    upazila: 'dhanmondi',
-    urgency: 'URGENT',
-    contactName: 'তানজিলা (বোন)',
-    contactPhone: '+8801933445566',
-    requiredDate: 'আগামীকাল সকাল ৯:০০ টা',
-    reason: 'ল্যাপারোস্কোপিক গলব্লাডার সার্জারি',
-    responders: [
-      {
-        id: 'resp-2',
-        name: 'রাকিব হাসান',
-        phone: '+8801912987654',
-        bloodGroup: 'A+',
-        timestamp: '১ ঘণ্টা আগে',
-        notes: 'আগামীকাল সকালে ইনশাআল্লাহ উপস্থিত থাকব।',
-      },
-    ],
-    createdAt: '২ ঘণ্টা আগে',
-    status: 'ACTIVE',
-  },
-  {
-    id: 'req-4',
-    patientName: 'আব্দুল কাদের (Abdul Kader)',
-    patientAge: 64,
-    bloodGroup: 'AB-',
-    unitsNeeded: 2,
-    unitsCollected: 0,
-    hospitalName: 'সিলেট এম এ জি ওসমানী মেডিকেল কলেজ হাসপাতাল',
-    division: 'sylhet',
-    district: 'sylhet',
-    upazila: 'sylhet_sadar',
-    urgency: 'URGENT',
-    contactName: 'মাসুম কাদের',
-    contactPhone: '+8801744556677',
-    requiredDate: 'আজ রাত ১০:০০ টা',
-    reason: 'ডায়ালাইসিস ও মারাত্মক এনিমিয়া',
-    responders: [],
-    createdAt: '৩ ঘণ্টা আগে',
-    status: 'ACTIVE',
-  },
-];
+export const INITIAL_REQUESTS: BloodRequest[] = [];
 
-export const INITIAL_AUDIT_LOGS = [
-  {
-    id: 'audit-1',
-    action: 'STATUS_CHANGE' as const,
-    actorName: 'System Security Engine',
-    targetDetails: 'Initial verification checks passed for voluntary donors',
-    timestamp: 'আজ সকাল ৮:৩০',
-    securityHash: 'sha256:7f83b165...9c1a',
-  },
-  {
-    id: 'audit-2',
-    action: 'CREATE_SOS' as const,
-    actorName: 'কামাল হোসেন',
-    targetDetails: 'Broadcasted O- request at DMCH (2 units)',
-    timestamp: 'আজ সকাল ৯:১৫',
-    securityHash: 'sha256:c4ca4238...d01b',
-  },
-  {
-    id: 'audit-3',
-    action: 'DISPATCH_INCIDENT' as const,
-    actorName: 'Emergency Command Center',
-    targetDetails: 'Rapid response unit assigned to DMCH emergency Bleeding Case #INC-0412',
-    timestamp: 'আজ সকাল ১০:০৫',
-    securityHash: 'sha256:8b1a992...e4fa',
-  },
-];
+export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [];
 
-export const SEED_DONOR_IDS: ReadonlySet<string> = new Set(INITIAL_DONORS.map((d) => d.id));
-export const SEED_REQUEST_IDS: ReadonlySet<string> = new Set(INITIAL_REQUESTS.map((r) => r.id));
-export const SEED_AUDIT_IDS: ReadonlySet<string> = new Set(INITIAL_AUDIT_LOGS.map((a) => a.id));
+export const LEGACY_FAKE_DONOR_IDS: ReadonlySet<string> = new Set([
+  'donor-1',
+  'donor-2',
+  'donor-3',
+  'donor-4',
+  'donor-5',
+  'donor-6',
+  'donor-7',
+  'donor-8',
+  'donor-9',
+  'donor-10',
+  'seed-map-donor-1',
+  'seed-map-donor-2',
+  'seed-map-donor-3',
+  'seed-map-donor-4',
+]);
+
+export const LEGACY_FAKE_REQUEST_IDS: ReadonlySet<string> = new Set([
+  'req-1',
+  'req-2',
+  'req-3',
+  'req-4',
+  'seed-map-sos-1',
+  'seed-map-sos-2',
+  'sos_test_100',
+]);
+
+export const LEGACY_FAKE_AUDIT_IDS: ReadonlySet<string> = new Set([
+  'audit-1',
+  'audit-2',
+  'audit-3',
+]);
+
+export const LEGACY_FAKE_NAMES: ReadonlySet<string> = new Set([
+  'তানভীর আহমেদ (tanvir ahmed)',
+  'ফারহানা হক (farhana haque)',
+  'রাকিব হাসান (rakib hasan)',
+  'সাদিয়া ইসলাম (sadia islam)',
+  'মোস্তাফিজুর রহমান (mostafizur rahman)',
+  'নাসরিন আক্তার (nasrin akhter)',
+  'আরিফুল হক (ariful haque)',
+  'মাহমুদুল হাসান (mahmudul hasan)',
+  'সুমাইয়া জাহান (sumaiya jahan)',
+  'জাহিদুল ইসলাম (zahidul islam)',
+  'সুলতানা পারভীন (sultana parveen)',
+  'মোহাম্মদ রফিক (md. rafiq)',
+  'আফসানা রহমান (afsana rahman)',
+  'আব্দুল কাদের (abdul kader)',
+]);
+
+export const SEED_DONOR_IDS: ReadonlySet<string> = LEGACY_FAKE_DONOR_IDS;
+export const SEED_REQUEST_IDS: ReadonlySet<string> = LEGACY_FAKE_REQUEST_IDS;
+export const SEED_AUDIT_IDS: ReadonlySet<string> = LEGACY_FAKE_AUDIT_IDS;
+
+export function isFakeIdentifier(id?: string): boolean {
+  if (!id) return false;
+  const trimmed = id.trim();
+  if (
+    LEGACY_FAKE_DONOR_IDS.has(trimmed) ||
+    LEGACY_FAKE_REQUEST_IDS.has(trimmed) ||
+    LEGACY_FAKE_AUDIT_IDS.has(trimmed)
+  ) {
+    return true;
+  }
+  return /^(donor-\d+|req-\d+|audit-\d+|d\d+|seed[_-]|demo[_-]|fake[_-]|mock[_-]|sample[_-]|sos_test_)/i.test(
+    trimmed
+  );
+}
+
+export function isFakePersonName(name?: string): boolean {
+  if (!name) return false;
+  const lower = name.trim().toLowerCase();
+  if (LEGACY_FAKE_NAMES.has(lower)) return true;
+  return /^(fake\b|demo\b|test user\b|test donor\b|dummy\b|sample\b)/i.test(lower);
+}
 
 export function isSeedDonorId(id?: string): boolean {
-  return Boolean(id && SEED_DONOR_IDS.has(id));
+  return isFakeIdentifier(id);
 }
 
 export function isSeedRequestId(id?: string): boolean {
-  return Boolean(id && SEED_REQUEST_IDS.has(id));
+  return isFakeIdentifier(id);
 }
 
 export function isSeedAuditId(id?: string): boolean {
-  return Boolean(id && SEED_AUDIT_IDS.has(id));
+  return isFakeIdentifier(id);
 }
 
 export function isRealOnlyModeEnabled(): boolean {
   try {
-    return localStorage.getItem('bloodsearch_real_only_mode') === 'true';
+    const saved = localStorage.getItem('bloodsearch_real_only_mode');
+    if (saved !== null) {
+      return saved !== 'false';
+    }
   } catch {
-    return false;
+    // Ignore storage read errors
   }
+  return true;
 }
 
 /**
- * Progressively evicts demo/seed items 1-by-1 as real users/records arrive:
- * - 1 real item  -> removes 1st fake seed item
- * - 2 real items -> removes 1st & 2nd fake seed items
- * - N >= seedItems.length (or realOnlyMode = true) -> 0 fake items remain (100% real!)
+ * Scrubs any legacy fake/seed donors, requests, audit logs, or mock caches
+ * stored in browser localStorage from older app versions, while keeping all genuine records intact.
  */
-export function evictSeedsProgressively<T extends { id: string }>(
+export function scrubFakeLocalStorageOnBoot(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem('bloodsearch_real_only_mode', 'true');
+
+    const rawDonors = localStorage.getItem('bloodsearch_donors');
+    if (rawDonors) {
+      const parsed = JSON.parse(rawDonors);
+      if (Array.isArray(parsed)) {
+        const cleanDonors = parsed.filter(
+          (d) => d && typeof d.id === 'string' && !isFakeIdentifier(d.id) && !isFakePersonName(d.name)
+        );
+        localStorage.setItem('bloodsearch_donors', JSON.stringify(cleanDonors));
+      }
+    }
+
+    const rawRequests = localStorage.getItem('bloodsearch_requests');
+    if (rawRequests) {
+      const parsed = JSON.parse(rawRequests);
+      if (Array.isArray(parsed)) {
+        const cleanReqs = parsed.filter(
+          (r) =>
+            r &&
+            typeof r.id === 'string' &&
+            !isFakeIdentifier(r.id) &&
+            !isFakePersonName(r.patientName)
+        );
+        localStorage.setItem('bloodsearch_requests', JSON.stringify(cleanReqs));
+      }
+    }
+
+    const rawAudits = localStorage.getItem('bloodsearch_audit_logs');
+    if (rawAudits) {
+      const parsed = JSON.parse(rawAudits);
+      if (Array.isArray(parsed)) {
+        const cleanAudits = parsed.filter(
+          (a) => a && typeof a.id === 'string' && !isFakeIdentifier(a.id)
+        );
+        localStorage.setItem('bloodsearch_audit_logs', JSON.stringify(cleanAudits));
+      }
+    }
+
+    const rawUser = localStorage.getItem('bloodsearch_current_user');
+    if (rawUser) {
+      const u = JSON.parse(rawUser);
+      if (u && (isFakeIdentifier(u.id) || isFakePersonName(u.name))) {
+        localStorage.removeItem('bloodsearch_current_user');
+      } else if (u && u.district === 'ঢাকা') {
+        // Normalize legacy Bengali district ID on cached user profile so search filters match cleanly
+        u.district = 'dhaka';
+        if (u.upazila === 'সদর') u.upazila = 'dhanmondi';
+        localStorage.setItem('bloodsearch_current_user', JSON.stringify(u));
+      }
+    }
+  } catch {
+    // Ignore malformed local cache
+  }
+}
+
+export function evictSeedsProgressively<T extends { id: string; name?: string; patientName?: string }>(
   realItems: T[],
-  seedItems: T[],
-  forceRealOnly = isRealOnlyModeEnabled()
+  _seedItems: T[] = [],
+  _forceRealOnly = true
 ): T[] {
   const seen = new Set<string>();
   const uniqueReal: T[] = [];
   for (const item of realItems) {
-    if (item && item.id && !seen.has(item.id)) {
+    if (
+      item &&
+      item.id &&
+      !seen.has(item.id) &&
+      !isFakeIdentifier(item.id) &&
+      !isFakePersonName(item.name || item.patientName)
+    ) {
       seen.add(item.id);
       uniqueReal.push(item);
     }
   }
-  if (forceRealOnly) {
-    return uniqueReal;
-  }
-  const remainingSeeds = seedItems.slice(uniqueReal.length);
-  return [...uniqueReal, ...remainingSeeds];
+  return uniqueReal;
 }
-

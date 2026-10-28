@@ -16,6 +16,7 @@ import {
   isSeedRequestId,
   isSeedAuditId,
   evictSeedsProgressively,
+  scrubFakeLocalStorageOnBoot,
 } from './data/mockDonors';
 import { MobileAppHeader } from './components/mobile/MobileAppHeader';
 import { MobileBottomNav } from './components/MobileBottomNav';
@@ -27,6 +28,7 @@ import { RegisterDonorModal } from './components/RegisterDonorModal';
 import { RequestBloodWizard } from './components/donor/RequestBloodWizard';
 import { AuthModuleModal } from './components/auth/AuthModuleModal';
 import { PwaInstallPrompt } from './components/ecosystem/PwaInstallPrompt';
+import { AppUpdateBannerModal } from './components/ecosystem/AppUpdateBannerModal';
 import {
   canDonorGiveToPatient,
   playEmergencySosChime,
@@ -53,10 +55,16 @@ import {
   getTokenServiceAlert,
   dismissTokenServiceAlert,
   subscribeActiveAnnouncements,
+  isBootstrappedAdminUser,
+  ownerPurgeFakeCloudRecordsOnlyInFirestore,
+  adminSetGlobalRealOnlyModeInFirestore,
+  maskPhoneNumber,
+  DEFAULT_AVATAR_DATA_URI,
   OwnerAnnouncementItem,
   TokenServiceAlertInfo,
   User as FirebaseUser,
 } from './firebase';
+import { useBrandConfig } from './config/brandConfig';
 import type { CareSuiteTab } from './components/ecosystem/EmergencyCareSuiteModal';
 
 // Lazy-loaded secondary views & modals for instant first-paint & zero mobile bundle lag
@@ -121,6 +129,11 @@ const PlayStoreGuideModal = lazy(() =>
     default: m.PlayStoreGuideModal,
   }))
 );
+const CommercialHandoverModal = lazy(() =>
+  import('./components/ecosystem/CommercialHandoverModal').then((m) => ({
+    default: m.CommercialHandoverModal,
+  }))
+);
 const EmergencyCareSuiteModal = lazy(() =>
   import('./components/ecosystem/EmergencyCareSuiteModal').then((m) => ({
     default: m.EmergencyCareSuiteModal,
@@ -139,6 +152,7 @@ function ViewFallback({ lang }: { lang: Language }) {
 }
 
 export default function App() {
+  const brand = useBrandConfig();
   // Theme state: Normal solid light or normal solid dark
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     const saved = localStorage.getItem('bloodsearch_dark_mode');
@@ -182,7 +196,12 @@ export default function App() {
     }
   }, []);
 
-  // Application Data States (Auto 1-by-1 Fake/Seed Eviction as Real Users Arrive)
+  // Scrub any legacy fake/seed records from localStorage immediately on boot
+  useMemo(() => {
+    scrubFakeLocalStorageOnBoot();
+  }, []);
+
+  // Application Data States (100% Real Registered Users & Real SOS Requests)
   const [donors, setDonors] = useState<Donor[]>(() => {
     const saved = localStorage.getItem('bloodsearch_donors');
     if (saved) {
@@ -235,6 +254,15 @@ export default function App() {
   const [selectedDonorForPhone, setSelectedDonorForPhone] = useState<Donor | null>(null);
   const [activeDonorForChat, setActiveDonorForChat] = useState<Donor | null>(null);
   const [pendingRespondRequest, setPendingRespondRequest] = useState<BloodRequest | null>(null);
+  const [searchPreset, setSearchPreset] = useState<{
+    bloodGroup: BloodGroup | 'ALL';
+    district: string;
+    nonce: number;
+  }>({ bloodGroup: 'ALL', district: 'ALL', nonce: 0 });
+  const [sosPreset, setSosPreset] = useState<{
+    bloodGroup?: BloodGroup;
+    district?: string;
+  }>({});
   const [isPhoneModalOpen, setIsPhoneModalOpen] = useState<boolean>(false);
   const [isSOSWizardOpen, setIsSOSWizardOpen] = useState<boolean>(false);
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState<boolean>(false);
@@ -245,10 +273,31 @@ export default function App() {
   const [isPosterModalOpen, setIsPosterModalOpen] = useState<boolean>(false);
   const [isThalassemiaModalOpen, setIsThalassemiaModalOpen] = useState<boolean>(false);
   const [isPlayStoreModalOpen, setIsPlayStoreModalOpen] = useState<boolean>(false);
+  const [isCommercialModalOpen, setIsCommercialModalOpen] = useState<boolean>(false);
   const [isArchitectureModalOpen, setIsArchitectureModalOpen] = useState<boolean>(false);
   const [careSuiteTab, setCareSuiteTab] = useState<CareSuiteTab | null>(null);
   const [activeAnnouncements, setActiveAnnouncements] = useState<OwnerAnnouncementItem[]>([]);
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<string[]>([]);
+
+  const openSOSWithContext = useCallback(
+    (ctx?: { bloodGroup?: BloodGroup; district?: string }) => {
+      setSosPreset(ctx || {});
+      setIsSOSWizardOpen(true);
+    },
+    []
+  );
+
+  const handleQuickSearchByGroup = useCallback(
+    (group: BloodGroup | 'ALL', district: string = 'ALL') => {
+      setSearchPreset((prev) => ({
+        bloodGroup: group,
+        district: district || 'ALL',
+        nonce: prev.nonce + 1,
+      }));
+      handleSelectTab('search');
+    },
+    [handleSelectTab]
+  );
 
   const openRegisterWithRole = useCallback((role: 'USER' | 'ADMIN' = 'USER') => {
     setRegisterInitialRole(role);
@@ -348,7 +397,67 @@ export default function App() {
           if (syncedProfile) {
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(syncedProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
+
+            // Immediately reflect newly signed-in real user in local donors state while Cloud snapshot syncs
+            setDonors((prev) => {
+              if (prev.some((d) => d.id === syncedProfile.id)) return prev;
+              const autoDonorCard: Donor = {
+                id: syncedProfile.id,
+                name: syncedProfile.name,
+                bloodGroup: syncedProfile.bloodGroup,
+                division: syncedProfile.division || 'dhaka',
+                district: syncedProfile.district || 'dhaka',
+                upazila: syncedProfile.upazila || 'dhanmondi',
+                phone: syncedProfile.shareDirectContact
+                  ? syncedProfile.phone
+                  : maskPhoneNumber(syncedProfile.phone),
+                whatsappPhone: syncedProfile.shareDirectContact
+                  ? syncedProfile.whatsappPhone || syncedProfile.phone
+                  : undefined,
+                available: syncedProfile.availableToDonate !== false,
+                availabilityStatus: syncedProfile.availabilityStatus || 'AVAILABLE',
+                availabilityConfirmedAtMs: syncedProfile.availabilityConfirmedAtMs || Date.now(),
+                shareDirectContact: Boolean(syncedProfile.shareDirectContact),
+                contactVisibility: syncedProfile.contactVisibility || 'REQUEST_ONLY',
+                allowCall: syncedProfile.allowCall !== false,
+                allowWhatsApp: syncedProfile.allowWhatsApp !== false,
+                allowSms: syncedProfile.allowSms !== false,
+                emergencyAlertsOptIn: syncedProfile.emergencyAlertsOptIn !== false,
+                alertsPaused: syncedProfile.alertsPaused === true,
+                isCloudRecord: true,
+                lastDonatedDate: syncedProfile.lastDonationDate || '',
+                totalDonations: syncedProfile.totalDonations || 0,
+                verifiedBadge: syncedProfile.role === 'ADMIN',
+                rating: 5.0,
+                reviewsCount: 0,
+                age: syncedProfile.age || 25,
+                gender: syncedProfile.gender || 'MALE',
+                weightKg: syncedProfile.weightKg || 62,
+                hospitalAffiliation:
+                  syncedProfile.role === 'ADMIN'
+                    ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
+                    : 'স্বেচ্ছাসেবী রক্তদাতা',
+                avatar: syncedProfile.photoUrl || DEFAULT_AVATAR_DATA_URI,
+              };
+              return [autoDonorCard, ...prev];
+            });
           }
+
+          // Automatic one-time Cloud Fake/Seed Data Cleanup when Super Owner is signed in
+          if (isBootstrappedAdminUser(u)) {
+            const purgeKey = 'bloodsearch_fake_cloud_purged_v3';
+            if (localStorage.getItem(purgeKey) !== 'done') {
+              Promise.all([
+                ownerPurgeFakeCloudRecordsOnlyInFirestore(),
+                adminSetGlobalRealOnlyModeInFirestore(true),
+              ])
+                .then(() => {
+                  localStorage.setItem(purgeKey, 'done');
+                })
+                .catch(() => {});
+            }
+          }
+
           unsubProfile = subscribeMyUserProfile(u.uid, async (liveProfile) => {
             if (!liveProfile) return;
             const isAdmin = await checkIsVerifiedAdminInFirestore(u);
@@ -466,13 +575,29 @@ export default function App() {
     };
   }, []);
 
-  // PWA / APK Home-Screen Shortcut Deep-Action Handler (?action=sos|search|chat|care)
+  // PWA / APK Home-Screen Shortcut & Shared Deep-Link Handler (?action=sos|search|chat|care&group=O-)
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const action = params.get('action');
-      if (action) {
+      const groupParam = params.get('group') as BloodGroup | null;
+      const districtParam = params.get('district');
+      const validGroups: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+
+      if (action || (groupParam && validGroups.includes(groupParam))) {
+        if (groupParam && validGroups.includes(groupParam)) {
+          setSearchPreset((prev) => ({
+            bloodGroup: groupParam,
+            district: districtParam || 'ALL',
+            nonce: prev.nonce + 1,
+          }));
+          setActiveTab('search');
+        }
         if (action === 'sos') {
+          setSosPreset({
+            bloodGroup: groupParam && validGroups.includes(groupParam) ? groupParam : undefined,
+            district: districtParam || undefined,
+          });
           setIsSOSWizardOpen(true);
         } else if (action === 'search') {
           setActiveTab('search');
@@ -482,6 +607,8 @@ export default function App() {
           setCareSuiteTab('maternity');
         }
         params.delete('action');
+        params.delete('group');
+        params.delete('district');
         const nextQuery = params.toString();
         const cleanUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '');
         window.history.replaceState({}, '', cleanUrl);
@@ -509,6 +636,13 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('bloodsearch_lang', lang);
   }, [lang]);
+
+  // Sync browser tab title with white-label brand config
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.title = `${brand.brandName} - ${brand.organizationName}`;
+    }
+  }, [brand.brandName, brand.organizationName]);
 
   // Debounced persistence to localStorage so large arrays/avatars NEVER block UI frames
   useEffect(() => {
@@ -684,7 +818,7 @@ export default function App() {
       )} ব্যাগ) — ${req.hospitalName}, ${req.district}। রোগী: ${req.patientName}। যোগাযোগ: ${req.contactPhone}`;
       if (navigator.share) {
         navigator
-          .share({ title: 'BloodSearch SOS', text: shareText, url: window.location.href })
+          .share({ title: `${brand.brandName} SOS`, text: shareText, url: window.location.href })
           .catch(() => {});
       } else if (navigator.clipboard) {
         navigator.clipboard.writeText(shareText).catch(() => {});
@@ -734,7 +868,7 @@ export default function App() {
   return (
     <div
       className={`min-h-dvh w-full max-w-[100vw] overflow-x-clip flex flex-col transition-colors duration-200 ${
-        darkMode ? 'dark bg-[#0b0f19] text-[#f8fafc]' : 'bg-[#f8fafc] text-[#0f172a]'
+        darkMode ? 'dark bg-[#090d16] text-[#f8fafc]' : 'bg-[#f8fafc] text-[#0f172a]'
       }`}
     >
       {/* 1. Unified Responsive Native Header */}
@@ -755,6 +889,7 @@ export default function App() {
           window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
         }}
         onOpenPlayStoreModal={() => setIsPlayStoreModalOpen(true)}
+        onOpenCommercialModal={() => setIsCommercialModalOpen(true)}
         isDeckMode={viewMode === 'deck'}
         onExitDeckMode={() => setViewMode('app')}
         liveUserLabel={liveUserLabel}
@@ -763,6 +898,10 @@ export default function App() {
         }}
         seniorMode={seniorMode}
         setSeniorMode={setSeniorMode}
+        unreadSosCount={urgentRequests.length}
+        unreadChatCount={unreadChatCount}
+        sosSoundEnabled={sosSoundEnabled}
+        onToggleSosSound={toggleSosSound}
       />
 
       {/* 2. Native Window-Scrolling App Body */}
@@ -778,8 +917,8 @@ export default function App() {
         </main>
       ) : (
         <main
-          className={`@container flex-1 w-full max-w-5xl mx-auto px-3 sm:px-5 ${
-            activeTab === 'chat' ? 'pt-2.5 pb-20' : 'pt-3.5 pb-24'
+          className={`@container flex-1 w-full max-w-6xl mx-auto px-3.5 sm:px-6 ${
+            activeTab === 'chat' ? 'pt-3 pb-24 lg:pb-10' : 'pt-4 sm:pt-5 pb-24 lg:pb-12'
           }`}
         >
           {/* Quick Share Toast */}
@@ -842,7 +981,7 @@ export default function App() {
                         setIsAuthModalOpen(true);
                       });
                   }}
-                  className="min-h-[38px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-xs cursor-pointer"
+                  className="min-h-[38px] px-3.5 py-2 rounded-xl btn-obsidian font-bold text-xs cursor-pointer whitespace-nowrap"
                 >
                   {lang === 'bn' ? '✓ ১-ক্লিকে পুনরায় Google লগইন' : '✓ 1-Click Google Re-Login'}
                 </button>
@@ -850,7 +989,7 @@ export default function App() {
                   href={tokenServiceAlert.enableApiUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="min-h-[38px] inline-flex items-center px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs"
+                  className="min-h-[38px] inline-flex items-center px-3.5 py-2 rounded-xl btn-emerald font-bold text-xs whitespace-nowrap"
                 >
                   {lang === 'bn'
                     ? 'Google Cloud → Token Service API অন করুন ↗'
@@ -1024,19 +1163,17 @@ export default function App() {
               donors={donors}
               requests={requests}
               lang={lang}
-              onOpenSOSWizard={() => setIsSOSWizardOpen(true)}
+              onOpenSOSWizard={(ctx) => openSOSWithContext(ctx)}
               onOpenRegister={(role) => openRegisterWithRole(role || 'USER')}
-              onOpenAuthModal={() => setIsAuthModalOpen(true)}
               onSelectRequest={handleQuickShareRequest}
               onQuickDonate={handleQuickDonateFromHome}
               onNavigateTab={handleSelectTab}
+              onQuickSearchByGroup={handleQuickSearchByGroup}
               onOpenDirectory={() => setIsDirectoryModalOpen(true)}
               onOpenPoster={() => setIsPosterModalOpen(true)}
               onOpenThalassemia={() => setIsThalassemiaModalOpen(true)}
               onOpenPlayStore={() => setIsPlayStoreModalOpen(true)}
               onOpenCareSuite={(tab) => setCareSuiteTab(tab || 'maternity')}
-              sosSoundEnabled={sosSoundEnabled}
-              onToggleSosSound={toggleSosSound}
             />
           )}
 
@@ -1045,8 +1182,11 @@ export default function App() {
             <DonorSearch
               donors={donors}
               lang={lang}
+              presetGroup={searchPreset.bloodGroup}
+              presetDistrict={searchPreset.district}
+              presetNonce={searchPreset.nonce}
               onRevealPhone={handleRevealPhone}
-              onOpenSOSModal={() => setIsSOSWizardOpen(true)}
+              onOpenSOSModal={(ctx) => openSOSWithContext(ctx)}
               onStartChatWithDonor={(donor) => {
                 setActiveDonorForChat(donor);
                 handleSelectTab('chat');
@@ -1064,7 +1204,7 @@ export default function App() {
               requests={requests}
               donors={donors}
               lang={lang}
-              onOpenSOSModal={() => setIsSOSWizardOpen(true)}
+              onOpenSOSModal={() => openSOSWithContext()}
               onRespondToRequest={handleRespondToRequest}
               onRevealPhone={handleRevealPhone}
               onUpdateRequestLocal={handleUpdateRequestLocal}
@@ -1079,8 +1219,8 @@ export default function App() {
               {activeTab === 'onboarding' && (
                 <BloodHelpOnboardingView
                   lang={lang}
-                  onSelectGroup={() => handleSelectTab('search')}
-                  onOpenSOSModal={() => setIsSOSWizardOpen(true)}
+                  onSelectGroup={(grp) => handleQuickSearchByGroup(grp, 'ALL')}
+                  onOpenSOSModal={() => openSOSWithContext()}
                 />
               )}
 
@@ -1117,15 +1257,15 @@ export default function App() {
                       name: donorName,
                       bloodGroup,
                       division: 'dhaka',
-                      district: 'ঢাকা',
-                      upazila: 'সদর',
+                      district: 'dhaka',
+                      upazila: 'dhanmondi',
                       phone: phone || '+88017XXXXXXXX',
                       available: true,
                       lastDonatedDate: '',
-                      totalDonations: 1,
-                      verifiedBadge: true,
+                      totalDonations: 0,
+                      verifiedBadge: false,
                       rating: 5,
-                      reviewsCount: 1,
+                      reviewsCount: 0,
                       age: 26,
                       gender: 'MALE' as const,
                       weightKg: 65,
@@ -1197,6 +1337,8 @@ export default function App() {
           onClose={() => setIsSOSWizardOpen(false)}
           lang={lang}
           donors={donors}
+          initialBloodGroup={sosPreset.bloodGroup}
+          initialDistrict={sosPreset.district}
           onSubmitSOS={handleSubmitSOS}
           onLogAudit={addAuditLog}
           onRevealPhone={handleRevealPhone}
@@ -1278,6 +1420,16 @@ export default function App() {
         </Suspense>
       )}
 
+      {isCommercialModalOpen && (
+        <Suspense fallback={null}>
+          <CommercialHandoverModal
+            isOpen={isCommercialModalOpen}
+            onClose={() => setIsCommercialModalOpen(false)}
+            lang={lang}
+          />
+        </Suspense>
+      )}
+
       {careSuiteTab !== null && (
         <Suspense fallback={null}>
           <EmergencyCareSuiteModal
@@ -1294,6 +1446,8 @@ export default function App() {
         </Suspense>
       )}
 
+      <AppUpdateBannerModal lang={lang} />
+
       <PwaInstallPrompt
         lang={lang}
         onOpenApkGuide={() => setIsPlayStoreModalOpen(true)}
@@ -1302,7 +1456,7 @@ export default function App() {
 
       {isArchitectureModalOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain">
-          <div className="w-full max-w-4xl my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#1e293b] p-4 sm:p-6 shadow-2xl border border-slate-300 dark:border-slate-700 transition-colors text-left">
+          <div className="w-full max-w-4xl my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#111827] p-4 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800 transition-colors text-left">
             <div className="flex justify-between items-center pb-3 border-b border-slate-200 dark:border-slate-700 mb-4">
               <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
                 BloodSearch Enterprise Architecture &amp; Specifications

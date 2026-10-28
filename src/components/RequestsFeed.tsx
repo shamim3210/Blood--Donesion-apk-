@@ -402,8 +402,8 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
       )}
 
       {/* Feed Header */}
-      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-3.5 sm:p-5 transition-colors shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200/60 dark:border-slate-800/60">
+      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 sm:p-6 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
               {t.navRequestsFeed}
@@ -415,22 +415,24 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <label className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 cursor-pointer min-h-[40px] px-2">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer min-h-[44px] px-3 rounded-xl btn-surface">
               <input
                 type="checkbox"
                 checked={showResolved}
                 onChange={(e) => setShowResolved(e.target.checked)}
                 className="rounded border-slate-300 text-rose-600 w-4 h-4"
               />
-              <span>{lang === 'bn' ? 'সম্পন্ন/বাতিল দেখান' : 'Show Resolved'}</span>
+              <span className="whitespace-nowrap">
+                {lang === 'bn' ? 'সম্পন্ন/বাতিল দেখান' : 'Show Resolved'}
+              </span>
             </label>
             <button
               type="button"
               onClick={onOpenSOSModal}
-              className="min-h-[40px] flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition-colors cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] flex items-center gap-1.5 px-4 py-2.5 rounded-xl btn-crimson font-bold text-xs cursor-pointer whitespace-nowrap shrink-0"
             >
-              <Plus className="w-4 h-4" />
+              <Plus className="w-4 h-4 shrink-0" />
               <span>{t.createSosTitle}</span>
             </button>
           </div>
@@ -438,14 +440,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
         {/* Filter Bar */}
         <div className="pt-4 flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             <button
               type="button"
               onClick={() => setSelectedGroup('ALL')}
-              className={`min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
-                selectedGroup === 'ALL'
-                  ? 'bg-rose-600 text-white'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+              className={`min-h-[40px] px-3.5 py-1.5 text-xs font-bold rounded-xl cursor-pointer whitespace-nowrap ${
+                selectedGroup === 'ALL' ? 'btn-crimson' : 'btn-surface'
               }`}
             >
               {t.allBloodGroups}
@@ -455,10 +455,8 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                 type="button"
                 key={bg}
                 onClick={() => setSelectedGroup(bg)}
-                className={`min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
-                  selectedGroup === bg
-                    ? 'bg-rose-600 text-white'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                className={`min-h-[40px] min-w-[44px] px-3 py-1.5 text-xs font-bold rounded-xl cursor-pointer whitespace-nowrap ${
+                  selectedGroup === bg ? 'btn-crimson' : 'btn-surface'
                 }`}
               >
                 {bg}
@@ -472,10 +470,8 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                 type="button"
                 key={urg}
                 onClick={() => setSelectedUrgency(urg)}
-                className={`min-h-[34px] px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
-                  selectedUrgency === urg
-                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-                    : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                className={`min-h-[38px] px-3 py-1.5 text-xs font-bold rounded-xl cursor-pointer whitespace-nowrap ${
+                  selectedUrgency === urg ? 'btn-obsidian' : 'btn-surface'
                 }`}
               >
                 {urg}
@@ -485,9 +481,50 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
         </div>
       </div>
 
-      {/* Requests List */}
-      <div className="space-y-4">
-        {filteredRequests.map((req) => {
+      {/* Requests List or Clean Empty State */}
+      {filteredRequests.length === 0 ? (
+        <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-8 sm:p-12 text-center space-y-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 dark:bg-rose-950/40 flex items-center justify-center text-rose-600">
+            <Hospital className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+              {lang === 'bn'
+                ? 'এই মুহূর্তে কোনো সক্রিয় রক্তের আবেদন নেই'
+                : 'No Active Blood Requests Right Now'}
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto mt-1 leading-relaxed">
+              {lang === 'bn'
+                ? 'সকল ফেইক পোস্ট সরানো হয়েছে। কোনো রোগীর জন্য জরুরি রক্তের প্রয়োজন হলে নিচের বাটনে ট্যাপ করে রিয়েল-টাইম ব্রডকাস্ট পোস্ট করুন।'
+                : 'All demo posts have been removed. If someone urgently needs blood, post a verified emergency broadcast below.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+            {(selectedGroup !== 'ALL' || selectedUrgency !== 'ALL') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedGroup('ALL');
+                  setSelectedUrgency('ALL');
+                }}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl btn-obsidian font-bold text-xs cursor-pointer whitespace-nowrap"
+              >
+                {lang === 'bn' ? 'সকল ফিল্টার রিসেট করুন' : 'Reset Filters'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenSOSModal}
+              className="min-h-[44px] px-5 py-2.5 rounded-xl btn-crimson font-bold text-xs inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4 shrink-0" />
+              <span>{t.createSosTitle}</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredRequests.map((req) => {
           const districtObj = DISTRICTS.find(
             (d) =>
               d.id === req.district.toLowerCase() ||
@@ -586,16 +623,16 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
           return (
             <div
               key={req.id}
-              className={`cv-auto bg-white dark:bg-[#1e293b] border rounded-2xl p-3.5 sm:p-5 transition-colors shadow-sm space-y-3.5 ${
+              className={`cv-auto bg-white dark:bg-[#111827] border rounded-2xl p-4 sm:p-5 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)] space-y-3.5 ${
                 !isActive
                   ? 'border-slate-200 dark:border-slate-800 opacity-80'
-                  : 'border-slate-300 dark:border-slate-700 hover:border-rose-500'
+                  : 'border-slate-200/90 dark:border-slate-800/90 hover:border-rose-400 dark:hover:border-rose-600'
               }`}
             >
               {/* Top Row: Group, Patient, Lifecycle State & Units */}
               <div className="flex items-start justify-between gap-2.5">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-12 h-12 rounded-2xl bg-rose-600 flex flex-col items-center justify-center text-white font-black text-lg shrink-0">
+                  <div className="w-12 h-12 rounded-2xl btn-crimson flex flex-col items-center justify-center font-black text-lg shrink-0">
                     <span>{req.bloodGroup}</span>
                   </div>
                   <div className="min-w-0">
@@ -957,7 +994,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                     <button
                       type="button"
                       onClick={() => openRespondSheetWithPrefill(req)}
-                      className="col-span-2 sm:col-span-1 min-h-[42px] px-2.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="col-span-2 sm:col-span-1 min-h-[42px] px-2.5 py-2 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
                       <UserCheck className="w-3.5 h-3.5 shrink-0" />
                       <span className="truncate">{t.iCanDonate}</span>
@@ -966,7 +1003,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                     {hasDialablePhone ? (
                       <a
                         href={`tel:${dialableDigits}`}
-                        className="min-h-[42px] px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        className="min-h-[42px] px-2.5 py-2 rounded-xl btn-surface font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                         title="Opens Phone Dialer"
                       >
                         <Phone className="w-3.5 h-3.5 text-rose-500 shrink-0" />
@@ -977,9 +1014,9 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                         href={hospitalMapsUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="min-h-[42px] px-2.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/50 dark:hover:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        className="min-h-[42px] px-2.5 py-2 rounded-xl btn-surface font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                       >
-                        <MapPin className="w-3.5 h-3.5 shrink-0" />
+                        <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
                         <span className="truncate">{lang === 'bn' ? 'রুট ম্যাপ' : 'Map'}</span>
                       </a>
                     )}
@@ -988,7 +1025,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                       href={waSosShareUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="min-h-[42px] px-2.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="min-h-[42px] px-2.5 py-2 rounded-xl btn-emerald font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                       title="Opens WhatsApp"
                     >
                       <span className="truncate">WhatsApp</span>
@@ -996,7 +1033,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
                     <a
                       href={offlineSmsUrl}
-                      className="min-h-[42px] px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="min-h-[42px] px-2.5 py-2 rounded-xl btn-obsidian font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                       title="Opens SMS App"
                     >
                       <Mail className="w-3.5 h-3.5 shrink-0" />
@@ -1006,7 +1043,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                     <button
                       type="button"
                       onClick={() => handleShare(req)}
-                      className="min-h-[42px] px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="min-h-[42px] px-2.5 py-2 rounded-xl btn-surface font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
                       <Share2 className="w-3.5 h-3.5 shrink-0" />
                       <span className="truncate">
@@ -1024,8 +1061,9 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
               </div>
             </div>
           );
-        })}
-      </div>
+          })}
+        </div>
+      )}
 
       {/* Responder Modal */}
       {respondingToReq && (

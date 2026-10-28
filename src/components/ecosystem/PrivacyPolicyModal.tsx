@@ -13,6 +13,7 @@ import {
   Globe,
   ExternalLink
 } from 'lucide-react';
+import { useBrandConfig } from '../../config/brandConfig';
 
 interface PrivacyPolicyModalProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({
   onClose,
   lang,
 }) => {
+  const brand = useBrandConfig();
   if (!isOpen) return null;
 
   return (
@@ -69,8 +71,8 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({
             </div>
             <p className="leading-relaxed">
               {lang === 'bn'
-                ? 'BloodSearch কোনো ব্যক্তিগত মেডিকেল হিস্ট্রি বা সংবেদনশীল স্বাস্থ্য তথ্য তৃতীয় পক্ষের বিজ্ঞাপন নেটওয়ার্কের সাথে শেয়ার করে না। রোগীর রক্তের চাহিদা এবং রক্তদাতার ফিটনেস তথ্য শুধুমাত্র জরুরি রক্ত সংগ্রহের উদ্দেশ্যে ব্যবহৃত হয়।'
-                : 'BloodSearch does not share personal medical history or sensitive health data with third-party advertising networks. Blood group and clinical criteria are used solely for real-time emergency transfusion matching.'}
+                ? `${brand.brandName} (${brand.organizationName}) কোনো ব্যক্তিগত মেডিকেল হিস্ট্রি বা সংবেদনশীল স্বাস্থ্য তথ্য তৃতীয় পক্ষের বিজ্ঞাপন নেটওয়ার্কের সাথে শেয়ার করে না। রোগীর রক্তের চাহিদা এবং রক্তদাতার ফিটনেস তথ্য শুধুমাত্র জরুরি রক্ত সংগ্রহের উদ্দেশ্যে ব্যবহৃত হয়।`
+                : `${brand.brandName} (${brand.organizationName}) does not share personal medical history or sensitive health data with third-party advertising networks. Blood group and clinical criteria are used solely for real-time emergency transfusion matching.`}
             </p>
             <div className="grid grid-cols-2 gap-2 pt-1 font-semibold text-[11px]">
               <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">

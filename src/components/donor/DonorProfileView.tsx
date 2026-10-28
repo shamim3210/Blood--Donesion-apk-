@@ -295,7 +295,9 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   const displayId =
     currentUser?.idCardNumber ||
     (firebaseUser ? `BD-2026-${firebaseUser.uid.slice(0, 4).toUpperCase()}` : 'GUEST-PASS');
-  const displayDistrict = currentUser?.district || 'ঢাকা';
+  const rawDistrict = currentUser?.district || 'dhaka';
+  const displayDistrict =
+    rawDistrict.toLowerCase() === 'dhaka' ? (lang === 'bn' ? 'ঢাকা' : 'Dhaka') : rawDistrict;
   const displayGender =
     currentUser?.gender === 'FEMALE'
       ? lang === 'bn'
@@ -308,7 +310,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       : lang === 'bn'
       ? 'পুরুষ'
       : 'Male';
-  const displayDonations = currentUser?.totalDonations ?? (isLoggedIn ? 1 : 0);
+  const displayDonations = currentUser?.totalDonations ?? 0;
   const displayAge = currentUser?.age ?? 25;
   const displayRole =
     currentUser?.role === 'ADMIN' || isBootstrappedAdminUser(firebaseUser) ? 'ADMIN' : 'USER';
@@ -339,7 +341,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   return (
     <div className="space-y-6 max-w-xl mx-auto pb-8 text-left">
       {/* Profile Card Header */}
-      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm transition-all text-center relative">
+      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-[0_1px_3px_rgba(15,23,42,0.04)] transition-all text-center relative">
         <div className="flex items-center justify-between pb-3">
           <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
             {isLoggedIn
@@ -357,7 +359,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setIsPrivacyOpen(true)}
-              className="min-h-[38px] flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 text-xs font-semibold cursor-pointer"
+              className="min-h-[38px] flex items-center gap-1 px-2.5 py-1.5 rounded-xl btn-soft-emerald text-xs font-semibold cursor-pointer"
               title="Google Play Safety"
             >
               <Lock className="w-3.5 h-3.5 text-emerald-600" />
@@ -365,7 +367,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </button>
             <button
               onClick={() => setIsQrOpen(true)}
-              className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+              className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer"
             >
               <QrCode className="w-3.5 h-3.5 text-rose-500" />
               <span>QR Pass</span>
@@ -436,23 +438,25 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         )}
 
         {/* Primary Profile Actions including Smart ID PNG Download */}
-        <div className="mt-3.5 flex items-center justify-center gap-2 flex-wrap">
+        <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
           {!isLoggedIn && onOpenAuthModal && (
             <button
+              type="button"
               onClick={onOpenAuthModal}
-              className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-xs font-bold text-white cursor-pointer flex items-center gap-1.5 shadow-xs"
+              className="min-h-[44px] px-4 py-2 rounded-xl btn-obsidian text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             >
-              <LogIn className="w-3.5 h-3.5" />
+              <LogIn className="w-3.5 h-3.5 shrink-0" />
               <span>{lang === 'bn' ? 'Gmail / সিম লগইন করুন' : 'Sign In Now'}</span>
             </button>
           )}
 
           {onOpenRegister && (
             <button
+              type="button"
               onClick={() => onOpenRegister('USER')}
-              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-xs font-bold text-white cursor-pointer flex items-center gap-1.5 shadow-xs"
+              className="min-h-[44px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             >
-              <UserPlus className="w-3.5 h-3.5" />
+              <UserPlus className="w-3.5 h-3.5 shrink-0" />
               <span>
                 {isLoggedIn
                   ? lang === 'bn'
@@ -466,23 +470,26 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           )}
 
           <button
+            type="button"
             onClick={handleDownloadSmartIdPng}
-            className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 shadow-xs"
+            className="min-h-[44px] px-3.5 py-2 rounded-xl btn-obsidian text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
           >
-            <Download className="w-3.5 h-3.5 text-emerald-400" />
+            <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>{lang === 'bn' ? 'আইডি কার্ড (.PNG)' : 'Download ID (.PNG)'}</span>
           </button>
 
           <button
+            type="button"
             onClick={() => setIsCertOpen(true)}
-            className="min-h-[40px] px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/40 text-amber-800 dark:text-amber-300 text-xs font-bold border border-amber-300 dark:border-amber-800 cursor-pointer flex items-center gap-1 shadow-xs"
+            className="min-h-[44px] px-3.5 py-2 rounded-xl btn-surface text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
           >
-            <Award className="w-3.5 h-3.5 text-amber-600" />
+            <Award className="w-3.5 h-3.5 text-amber-500 shrink-0" />
             <span>{lang === 'bn' ? 'সম্মাননা সনদপত্র' : 'Certificate'}</span>
           </button>
 
           {isLoggedIn && (
             <button
+              type="button"
               onClick={async () => {
                 try {
                   await signOutReal();
@@ -490,45 +497,60 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                 setCurrentUser(null);
                 setFirebaseUser(null);
                 showToast(
-                  lang === 'bn' ? '✓ আপনি সফলভাবে লগআউট হয়েছেন।' : '✓ Logged out successfully.'
+                  lang === 'bn' ? 'আপনি সফলভাবে লগআউট হয়েছেন।' : 'Logged out successfully.'
                 );
               }}
-              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/40 text-xs font-bold text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 cursor-pointer flex items-center gap-1 shadow-xs"
+              className="min-h-[44px] px-3.5 py-2 rounded-xl btn-soft-rose text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
               title="বর্তমান অ্যাকাউন্ট থেকে লগআউট করুন"
             >
-              <LogOut className="w-3.5 h-3.5" />
+              <LogOut className="w-3.5 h-3.5 shrink-0" />
               <span>{lang === 'bn' ? 'লগআউট' : 'Logout'}</span>
             </button>
           )}
         </div>
 
-        {/* 4 Metric Tiles dynamically bound to real profile */}
-        <div className="grid grid-cols-4 gap-2 mt-4 pt-4 border-t border-slate-200/60 dark:border-slate-800/60">
+        {/* Metric Tiles dynamically bound to real profile (Never shows "0 bags") */}
+        <div
+          className={`grid ${
+            displayDonations > 0 ? 'grid-cols-4' : 'grid-cols-3'
+          } gap-2 mt-4 pt-4 border-t border-slate-200/60 dark:border-slate-800/60`}
+        >
           <div className="p-2 sm:p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">Group</span>
+            <span className="text-[10px] text-slate-400 font-bold">
+              {lang === 'bn' ? 'রক্তের গ্রুপ' : 'Group'}
+            </span>
             <span className="text-sm sm:text-base font-black text-rose-600 dark:text-rose-400">
               {displayGroup}
             </span>
           </div>
 
           <div className="p-2 sm:p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">Gender</span>
+            <span className="text-[10px] text-slate-400 font-bold">
+              {lang === 'bn' ? 'লিঙ্গ' : 'Gender'}
+            </span>
             <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200">
               {displayGender}
             </span>
           </div>
 
-          <div className="p-2 sm:p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">Donated</span>
-            <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-slate-800 dark:text-slate-200">
-              {displayDonations} {lang === 'bn' ? 'বার' : 'bags'}
-            </span>
-          </div>
+          {displayDonations > 0 && (
+            <div className="p-2 sm:p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/60 flex flex-col items-center">
+              <span className="text-[10px] text-slate-400 font-bold">
+                {lang === 'bn' ? 'রক্তদান' : 'Donated'}
+              </span>
+              <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
+                {displayDonations} {lang === 'bn' ? 'বার' : 'times'}
+              </span>
+            </div>
+          )}
 
           <div className="p-2 sm:p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">Age</span>
+            <span className="text-[10px] text-slate-400 font-bold">
+              {lang === 'bn' ? 'বয়স' : 'Age'}
+            </span>
             <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-slate-800 dark:text-slate-200">
-              {displayAge}y
+              {displayAge}
+              {lang === 'bn' ? ' বছর' : 'y'}
             </span>
           </div>
         </div>
@@ -560,7 +582,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                   confirmNow: true,
                 })
               }
-              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+              className="min-h-[40px] px-3 py-1.5 rounded-xl btn-emerald text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>{lang === 'bn' ? 'এখন প্রস্তুত নিশ্চিত করুন' : 'Confirm Available Now'}</span>
@@ -568,7 +590,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           </div>
 
           {/* 3-State Segmented Control */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-900">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-950">
             {(
               [
                 {
@@ -599,13 +621,13 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                       confirmNow: opt.id === 'AVAILABLE',
                     })
                   }
-                  className={`min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap truncate ${
+                  className={`min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer whitespace-nowrap truncate ${
                     active
                       ? opt.id === 'AVAILABLE'
-                        ? 'bg-emerald-600 text-white shadow-xs'
+                        ? 'btn-emerald'
                         : opt.id === 'DND'
-                        ? 'bg-rose-600 text-white shadow-xs'
-                        : 'bg-slate-800 text-white dark:bg-slate-700 shadow-xs'
+                        ? 'btn-crimson'
+                        : 'btn-obsidian'
                       : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
@@ -618,7 +640,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       </div>
 
       {/* Contact Consent, Privacy Visibility & Emergency Alert Controls */}
-      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm space-y-4">
+      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-[0_1px_3px_rgba(15,23,42,0.04)] space-y-4">
         <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
           <div>
             <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white flex items-center gap-1.5">

@@ -1,16 +1,62 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import fs from 'node:fs';
 import path from 'path';
+import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
+function readPackageVersion(): string {
+  try {
+    const raw = fs.readFileSync(path.resolve(import.meta.dirname, 'package.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version || '2.5.0';
+  } catch {
+    return '2.5.0';
+  }
+}
+
+function bloodsearchVersionManifestPlugin(version: string, buildId: string): Plugin {
+  const payload = JSON.stringify({
+    version,
+    buildId,
+    builtAt: new Date().toISOString(),
+  });
+
   return {
+    name: 'bloodsearch-version-manifest',
+    configureServer(server) {
+      server.middlewares.use('/version.json', (_req, res) => {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+        res.end(payload);
+      });
+    },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: payload,
+      });
+    },
+  };
+}
+
+export default defineConfig(() => {
+  const appVersion = readPackageVersion();
+  const appBuildId = process.env.BUILD_ID || `${appVersion}-${Date.now()}`;
+
+  return {
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+      __APP_BUILD_ID__: JSON.stringify(appBuildId),
+    },
     plugins: [
       react(),
       tailwindcss(),
+      bloodsearchVersionManifestPlugin(appVersion, appBuildId),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         devOptions: {
           enabled: false,
         },
@@ -28,8 +74,8 @@ export default defineConfig(() => {
             'জরুরি রক্তদাতা সন্ধান, ৬৪ জেলা হাসপাতাল ডিরেক্টরি ও লাইভ ব্লাড ডোনেশন নেটওয়ার্ক বাংলাদেশ।',
           lang: 'bn',
           dir: 'ltr',
-          theme_color: '#dc2626',
-          background_color: '#ffffff',
+          theme_color: '#e11d48',
+          background_color: '#f8fafc',
           display: 'standalone',
           orientation: 'portrait',
           scope: '/',
@@ -85,11 +131,10 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,json}'],
+          globIgnores: ['**/version.json'],
           cleanupOutdatedCaches: true,
-          clientsClaim: true,
-          skipWaiting: true,
-          // Never intercept API routes, Firebase Auth handler (/__/auth/handler), or Android TWA assetlinks
-          navigateFallbackDenylist: [/^\/api\//, /^\/__/, /^\/\.well-known\//],
+          // Never intercept API routes, live version manifest, Firebase Auth handler, or Android TWA assetlinks
+          navigateFallbackDenylist: [/^\/api\//, /^\/version\.json/, /^\/__/, /^\/\.well-known\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,

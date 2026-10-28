@@ -55,6 +55,7 @@ import {
   UserAccount,
 } from './types';
 import { deriveRequestLifecycleState } from './utils/donorMatcher';
+import { isFakeIdentifier, isFakePersonName } from './data/mockDonors';
 
 // ============================================================================
 // 1. INITIALIZE FIREBASE SDK (Iframe-Resilient Persistence + Popup Resolver)
@@ -120,7 +121,9 @@ export const FIREBASE_USAGE_BUDGET_URL = `https://console.firebase.google.com/pr
 export const GCP_API_CREDENTIALS_URL = `https://console.cloud.google.com/apis/credentials?project=${firebaseConfig.projectId}`;
 export const GCP_TOKEN_SERVICE_API_URL = `https://console.developers.google.com/apis/api/securetoken.googleapis.com/overview?project=${FIREBASE_PROJECT_NUMBER}`;
 
-export const BOOTSTRAPPED_SUPER_ADMIN_EMAIL = 'shamimrakib015@gmail.com';
+export const BOOTSTRAPPED_SUPER_ADMIN_EMAIL =
+  String((import.meta as any).env?.VITE_SUPER_ADMIN_EMAIL || '').trim() ||
+  'shamimrakib015@gmail.com';
 
 export const DEFAULT_AVATAR_DATA_URI =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='28' fill='%23e11d48'/%3E%3Ccircle cx='60' cy='46' r='20' fill='%23ffffff'/%3E%3Cpath d='M26 102c4-19 18-30 34-30s30 11 34 30' fill='%23ffffff'/%3E%3C/svg%3E";
@@ -1269,8 +1272,10 @@ export async function ensureUserAutoSyncedInFirestore(
   const existing = await fetchUserProfileFromFirestore(validUser.uid);
   if (existing) {
     if (isAdmin) existing.role = 'ADMIN';
-    // Smart 90-Day Medical Recovery Auto-Unlock: if donor was resting after a logged donation
-    // and >= 90 days have elapsed since lastDonatedDate, automatically restore availability!
+    if (existing.district === 'ঢাকা') existing.district = 'dhaka';
+    if (existing.upazila === 'সদর') existing.upazila = 'dhanmondi';
+
+    // Smart 90-Day Medical Recovery Auto-Unlock + Auto-Repair if /donors/{uid} was ever missing
     try {
       const dSnap = await getDoc(doc(db, 'donors', validUser.uid));
       if (dSnap.exists()) {
@@ -1285,6 +1290,44 @@ export async function ensureUserAutoSyncedInFirestore(
             }
           }
         }
+      } else if (isUserVerifiedForWrites(validUser)) {
+        // Auto-recreate /donors/{uid} card if an admin or user's public donor card was missing
+        const repairedDonor: Donor = {
+          id: validUser.uid,
+          name: existing.name,
+          bloodGroup: existing.bloodGroup,
+          division: existing.division || 'dhaka',
+          district: existing.district || 'dhaka',
+          upazila: existing.upazila || 'dhanmondi',
+          phone: existing.phone || '01700000000',
+          whatsappPhone: existing.whatsappPhone || existing.phone,
+          facebookUrl: existing.facebookUrl,
+          available: existing.availableToDonate !== false,
+          availabilityStatus: existing.availabilityStatus || 'AVAILABLE',
+          availabilityConfirmedAtMs: Date.now(),
+          shareDirectContact: Boolean(existing.shareDirectContact),
+          contactVisibility: existing.contactVisibility || 'REQUEST_ONLY',
+          allowCall: existing.allowCall !== false,
+          allowWhatsApp: existing.allowWhatsApp !== false,
+          allowSms: existing.allowSms !== false,
+          emergencyAlertsOptIn: existing.emergencyAlertsOptIn !== false,
+          alertsPaused: existing.alertsPaused === true,
+          lastDonatedDate: existing.lastDonationDate || '',
+          totalDonations: existing.totalDonations || 0,
+          verifiedBadge: isAdmin,
+          rating: 5.0,
+          reviewsCount: 0,
+          age: existing.age || 25,
+          gender: existing.gender || 'MALE',
+          weightKg: existing.weightKg || 62,
+          hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'স্বেচ্ছাসেবী রক্তদাতা',
+          avatar: existing.photoUrl || DEFAULT_AVATAR_DATA_URI,
+        };
+        await registerSmartAccountInFirestore({
+          firebaseUser: validUser,
+          account: existing,
+          donor: repairedDonor,
+        }).catch(() => {});
       }
     } catch {}
     return existing;
@@ -1300,41 +1343,71 @@ export async function ensureUserAutoSyncedInFirestore(
   inFlightAutoSyncUids.add(validUser.uid);
 
   try {
+    let cachedLocal: Partial<UserAccount> | null = null;
+    try {
+      const raw = localStorage.getItem('bloodsearch_current_user');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && (!parsed.id || parsed.id === validUser.uid) && !isFakePersonName(parsed.name)) {
+          cachedLocal = parsed;
+        }
+      }
+    } catch {}
+
     const cleanUidSuffix =
       validUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
-    const displayName =
-      (validUser.displayName || validUser.email?.split('@')[0] || 'স্বেচ্ছাসেবী রক্তদাতা').trim();
-    const safePhone = normalizeAsciiDigits(validUser.phoneNumber || '01700000000');
-    const idCardNumber = isAdmin ? `ADMIN-BD-${cleanUidSuffix}` : `BD-AUTO-${cleanUidSuffix}`;
+    const displayName = (
+      cachedLocal?.name ||
+      validUser.displayName ||
+      validUser.email?.split('@')[0] ||
+      'স্বেচ্ছাসেবী রক্তদাতা'
+    ).trim();
+    const rawVerifiedPhone = normalizeAsciiDigits(
+      validUser.phoneNumber || cachedLocal?.phone || ''
+    ).trim();
+    const hasRealPhone = rawVerifiedPhone.length >= 10 && rawVerifiedPhone !== '01700000000';
+    const safePhone = hasRealPhone ? rawVerifiedPhone : '01700000000';
+    const safeWa = normalizeAsciiDigits(cachedLocal?.whatsappPhone || safePhone).trim() || safePhone;
+    const idCardNumber =
+      cachedLocal?.idCardNumber ||
+      (isAdmin ? `ADMIN-BD-${cleanUidSuffix}` : `BD-AUTO-${cleanUidSuffix}`);
+    const nowMs = Date.now();
 
     const autoAccount: UserAccount = {
       id: validUser.uid,
       name: displayName.length >= 2 ? displayName : 'Blood Donor',
-      email: validUser.email || `${validUser.uid.slice(0, 8)}@bloodsearch.bd`,
+      email: validUser.email || cachedLocal?.email || `${validUser.uid.slice(0, 8)}@bloodsearch.bd`,
       phone: safePhone,
-      whatsappPhone: safePhone,
-      facebookUrl: 'https://facebook.com/bloodsearch.bd',
-      bloodGroup: 'O+',
-      division: 'dhaka',
-      district: 'ঢাকা',
-      upazila: 'সদর',
-      photoUrl: validUser.photoURL || DEFAULT_AVATAR_DATA_URI,
+      whatsappPhone: safeWa,
+      facebookUrl: cachedLocal?.facebookUrl || 'https://facebook.com/bloodsearch.bd',
+      bloodGroup: cachedLocal?.bloodGroup || 'O+',
+      division: cachedLocal?.division || 'dhaka',
+      district:
+        cachedLocal?.district && cachedLocal.district !== 'ঢাকা'
+          ? cachedLocal.district
+          : 'dhaka',
+      upazila:
+        cachedLocal?.upazila && cachedLocal.upazila !== 'সদর'
+          ? cachedLocal.upazila
+          : 'dhanmondi',
+      photoUrl: validUser.photoURL || cachedLocal?.photoUrl || DEFAULT_AVATAR_DATA_URI,
       role: isAdmin ? 'ADMIN' : 'USER',
       verifiedStatus: true,
       idCardNumber,
-      age: 25,
-      gender: 'MALE',
-      weightKg: 62,
+      age: cachedLocal?.age || 25,
+      gender: cachedLocal?.gender || 'MALE',
+      weightKg: cachedLocal?.weightKg || 62,
       availableToDonate: true,
       availabilityStatus: 'AVAILABLE',
-      shareDirectContact: false,
-      contactVisibility: 'REQUEST_ONLY',
+      availabilityConfirmedAtMs: nowMs,
+      shareDirectContact: hasRealPhone,
+      contactVisibility: hasRealPhone ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY',
       allowCall: true,
       allowWhatsApp: true,
       allowSms: true,
       emergencyAlertsOptIn: true,
       alertsPaused: false,
-      totalDonations: 0,
+      totalDonations: cachedLocal?.totalDonations || 0,
       createdAt: new Date().toISOString(),
     };
 
@@ -1346,24 +1419,26 @@ export async function ensureUserAutoSyncedInFirestore(
       district: autoAccount.district,
       upazila: autoAccount.upazila,
       phone: safePhone,
+      whatsappPhone: safeWa,
       available: true,
       availabilityStatus: 'AVAILABLE',
-      shareDirectContact: false,
-      contactVisibility: 'REQUEST_ONLY',
+      availabilityConfirmedAtMs: nowMs,
+      shareDirectContact: hasRealPhone,
+      contactVisibility: hasRealPhone ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY',
       allowCall: true,
       allowWhatsApp: true,
       allowSms: true,
       emergencyAlertsOptIn: true,
       alertsPaused: false,
       lastDonatedDate: '',
-      totalDonations: 0,
+      totalDonations: autoAccount.totalDonations,
       verifiedBadge: isAdmin,
       rating: 5.0,
-      reviewsCount: 1,
-      age: 25,
-      gender: 'MALE',
-      weightKg: 62,
-      hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'Voluntary Donor',
+      reviewsCount: 0,
+      age: autoAccount.age,
+      gender: autoAccount.gender,
+      weightKg: autoAccount.weightKg,
+      hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'স্বেচ্ছাসেবী রক্তদাতা',
       avatar: autoAccount.photoUrl,
     };
 
@@ -1689,57 +1764,66 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
     return onSnapshot(
       q,
       (snapshot) => {
-        const mapped = snapshot.docs.map((d) => {
-          const data = d.data();
-          const updatedAtMs =
-            data.updatedAt instanceof Timestamp
-              ? data.updatedAt.toMillis()
-              : data.createdAt instanceof Timestamp
-                ? data.createdAt.toMillis()
-                : 0;
-          const confirmedAtMs =
-            data.availabilityConfirmedAt instanceof Timestamp
-              ? data.availabilityConfirmedAt.toMillis()
-              : undefined;
-          const availabilityStatus: DonorAvailabilityStatus =
-            (data.availabilityStatus as DonorAvailabilityStatus | undefined) ||
-            (data.available ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE');
-          const donor: Donor = {
-            id: d.id,
-            name: data.name,
-            bloodGroup: data.bloodGroup as BloodGroup,
-            division: data.division,
-            district: data.district,
-            upazila: data.upazila,
-            phone: data.maskedPhone || '017****00',
-            available: Boolean(data.available) && availabilityStatus === 'AVAILABLE',
-            availabilityStatus,
-            availabilityConfirmedAtMs: confirmedAtMs,
-            updatedAtMs: updatedAtMs || undefined,
-            shareDirectContact:
-              typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : false,
-            contactVisibility:
-              (data.contactVisibility as ContactVisibility | undefined) || 'REQUEST_ONLY',
-            allowCall: data.allowCall !== false,
-            allowWhatsApp: data.allowWhatsApp !== false,
-            allowSms: data.allowSms !== false,
-            emergencyAlertsOptIn: data.emergencyAlertsOptIn !== false,
-            alertsPaused: data.alertsPaused === true,
-            isCloudRecord: true,
-            lastDonatedDate: data.lastDonatedDate || '',
-            totalDonations: Number(data.totalDonations) || 0,
-            verifiedBadge: Boolean(data.verifiedBadge),
-            rating: 5.0,
-            reviewsCount: 1,
-            age: Number(data.age) || 24,
-            gender: data.gender || 'MALE',
-            weightKg: Number(data.weightKg) || 60,
-            hospitalAffiliation: data.hospitalAffiliation || 'Voluntary Donor',
-            avatar: data.avatar || DEFAULT_AVATAR_DATA_URI,
-            reliabilityScore: data.verifiedBadge ? 99 : 92,
-          };
-          return { donor, sortMs: confirmedAtMs || updatedAtMs };
-        });
+        const mapped = snapshot.docs
+          .filter((d) => {
+            const data = d.data();
+            return !isFakeIdentifier(d.id) && !isFakePersonName(String(data.name || ''));
+          })
+          .map((d) => {
+            const data = d.data();
+            const updatedAtMs =
+              data.updatedAt instanceof Timestamp
+                ? data.updatedAt.toMillis()
+                : data.createdAt instanceof Timestamp
+                  ? data.createdAt.toMillis()
+                  : 0;
+            const confirmedAtMs =
+              data.availabilityConfirmedAt instanceof Timestamp
+                ? data.availabilityConfirmedAt.toMillis()
+                : undefined;
+            const availabilityStatus: DonorAvailabilityStatus =
+              (data.availabilityStatus as DonorAvailabilityStatus | undefined) ||
+              (data.available ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE');
+            const normalizedDist =
+              data.district === 'ঢাকা' ? 'dhaka' : String(data.district || 'dhaka');
+            const normalizedUpz =
+              data.upazila === 'সদর' ? 'dhanmondi' : String(data.upazila || 'dhanmondi');
+            const donor: Donor = {
+              id: d.id,
+              name: data.name,
+              bloodGroup: data.bloodGroup as BloodGroup,
+              division: data.division || 'dhaka',
+              district: normalizedDist,
+              upazila: normalizedUpz,
+              phone: data.maskedPhone || '017****00',
+              available: Boolean(data.available) && availabilityStatus === 'AVAILABLE',
+              availabilityStatus,
+              availabilityConfirmedAtMs: confirmedAtMs,
+              updatedAtMs: updatedAtMs || undefined,
+              shareDirectContact:
+                typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : false,
+              contactVisibility:
+                (data.contactVisibility as ContactVisibility | undefined) || 'REQUEST_ONLY',
+              allowCall: data.allowCall !== false,
+              allowWhatsApp: data.allowWhatsApp !== false,
+              allowSms: data.allowSms !== false,
+              emergencyAlertsOptIn: data.emergencyAlertsOptIn !== false,
+              alertsPaused: data.alertsPaused === true,
+              isCloudRecord: true,
+              lastDonatedDate: data.lastDonatedDate || '',
+              totalDonations: Number(data.totalDonations) || 0,
+              verifiedBadge: Boolean(data.verifiedBadge),
+              rating: 5.0,
+              reviewsCount: 0,
+              age: Number(data.age) || 24,
+              gender: data.gender || 'MALE',
+              weightKg: Number(data.weightKg) || 60,
+              hospitalAffiliation: data.hospitalAffiliation || 'স্বেচ্ছাসেবী রক্তদাতা',
+              avatar: data.avatar || DEFAULT_AVATAR_DATA_URI,
+              reliabilityScore: data.verifiedBadge ? 99 : 92,
+            };
+            return { donor, sortMs: confirmedAtMs || updatedAtMs };
+          });
         mapped.sort((a, b) => b.sortMs - a.sortMs);
         onData(mapped.map((m) => m.donor));
       },
@@ -1757,8 +1841,13 @@ export function subscribePublicRequests(onData: (requests: BloodRequest[]) => vo
     return onSnapshot(
       q,
       (snapshot) => {
-        const mapped = snapshot.docs.map((d) => {
-          const data = d.data();
+        const mapped = snapshot.docs
+          .filter((d) => {
+            const data = d.data();
+            return !isFakeIdentifier(d.id) && !isFakePersonName(String(data.patientName || ''));
+          })
+          .map((d) => {
+            const data = d.data();
           const createdAtMs =
             data.createdAt instanceof Timestamp
               ? data.createdAt.toMillis()
@@ -3762,24 +3851,145 @@ export interface OwnerAnnouncementItem {
   updatedAtLabel: string;
 }
 
+export interface RemoteAppUpdateRelease {
+  version: string;
+  mode: 'OPTIONAL' | 'REQUIRED';
+  changelog: string;
+  apkUrl?: string;
+  active: boolean;
+  updatedAtLabel: string;
+}
+
 const REAL_ONLY_MODE_DOC_ID = 'system_real_only_mode';
+const APP_UPDATE_DOC_ID = 'system_app_update';
+
+function parseRemoteAppUpdateDoc(
+  data: Record<string, any> | undefined
+): RemoteAppUpdateRelease | null {
+  if (!data || !data.active) return null;
+  const rawTitle = String(data.title || '').trim();
+  if (!rawTitle.startsWith('APP_UPDATE|')) return null;
+
+  const parts = rawTitle.split('|');
+  const version = (parts[1] || '2.5.0').trim();
+  const mode: 'OPTIONAL' | 'REQUIRED' = parts[2] === 'REQUIRED' ? 'REQUIRED' : 'OPTIONAL';
+
+  const rawMsg = String(data.message || '').trim();
+  const apkMarkerIdx = rawMsg.indexOf('\nAPK_URL:');
+  let changelog = rawMsg;
+  let apkUrl: string | undefined;
+
+  if (apkMarkerIdx >= 0) {
+    changelog = rawMsg.slice(0, apkMarkerIdx).trim();
+    const candidateUrl = rawMsg.slice(apkMarkerIdx + '\nAPK_URL:'.length).trim();
+    if (/^https:\/\/[^\s<>"]+$/i.test(candidateUrl)) {
+      apkUrl = candidateUrl;
+    }
+  }
+
+  const t = formatChatTimestamp(data.updatedAt || data.createdAt);
+  return {
+    version,
+    mode,
+    changelog: changelog || 'নতুন ফিচার ও পারফরম্যান্স আপডেট যুক্ত হয়েছে।',
+    apkUrl,
+    active: true,
+    updatedAtLabel: t.label,
+  };
+}
 
 export function isGlobalRealOnlyModeActive(): boolean {
   try {
-    return localStorage.getItem('bloodsearch_real_only_mode') === 'true';
+    return localStorage.getItem('bloodsearch_real_only_mode') !== 'false';
   } catch {
-    return false;
+    return true;
   }
 }
 
 function setLocalRealOnlyModeFlag(active: boolean): void {
   try {
-    const prev = localStorage.getItem('bloodsearch_real_only_mode') === 'true';
+    const prev = localStorage.getItem('bloodsearch_real_only_mode') !== 'false';
     localStorage.setItem('bloodsearch_real_only_mode', String(active));
     if (prev !== active) {
       window.dispatchEvent(new Event('bloodsearch_real_mode_changed'));
     }
   } catch {}
+}
+
+export function subscribeRemoteAppUpdate(
+  onUpdate: (release: RemoteAppUpdateRelease | null) => void
+): () => void {
+  return attachSnapshotAfterBoot(() => {
+    const ref = doc(db, 'announcements', APP_UPDATE_DOC_ID);
+    return onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) {
+          onUpdate(null);
+          return;
+        }
+        onUpdate(parseRemoteAppUpdateDoc(snap.data()));
+      },
+      () => {
+        onUpdate(null);
+      }
+    );
+  });
+}
+
+export async function adminPublishAppUpdateInFirestore(params: {
+  version: string;
+  mode: 'OPTIONAL' | 'REQUIRED';
+  changelog: string;
+  apkUrl?: string;
+}): Promise<void> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) {
+    throw new Error('AUTH_REQUIRED');
+  }
+
+  const safeVersion = params.version
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/[^0-9a-zA-Z.\-]/g, '')
+    .slice(0, 24) || '2.5.0';
+
+  const mode = params.mode === 'REQUIRED' ? 'REQUIRED' : 'OPTIONAL';
+  const cleanApk = (params.apkUrl || '').trim();
+  const validApk = /^https:\/\/[^\s<>"]{6,220}$/i.test(cleanApk) ? cleanApk : '';
+  const maxNotesLen = validApk ? Math.max(40, 560 - validApk.length) : 560;
+  const cleanNotes = clampStr(
+    params.changelog.replace(/\nAPK_URL:/gi, ' '),
+    2,
+    maxNotesLen,
+    'নতুন আপডেট ও বাগ ফিক্স যুক্ত হয়েছে।'
+  );
+
+  const encodedTitle = clampStr(`APP_UPDATE|${safeVersion}|${mode}`, 2, 120, 'APP_UPDATE|2.5.0|OPTIONAL');
+  const encodedMessage = validApk ? `${cleanNotes}\nAPK_URL:${validApk}` : cleanNotes;
+
+  const ref = doc(db, 'announcements', APP_UPDATE_DOC_ID);
+  const existing = await getDoc(ref);
+
+  const payload = {
+    title: encodedTitle,
+    message: clampStr(encodedMessage, 2, 600, cleanNotes),
+    urgency: mode === 'REQUIRED' ? ('CRITICAL' as const) : ('INFO' as const),
+    active: true,
+    updatedByUid: user.uid,
+    createdAt: existing.exists() ? existing.data().createdAt : serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    await setDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `announcements/${APP_UPDATE_DOC_ID}`);
+  }
+}
+
+export async function adminDeactivateAppUpdateInFirestore(): Promise<void> {
+  await adminDeactivateAnnouncementInFirestore(APP_UPDATE_DOC_ID);
 }
 
 export function subscribeActiveAnnouncements(
@@ -3790,13 +4000,13 @@ export function subscribeActiveAnnouncements(
     return onSnapshot(
       q,
       (snap) => {
-        const hasCloudRealOnly = snap.docs.some(
-          (d) => d.id === REAL_ONLY_MODE_DOC_ID && Boolean(d.data().active)
-        );
-        setLocalRealOnlyModeFlag(hasCloudRealOnly);
+        const cloudRealDoc = snap.docs.find((d) => d.id === REAL_ONLY_MODE_DOC_ID);
+        if (cloudRealDoc) {
+          setLocalRealOnlyOnlySync(Boolean(cloudRealDoc.data().active));
+        }
 
         const list: OwnerAnnouncementItem[] = snap.docs
-          .filter((d) => d.id !== REAL_ONLY_MODE_DOC_ID)
+          .filter((d) => d.id !== REAL_ONLY_MODE_DOC_ID && d.id !== APP_UPDATE_DOC_ID)
           .map((d) => {
             const data = d.data();
             const t = formatChatTimestamp(data.updatedAt || data.createdAt);
@@ -3818,6 +4028,10 @@ export function subscribeActiveAnnouncements(
       }
     );
   });
+}
+
+function setLocalRealOnlyOnlySync(active: boolean): void {
+  setLocalRealOnlyModeFlag(active);
 }
 
 export async function adminSetGlobalRealOnlyModeInFirestore(enable: boolean): Promise<void> {
@@ -3849,9 +4063,89 @@ export async function adminSetGlobalRealOnlyModeInFirestore(enable: boolean): Pr
 }
 
 /**
- * Super-Owner 1-Click Cloud Test Data Cleanup:
+ * Automatically purges ONLY fake, seed, demo, or unverified test records from Cloud Firestore
+ * while strictly keeping the Super Owner and all genuine registered real users intact!
+ */
+export async function ownerPurgeFakeCloudRecordsOnlyInFirestore(): Promise<{
+  deletedDonors: number;
+  deletedRequests: number;
+  deletedMessages: number;
+  deletedGratitude: number;
+}> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isBootstrappedAdminUser(user)) {
+    throw new Error('OWNER_ONLY');
+  }
+
+  let deletedDonors = 0;
+  let deletedRequests = 0;
+  let deletedMessages = 0;
+  let deletedGratitude = 0;
+
+  const donorsSnap = await getDocs(query(collection(db, 'donors'), where('isPublic', '==', true)));
+  for (const d of donorsSnap.docs) {
+    const data = d.data();
+    if (data.ownerUid === user.uid) continue;
+    const isFakeDoc =
+      isFakeIdentifier(d.id) ||
+      isFakePersonName(String(data.name || '')) ||
+      !data.ownerUid ||
+      String(data.idCardNumber || '').toUpperCase().includes('TEST') ||
+      String(data.idCardNumber || '').toUpperCase().includes('FAKE') ||
+      String(data.idCardNumber || '').toUpperCase().includes('DEMO');
+    if (isFakeDoc) {
+      await deleteDoc(doc(db, 'donors', d.id));
+      deletedDonors += 1;
+    }
+  }
+
+  const reqSnap = await getDocs(query(collection(db, 'requests'), where('isPublic', '==', true)));
+  for (const r of reqSnap.docs) {
+    const data = r.data();
+    const isFakeReq =
+      isFakeIdentifier(r.id) ||
+      isFakePersonName(String(data.patientName || '')) ||
+      !data.authorUid ||
+      String(data.hospitalName || '').toLowerCase().includes('test');
+    if (isFakeReq) {
+      await deleteDoc(doc(db, 'requests', r.id));
+      deletedRequests += 1;
+    }
+  }
+
+  const msgSnap = await getDocs(
+    query(collection(db, 'communityMessages'), where('isPublic', '==', true))
+  );
+  for (const m of msgSnap.docs) {
+    const data = m.data();
+    if (isFakeIdentifier(m.id) || isFakePersonName(String(data.senderName || ''))) {
+      await deleteDoc(doc(db, 'communityMessages', m.id));
+      deletedMessages += 1;
+    }
+  }
+
+  const gratSnap = await getDocs(
+    query(collection(db, 'gratitudeNotes'), where('isPublic', '==', true))
+  );
+  for (const g of gratSnap.docs) {
+    const data = g.data();
+    if (
+      isFakeIdentifier(g.id) ||
+      data.authorUid === 'seed' ||
+      isFakePersonName(String(data.donorName || ''))
+    ) {
+      await deleteDoc(doc(db, 'gratitudeNotes', g.id));
+      deletedGratitude += 1;
+    }
+  }
+
+  return { deletedDonors, deletedRequests, deletedMessages, deletedGratitude };
+}
+
+/**
+ * Super-Owner 1-Click Full Cloud Test Data Reset:
  * Removes old test documents in /donors (excluding the Super Owner's own donor card),
- * /requests, /communityMessages, and /gratitudeNotes so the database starts 100% fresh for real users.
+ * /requests, /communityMessages, and /gratitudeNotes when explicitly requested by Super Owner.
  */
 export async function ownerPurgeTestCloudRecordsInFirestore(): Promise<{
   deletedDonors: number;
@@ -4118,32 +4412,7 @@ export interface GratitudeNoteItem {
   timeLabel: string;
 }
 
-const SEED_GRATITUDE_NOTES: GratitudeNoteItem[] = [
-  {
-    id: 'seed_grat_1',
-    authorUid: 'seed',
-    authorName: 'মাহমুদুল হাসান (রোগীর ভাই)',
-    donorName: 'তানভীর আহমেদ',
-    bloodGroup: 'O-',
-    hospitalName: 'ঢাকা মেডিকেল কলেজ হাসপাতাল',
-    message:
-      'রাত ২:৩০ মিনিটে জরুরি অপারেশনের সময় এক টাকাও গাড়িভাড়া না নিয়ে তানভীর ভাই রক্ত দিয়ে আমার বোনের জীবন বাঁচিয়েছেন। আল্লাহ তাঁকে উত্তম প্রতিদান দিন।',
-    createdAtMs: 1,
-    timeLabel: 'ভেরিফাইড কৃতজ্ঞতা',
-  },
-  {
-    id: 'seed_grat_2',
-    authorUid: 'seed',
-    authorName: 'শারমিন আক্তার (মা)',
-    donorName: 'ফারজানা হক ও রাকিবুল ইসলাম',
-    bloodGroup: 'B+',
-    hospitalName: 'চট্টগ্রাম মেডিকেল কলেজ হাসপাতাল',
-    message:
-      'আমার থ্যালাসেমিয়া আক্রান্ত বাচ্চার জন্য প্রতি মাসে সময়মতো রক্ত দেওয়ার জন্য আপনাদের পরিবারের প্রতি আজীবন কৃতজ্ঞতা ও দোয়া রইল।',
-    createdAtMs: 2,
-    timeLabel: 'ভেরিফাইড কৃতজ্ঞতা',
-  },
-];
+const SEED_GRATITUDE_NOTES: GratitudeNoteItem[] = [];
 
 export function subscribePublicGratitudeNotes(
   onData: (notes: GratitudeNoteItem[]) => void

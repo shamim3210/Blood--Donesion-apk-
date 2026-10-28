@@ -1,9 +1,10 @@
 import React, { useId } from 'react';
+import { useBrandConfig } from '../config/brandConfig';
 
 export interface BrandLogoProps {
   /**
    * - 'mark': Compact squircle icon badge (crisp at 28px–64px)
-   * - 'lockup': Squircle icon badge + "Blood Search" + "FIND BLOOD. SAVE LIFE."
+   * - 'lockup': Squircle icon badge + Brand Name + Tagline
    * - 'card': Full official squircle artwork card (/assets/bloodsearch-logo-squircle.png)
    */
   variant?: 'mark' | 'lockup' | 'card';
@@ -25,9 +26,9 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   variant = 'mark',
   size = 'md',
   subtitle,
-  showTaglineDot = true,
   className = '',
 }) => {
+  const brand = useBrandConfig();
   const rawId = useId().replace(/:/g, '');
   const dropMainId = `bs-drop-main-${rawId}`;
   const dropCrescentId = `bs-drop-crescent-${rawId}`;
@@ -41,7 +42,8 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
       >
         <img
           src="/assets/bloodsearch-logo-squircle.png"
-          alt="BloodSearch - Find Blood. Save Life."
+          alt={`${brand.brandName} - ${brand.tagline}`}
+          referrerPolicy="no-referrer"
           className="w-full h-full object-contain rounded-2xl"
         />
       </div>
@@ -169,22 +171,21 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
       {markBadge}
       <div className="min-w-0 leading-none">
         <div className="font-extrabold text-sm sm:text-base tracking-tight truncate">
-          <span className="text-[#c81018] dark:text-[#f83b3b]">Blood</span>{' '}
-          <span className="text-slate-900 dark:text-white">Search</span>
+          <span className="text-[#c81018] dark:text-[#f83b3b]">{brand.brandPrimaryWord}</span>
+          {brand.brandSecondaryWord ? (
+            <>
+              {' '}
+              <span className="text-slate-900 dark:text-white">{brand.brandSecondaryWord}</span>
+            </>
+          ) : null}
         </div>
         {subtitle ? (
           <span className="text-[10px] sm:text-[11px] font-bold text-slate-600 dark:text-slate-300 block mt-0.5 truncate">
             {subtitle}
           </span>
         ) : (
-          <span className="text-[9px] sm:text-[10px] font-extrabold tracking-[0.12em] uppercase text-slate-700 dark:text-slate-300 block mt-1 truncate">
-            FIND BLOOD
-            {showTaglineDot ? (
-              <span className="text-[#dc1c1c] dark:text-rose-400 font-black">. </span>
-            ) : (
-              '. '
-            )}
-            SAVE LIFE.
+          <span className="text-[9px] sm:text-[10px] font-extrabold tracking-[0.1em] uppercase text-slate-700 dark:text-slate-300 block mt-1 truncate">
+            {brand.tagline}
           </span>
         )}
       </div>

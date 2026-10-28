@@ -4,171 +4,284 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
-  :root {
-    --font-sans: 'Hind Siliguri', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
-  }
-
   html {
-    width: 100%;
-    max-width: 100%;
-    min-height: 100dvh;
-    overflow-x: clip;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
-    -webkit-tap-highlight-color: transparent;
+    overflow-x: clip;
+    max-width: 100vw;
+    scroll-behavior: smooth;
   }
 
-  html.senior-text {
+  /* Senior Clear-Read Mode: scales all rem typography & controls cleanly by 12.5% */
+  html.senior-text,
+  html.senior-mode {
     font-size: 112.5%;
   }
 
   body {
-    width: 100%;
-    max-width: 100%;
-    min-height: 100dvh;
-    overflow-x: clip;
-    overscroll-behavior-y: auto;
-    font-family: var(--font-sans);
-    background-color: #f8fafc;
-    color: #0f172a;
-    line-height: 1.5;
+    font-family: 'Plus Jakarta Sans', 'Noto Sans Bengali', -apple-system, BlinkMacSystemFont, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    transition: background-color 0.2s ease, color 0.2s ease;
-  }
-
-  #root {
-    width: 100%;
-    max-width: 100%;
-    min-height: 100dvh;
     overflow-x: clip;
-  }
-
-  .dark body {
-    background-color: #0b0f19;
-    color: #f8fafc;
-  }
-
-  button,
-  a,
-  [role="button"],
-  summary,
-  select {
+    max-width: 100vw;
+    width: 100%;
+    position: relative;
+    line-height: 1.55;
+    background-color: #f8fafc;
+    color: #0f172a;
     touch-action: manipulation;
   }
 
-  /* Prevent mobile browser auto-zoom when tapping text inputs */
-  @media (max-width: 639px) {
-    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
-    select,
-    textarea {
-      font-size: 16px;
-    }
+  .dark body,
+  body .dark {
+    letter-spacing: 0.005em;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  /* Tactile, responsive button & action link ergonomics */
+  button:not(:disabled),
+  a[href^="tel:"],
+  a[href^="sms:"],
+  a[href^="https://wa.me"] {
+    transition:
+      background-color 160ms cubic-bezier(0.2, 0, 0, 1),
+      background-image 160ms cubic-bezier(0.2, 0, 0, 1),
+      border-color 160ms cubic-bezier(0.2, 0, 0, 1),
+      color 160ms cubic-bezier(0.2, 0, 0, 1),
+      box-shadow 160ms cubic-bezier(0.2, 0, 0, 1),
+      transform 120ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  button:active:not(:disabled),
+  a[href^="tel:"]:active,
+  a[href^="sms:"]:active,
+  a[href^="https://wa.me"]:active {
+    transform: translateY(0.5px) scale(0.985);
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #e11d48;
+    outline-offset: 2px;
   }
 }
 
-/* 100% Solid Normal Surfaces - Zero Glass, Zero Blur */
-.glass-surface,
-.standard-surface {
-  background-color: #ffffff !important;
-  color: #0f172a !important;
+/* Tactile Clinical-Modern Button System (60-30-10 Palette) */
+.btn-crimson {
+  background-image: linear-gradient(180deg, #f43f5e 0%, #e11d48 52%, #be123c 100%);
+  color: #ffffff;
+  border: 1px solid rgba(190, 18, 60, 0.9);
+  box-shadow:
+    0 1px 2px rgba(159, 18, 57, 0.28),
+    0 3px 8px -2px rgba(225, 29, 72, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+.btn-crimson:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #e11d48 0%, #be123c 100%);
+  border-color: rgba(159, 18, 57, 0.95);
+  box-shadow:
+    0 4px 14px -2px rgba(225, 29, 72, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
-.dark .glass-surface,
-.dark .standard-surface {
-  background-color: #1e293b !important;
-  color: #f8fafc !important;
+.btn-emerald {
+  background-image: linear-gradient(180deg, #10b981 0%, #059669 55%, #047857 100%);
+  color: #ffffff;
+  border: 1px solid rgba(4, 120, 87, 0.9);
+  box-shadow:
+    0 1px 2px rgba(6, 95, 70, 0.26),
+    0 3px 8px -2px rgba(5, 150, 105, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+.btn-emerald:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #059669 0%, #047857 100%);
+  border-color: rgba(6, 95, 70, 0.95);
+  box-shadow:
+    0 4px 14px -2px rgba(5, 150, 105, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
-/* Solid Normal Cards with Clean Sharp Borders */
-.glass-card-adaptive,
-.glass-card,
-.standard-card {
-  background-color: #ffffff !important;
-  border: 1px solid #cbd5e1 !important;
-  color: #0f172a !important;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+.btn-obsidian {
+  background-image: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  color: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.95);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.25),
+    0 3px 8px -2px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.btn-obsidian:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+  box-shadow:
+    0 4px 12px -2px rgba(15, 23, 42, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.dark .btn-obsidian {
+  background-image: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+  color: #f8fafc;
+  border-color: rgba(71, 85, 105, 0.75);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.dark .btn-obsidian:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #475569 0%, #334155 100%);
+  border-color: rgba(100, 116, 139, 0.9);
 }
 
-.dark .glass-card-adaptive,
-.dark .glass-card,
-.dark .standard-card {
-  background-color: #1e293b !important;
-  border: 1px solid #334155 !important;
-  color: #f8fafc !important;
-  box-shadow: 0 2px 6px 0 rgba(0, 0, 0, 0.35);
+.btn-surface {
+  background-color: #ffffff;
+  color: #1e293b;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+.btn-surface:hover:not(:disabled) {
+  background-color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.95);
+  color: #0f172a;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+.dark .btn-surface {
+  background-color: #1e293b;
+  color: #f1f5f9;
+  border-color: rgba(51, 65, 85, 0.95);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.dark .btn-surface:hover:not(:disabled) {
+  background-color: #273549;
+  border-color: rgba(71, 85, 105, 0.95);
+  color: #ffffff;
 }
 
-/* Native Smooth Touch Scrolling without Scroll Trapping */
-.app-scroll-smooth {
-  -webkit-overflow-scrolling: touch;
+.btn-soft-rose {
+  background-color: rgba(255, 241, 242, 0.92);
+  color: #be123c;
+  border: 1px solid rgba(254, 205, 211, 0.95);
+  box-shadow: 0 1px 2px rgba(225, 29, 72, 0.05);
+}
+.btn-soft-rose:hover:not(:disabled) {
+  background-color: #ffe4e6;
+  border-color: #fda4af;
+}
+.dark .btn-soft-rose {
+  background-color: rgba(76, 5, 25, 0.45);
+  color: #fda4af;
+  border-color: rgba(159, 18, 57, 0.65);
+}
+.dark .btn-soft-rose:hover:not(:disabled) {
+  background-color: rgba(136, 19, 55, 0.5);
+  border-color: rgba(225, 29, 72, 0.7);
 }
 
+.btn-soft-emerald {
+  background-color: rgba(236, 253, 245, 0.92);
+  color: #047857;
+  border: 1px solid rgba(167, 243, 208, 0.95);
+  box-shadow: 0 1px 2px rgba(5, 150, 105, 0.05);
+}
+.btn-soft-emerald:hover:not(:disabled) {
+  background-color: #d1fae5;
+  border-color: #6ee7b7;
+}
+.dark .btn-soft-emerald {
+  background-color: rgba(6, 78, 59, 0.42);
+  color: #6ee7b7;
+  border-color: rgba(4, 120, 87, 0.65);
+}
+.dark .btn-soft-emerald:hover:not(:disabled) {
+  background-color: rgba(6, 95, 70, 0.55);
+}
+
+.font-mono,
+.tabular-nums {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Safe area padding for mobile notched/home-indicator screens & Android APK WebViews */
+.pb-safe {
+  padding-bottom: max(0.65rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+
+/* Smooth GPU-accelerated overscroll containment for modals & chat sheets */
 .modal-scroll-contain {
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
 }
 
-/* Offscreen DOM paint skipping for long donor & request lists (zero-lag mobile scroll) */
+/* Content-visibility rendering boost for offscreen donor & request cards */
 .cv-auto {
   content-visibility: auto;
-  contain-intrinsic-size: auto 168px;
+  contain-intrinsic-size: 0 220px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-
+/* Hide scrollbars cleanly on horizontal chip strips */
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
 
-@media (min-width: 768px) {
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: #f1f5f9;
-  }
-  .dark ::-webkit-scrollbar-track {
-    background: #0f172a;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: #94a3b8;
-    border-radius: 9999px;
-  }
-  .dark ::-webkit-scrollbar-thumb {
-    background: #475569;
-  }
+/* Custom subtle scrollbars for desktop panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
 
-/* Leaflet Interactive Map Safety & Marker Styles */
-.leaflet-container {
-  font-family: var(--font-sans);
-  z-index: 0;
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-.leaflet-container img.leaflet-tile,
-.leaflet-container img {
-  max-width: none !important;
-  max-height: none !important;
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
 }
 
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(225, 29, 72, 0.55);
+}
+
+/* Leaflet map marker & tile refinements */
 .bsbd-leaflet-pin {
   background: transparent !important;
   border: none !important;
 }
 
+.leaflet-container {
+  font-family: 'Noto Sans Bengali', 'Plus Jakarta Sans', sans-serif !important;
+  z-index: 10 !important;
+}
+
+/* Print optimization for Donor Certificate & Emergency Poster */
+@media print {
+  header,
+  nav,
+  button,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+}

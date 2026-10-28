@@ -45,6 +45,8 @@ interface RequestBloodWizardProps {
   onClose: () => void;
   lang: Language;
   donors?: Donor[];
+  initialBloodGroup?: BloodGroup;
+  initialDistrict?: string;
   onSubmitSOS: (
     newRequest: BloodRequest,
     opts?: { alreadySyncedToCloud?: boolean }
@@ -58,6 +60,8 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   onClose,
   lang,
   donors = [],
+  initialBloodGroup,
+  initialDistrict,
   onSubmitSOS,
   onLogAudit,
   onRevealPhone,
@@ -69,12 +73,14 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   const [requiredTimeWindow, setRequiredTimeWindow] =
     useState<RequiredTimeWindow>('IMMEDIATE_2H');
   const [escalationIntervalMinutes, setEscalationIntervalMinutes] = useState<number>(10);
-  const [bloodGroup, setBloodGroup] = useState<BloodGroup>('O+');
+  const [bloodGroup, setBloodGroup] = useState<BloodGroup>(initialBloodGroup || 'O+');
   const [patientName, setPatientName] = useState('');
   const [patientAge, setPatientAge] = useState<number>(30);
   const [unitsNeeded, setUnitsNeeded] = useState<number>(1);
   const [hospitalName, setHospitalName] = useState('');
-  const [district, setDistrict] = useState('dhaka');
+  const [district, setDistrict] = useState(
+    initialDistrict && initialDistrict !== 'ALL' ? initialDistrict : 'dhaka'
+  );
   const [contactPhone, setContactPhone] = useState('');
   const [reason, setReason] = useState('');
   const [exchangeAllowed, setExchangeAllowed] = useState(false);
@@ -94,15 +100,21 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
   );
 
-  // Prefill seeker phone & district from real logged-in profile if available
+  // Prefill seeker phone, blood group & district from context or real logged-in profile
   useEffect(() => {
     if (!isOpen) return;
+    if (initialBloodGroup) {
+      setBloodGroup(initialBloodGroup);
+    }
+    if (initialDistrict && initialDistrict !== 'ALL') {
+      setDistrict(initialDistrict);
+    }
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.phone && !contactPhone) setContactPhone(parsed.phone);
-        if (parsed?.district) {
+        if (!initialDistrict && parsed?.district) {
           const matched = DISTRICTS.find(
             (d) =>
               d.id === String(parsed.district).toLowerCase() ||
@@ -117,7 +129,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     checkFcmAndServerCapabilities()
       .then((cap) => setCapabilities(cap))
       .catch(() => {});
-  }, [isOpen]);
+  }, [isOpen, initialBloodGroup, initialDistrict]);
 
   // Compute concurrent matching opted-in donors for this request
   const initialEscalationPlan = useMemo(() => {
