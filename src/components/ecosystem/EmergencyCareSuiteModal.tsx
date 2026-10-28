@@ -4,7 +4,13 @@ import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
 import {
   downloadIceLockScreenWallpaperPng,
   buildOfflineEmergencySmsUri,
+  copyTextReliable,
 } from '../../utils/sosAlertEngine';
+import {
+  isValidBangladeshMobilePhone,
+  normalizeValidBangladeshMobileE164,
+  formatBangladeshPhoneDisplay,
+} from '../../utils/donorMatcher';
 import {
   buildWhatsAppChatUrl,
   subscribePublicGratitudeNotes,
@@ -28,6 +34,7 @@ import {
   AlertTriangle,
   Search,
   ShieldCheck,
+  Copy,
 } from 'lucide-react';
 
 export type CareSuiteTab =
@@ -75,34 +82,11 @@ const DEFAULT_MATERNITY_PLAN: MaternityPlanData = {
   motherName: '',
   bloodGroup: 'O+',
   eddDate: '',
-  hospitalName: 'ঢাকা মেডিকেল কলেজ হাসপাতাল',
-  standbyDonors: [
-    {
-      id: 'sb-1',
-      name: 'রাকিবুল হাসান (কাজিন)',
-      phone: '+8801712345678',
-      bloodGroup: 'O+',
-      relationNote: '১০ মিনিটের দূরত্বে থাকেন',
-    },
-  ],
+  hospitalName: '',
+  standbyDonors: [],
 };
 
-const DEFAULT_DENGUE_LOGS: DengueLogEntry[] = [
-  {
-    id: 'dl-1',
-    dateLabel: 'গতকাল সকাল',
-    platelets: 78000,
-    hctPercent: 42,
-    hemoglobin: 12.6,
-  },
-  {
-    id: 'dl-2',
-    dateLabel: 'আজ সকাল',
-    platelets: 46000,
-    hctPercent: 45,
-    hemoglobin: 12.4,
-  },
-];
+const DEFAULT_DENGUE_LOGS: DengueLogEntry[] = [];
 
 export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = ({
   isOpen,
@@ -159,12 +143,21 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
   const handleAddStandbyDonor = (e: React.FormEvent) => {
     e.preventDefault();
     if (!sbName.trim() || !sbPhone.trim()) return;
+    const normalizedPhone = normalizeValidBangladeshMobileE164(sbPhone);
+    if (!normalizedPhone || !isValidBangladeshMobilePhone(sbPhone)) {
+      showTempNotice(
+        lang === 'bn'
+          ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
+      );
+      return;
+    }
     const newEntry: StandbyDonorEntry = {
       id: `sb_${Date.now()}`,
       name: sbName.trim(),
-      phone: sbPhone.trim(),
+      phone: normalizedPhone,
       bloodGroup: sbGroup,
-      relationNote: sbNote.trim() || 'স্ট্যান্ডবাই রক্তদাতা',
+      relationNote: sbNote.trim() || (lang === 'bn' ? 'স্ট্যান্ডবাই রক্তদাতা' : 'Standby donor'),
     };
     setMaternityPlan((prev) => ({
       ...prev,
@@ -255,9 +248,9 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
   const [iceName, setIceName] = useState(() => {
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
-      if (raw) return JSON.parse(raw)?.name || 'তানভীর আহমেদ';
+      if (raw) return JSON.parse(raw)?.name || '';
     } catch {}
-    return 'তানভীর আহমেদ';
+    return '';
   });
   const [iceGroup, setIceGroup] = useState<BloodGroup>(() => {
     try {
@@ -266,8 +259,17 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
     } catch {}
     return 'B+';
   });
-  const [iceGuardian, setIceGuardian] = useState('আব্বু / পরিবারের জরুরি নম্বর');
-  const [icePhone, setIcePhone] = useState('+8801711000000');
+  const [iceGuardian, setIceGuardian] = useState('');
+  const [icePhone, setIcePhone] = useState(() => {
+    try {
+      const raw = localStorage.getItem('bloodsearch_current_user');
+      if (raw) {
+        const p = JSON.parse(raw)?.phone;
+        if (p && isValidBangladeshMobilePhone(p)) return p;
+      }
+    } catch {}
+    return '';
+  });
   const [iceSecondPhone, setIceSecondPhone] = useState('');
   const [iceConditions, setIceConditions] = useState('কোনো দীর্ঘমেয়াদী রোগ নেই');
   const [iceAllergies, setIceAllergies] = useState('কোনো ওষুধ অ্যালার্জি নেই');
@@ -592,74 +594,94 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
 
             {/* Standby Donors List */}
             <div className="space-y-2">
-              {maternityPlan.standbyDonors.map((d) => {
-                const smsLink = buildOfflineEmergencySmsUri(
-                  d.phone,
-                  `আসসালামু আলাইকুম ${d.name}, জরুরি ডেলিভারির জন্য হাসপাতালে (${maternityPlan.hospitalName}) আপনার ${d.bloodGroup} রক্ত প্রয়োজন। অনুগ্রহ করে যোগাযোগ করুন।`
-                );
-                return (
-                  <div
-                    key={d.id}
-                    className="p-3 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span className="w-9 h-9 rounded-xl bg-rose-600 text-white font-black flex items-center justify-center shrink-0">
-                        {d.bloodGroup}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="font-bold text-slate-900 dark:text-white truncate">
-                          {d.name}
-                        </div>
-                        <div className="text-[11px] text-slate-500 font-mono truncate">
-                          {d.phone} · {d.relationNote}
+              {maternityPlan.standbyDonors.length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500 dark:text-slate-400">
+                  {lang === 'bn'
+                    ? 'এখনও কোনো স্ট্যান্ডবাই রক্তদাতা যোগ করা হয়নি। উপরের ফর্মে প্রকৃত রক্তদাতার নাম ও ১১ ডিজিটের মোবাইল নম্বর যোগ করুন।'
+                    : 'No standby donors added yet. Add real standby donors with their 11-digit mobile numbers above.'}
+                </div>
+              ) : (
+                maternityPlan.standbyDonors.map((d) => {
+                  const hospLabel = maternityPlan.hospitalName || 'হাসপাতাল';
+                  const smsLink = buildOfflineEmergencySmsUri(
+                    d.phone,
+                    `আসসালামু আলাইকুম ${d.name}, জরুরি ডেলিভারির জন্য হাসপাতালে (${hospLabel}) আপনার ${d.bloodGroup} রক্ত প্রয়োজন। অনুগ্রহ করে যোগাযোগ করুন।`
+                  );
+                  return (
+                    <div
+                      key={d.id}
+                      className="p-3 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-9 h-9 rounded-xl bg-rose-600 text-white font-black flex items-center justify-center shrink-0">
+                          {d.bloodGroup}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 dark:text-white truncate">
+                            {d.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-mono tabular-nums truncate">
+                            {formatBangladeshPhoneDisplay(d.phone)} · {d.relationNote}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <a
-                        href={`tel:${d.phone.replace(/[^0-9+]/g, '')}`}
-                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-rose-600 text-white font-bold inline-flex items-center gap-1"
-                      >
-                        <Phone className="w-3.5 h-3.5" />
-                        <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
-                      </a>
-                      <a
-                        href={smsLink}
-                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-slate-800 text-white font-bold inline-flex items-center gap-1"
-                        title="ইন্টারনেট ছাড়াই SMS পাঠান"
-                      >
-                        <span>SMS</span>
-                      </a>
-                      <a
-                        href={buildWhatsAppChatUrl(
-                          d.phone,
-                          `আসসালামু আলাইকুম ${d.name}, ডেলিভারি স্ট্যান্ডবাই রক্তদাতা হিসেবে আপনাকে স্মরণ করিয়ে দিচ্ছি (${maternityPlan.hospitalName})।`
-                        )}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white font-bold inline-flex items-center gap-1"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5" />
-                        <span>WA</span>
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setMaternityPlan((p) => ({
-                            ...p,
-                            standbyDonors: p.standbyDonors.filter((x) => x.id !== d.id),
-                          }))
-                        }
-                        className="min-h-[36px] min-w-[36px] rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center justify-center cursor-pointer"
-                        aria-label="Remove standby donor"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await copyTextReliable(d.phone);
+                            showTempNotice(
+                              lang === 'bn' ? '✓ নম্বর কপি হয়েছে!' : '✓ Phone copied!'
+                            );
+                          }}
+                          className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <a
+                          href={`tel:${d.phone.replace(/[^0-9+]/g, '')}`}
+                          className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-rose-600 text-white font-bold inline-flex items-center gap-1"
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                          <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
+                        </a>
+                        <a
+                          href={smsLink}
+                          className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-slate-800 text-white font-bold inline-flex items-center gap-1"
+                        >
+                          <span>SMS</span>
+                        </a>
+                        <a
+                          href={buildWhatsAppChatUrl(
+                            d.phone,
+                            `আসসালামু আলাইকুম ${d.name}, ডেলিভারি স্ট্যান্ডবাই রক্তদাতা হিসেবে আপনাকে স্মরণ করিয়ে দিচ্ছি (${hospLabel})।`
+                          )}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white font-bold inline-flex items-center gap-1"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          <span>WA</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setMaternityPlan((p) => ({
+                              ...p,
+                              standbyDonors: p.standbyDonors.filter((x) => x.id !== d.id),
+                            }))
+                          }
+                          className="min-h-[36px] min-w-[36px] rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center justify-center cursor-pointer"
+                          aria-label="Remove standby donor"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
         )}
@@ -758,31 +780,39 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
             </form>
 
             {/* History Table */}
-            <div className="divide-y divide-slate-200 dark:divide-slate-800 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden text-xs">
-              {dengueLogs.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-3 bg-white dark:bg-[#0f172a] flex items-center justify-between gap-2 font-mono"
-                >
-                  <span className="font-sans font-semibold text-slate-700 dark:text-slate-300">
-                    {item.dateLabel}
-                  </span>
-                  <span
-                    className={`font-bold ${
-                      item.platelets < 20000
-                        ? 'text-red-600'
-                        : item.platelets < 50000
-                        ? 'text-amber-600'
-                        : 'text-emerald-600'
-                    }`}
+            {dengueLogs.length === 0 ? (
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500 dark:text-slate-400">
+                {lang === 'bn'
+                  ? 'এখনও কোনো সিবিসি (CBC) রিপোর্ট লগ করা হয়নি। উপরের ফর্মে রোগীর প্লাটিলেট কাউন্ট লিখে "+ রিপোর্ট যোগ করুন" বাটনে ক্লিক করুন।'
+                  : 'No CBC reports logged yet. Enter the patient’s platelet count above and tap "+ Save CBC".'}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-200 dark:divide-slate-800 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden text-xs">
+                {dengueLogs.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3 bg-white dark:bg-[#0f172a] flex items-center justify-between gap-2 font-mono tabular-nums"
                   >
-                    PLT: {item.platelets.toLocaleString()}
-                  </span>
-                  <span className="text-slate-600 dark:text-slate-400">HCT: {item.hctPercent}%</span>
-                  <span className="text-slate-600 dark:text-slate-400">Hb: {item.hemoglobin}</span>
-                </div>
-              ))}
-            </div>
+                    <span className="font-sans font-semibold text-slate-700 dark:text-slate-300">
+                      {item.dateLabel}
+                    </span>
+                    <span
+                      className={`font-bold ${
+                        item.platelets < 20000
+                          ? 'text-red-600'
+                          : item.platelets < 50000
+                          ? 'text-amber-600'
+                          : 'text-emerald-600'
+                      }`}
+                    >
+                      PLT: {item.platelets.toLocaleString()}
+                    </span>
+                    <span className="text-slate-600 dark:text-slate-400">HCT: {item.hctPercent}%</span>
+                    <span className="text-slate-600 dark:text-slate-400">Hb: {item.hemoglobin}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

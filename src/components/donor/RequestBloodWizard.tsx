@@ -13,7 +13,6 @@ import { getTranslation } from '../../utils/translations';
 import {
   auth,
   checkActionCooldownGuard,
-  checkFcmAndServerCapabilities,
   dispatchEmergencyBroadcastClient,
   EmergencyBroadcastDispatchResult,
 } from '../../firebase';
@@ -23,13 +22,16 @@ import {
   canSeekerViewDirectContact,
   buildDirectCallHref,
   buildWhatsAppHref,
+  isValidBangladeshMobilePhone,
+  normalizeValidBangladeshMobileE164,
 } from '../../utils/donorMatcher';
 import { resolveBangladeshCoordinates } from '../../utils/geolocation';
-import { buildOfflineEmergencySmsUri } from '../../utils/sosAlertEngine';
+import { buildOfflineEmergencySmsUri, copyTextReliable } from '../../utils/sosAlertEngine';
 import {
   X,
   ArrowLeft,
   Check,
+  Copy,
   MapPin,
   CheckCircle2,
   Mail,
@@ -37,7 +39,6 @@ import {
   Phone,
   MessageSquare,
   AlertTriangle,
-  Radio,
 } from 'lucide-react';
 
 interface RequestBloodWizardProps {
@@ -72,7 +73,6 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   const [urgency, setUrgency] = useState<UrgencyLevel>('CRITICAL');
   const [requiredTimeWindow, setRequiredTimeWindow] =
     useState<RequiredTimeWindow>('IMMEDIATE_2H');
-  const [escalationIntervalMinutes, setEscalationIntervalMinutes] = useState<number>(10);
   const [bloodGroup, setBloodGroup] = useState<BloodGroup>(initialBloodGroup || 'O+');
   const [patientName, setPatientName] = useState('');
   const [patientAge, setPatientAge] = useState<number>(30);
@@ -89,12 +89,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [dispatchResult, setDispatchResult] =
     useState<EmergencyBroadcastDispatchResult | null>(null);
-  const [capabilities, setCapabilities] = useState<{
-    fcmServerConfigured: boolean;
-    smsProviderConfigured: boolean;
-    smsProvider: string;
-    browserNotificationPermission: string;
-  } | null>(null);
+  const [copiedFallbackSms, setCopiedFallbackSms] = useState(false);
 
   const isVerifiedSeeker = Boolean(
     auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
@@ -125,10 +120,6 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
         }
       }
     } catch {}
-
-    checkFcmAndServerCapabilities()
-      .then((cap) => setCapabilities(cap))
-      .catch(() => {});
   }, [isOpen, initialBloodGroup, initialDistrict]);
 
   // Compute concurrent matching opted-in donors for this request
@@ -202,8 +193,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
     if (step === 3) {
       const cleanHospital = hospitalName.trim();
-      const cleanPhone = contactPhone.trim();
-      const digitsOnly = cleanPhone.replace(/\D/g, '');
+      const normalizedPhone = normalizeValidBangladeshMobileE164(contactPhone);
 
       if (cleanHospital.length < 3) {
         setValidationError(
@@ -213,11 +203,11 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
         );
         return;
       }
-      if (digitsOnly.length < 10) {
+      if (!normalizedPhone || !isValidBangladeshMobilePhone(contactPhone)) {
         setValidationError(
           lang === 'bn'
-            ? 'অনুগ্রহ করে সচল যোগাযোগ নম্বর (কমপক্ষে ১০ ডিজিট) লিখুন।'
-            : 'Please enter a valid callback phone number (at least 10 digits).'
+            ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)। ভুল বা ১০ ডিজিটের নম্বর গ্রহণযোগ্য নয়।'
+            : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
         );
         return;
       }
@@ -237,11 +227,8 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
         const distObj = DISTRICTS.find((d) => d.id === district);
         const cleanPatient =
           patientName.trim() || (lang === 'bn' ? 'জরুরি রোগী' : 'Emergency Patient');
-        const baseReason =
+        const finalReason =
           reason.trim() || (lang === 'bn' ? 'জরুরি রক্ত সঞ্চালন' : 'Emergency transfusion');
-        const finalReason = exchangeAllowed
-          ? `${baseReason} [Exchange Allowed]`
-          : baseReason;
 
         const nowMs = Date.now();
         const expiryHours =
@@ -269,7 +256,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
           urgency,
           requiredTimeWindow,
           contactName: cleanPatient,
-          contactPhone: cleanPhone,
+          contactPhone: normalizedPhone,
           requiredDate: requiredTimeLabel,
           reason: finalReason,
           exchangeAllowed,
@@ -285,12 +272,12 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
           contactAttemptsCount: 0,
           escalationLevel: 0,
           searchRadiusKm: initialEscalationPlan.radiusKm,
-          escalationIntervalMinutes,
+          escalationIntervalMinutes: 10,
         };
 
         const broadcastRes = await dispatchEmergencyBroadcastClient({
           request: newReq,
-          seekerCallbackPhone: cleanPhone,
+          seekerCallbackPhone: normalizedPhone,
           candidateCloudDonorIds: candidateIds,
         });
 
@@ -309,12 +296,11 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
           `Dispatched ${bloodGroup} emergency request (${unitsNeeded} unit(s), notified=${broadcastRes.alertsWritten})`
         );
         setStep(4);
-      } catch (err: any) {
+      } catch {
         setValidationError(
-          err?.message ||
-            (lang === 'bn'
-              ? 'আবেদন পাঠাতে সমস্যা হয়েছে। ডুপ্লিকেট বা রেট-লিমিট চেক করুন।'
-              : 'Could not dispatch broadcast. Check duplicate or rate-limit rules.')
+          lang === 'bn'
+            ? 'আবেদন পাঠাতে সমস্যা হয়েছে। অনুগ্রহ করে তথ্য যাচাই করে আবার চেষ্টা করুন।'
+            : 'Could not send request. Please verify your details and try again.'
         );
       } finally {
         setIsDispatching(false);
@@ -378,19 +364,19 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
             </div>
           )}
 
-          {/* STEP 1: URGENCY, REQUIRED TIME & AUTO-ESCALATION */}
+          {/* STEP 1: URGENCY & REQUIRED TIME */}
           {step === 1 && (
             <div className="py-2 space-y-4">
               <div>
                 <h2 className="text-xl font-bold text-slate-900 dark:text-white">
                   {lang === 'bn'
-                    ? 'জরুরিতা ও সময়সীমা নির্ধারণ করুন'
-                    : 'Set Urgency & Required Time'}
+                    ? 'কতটা জরুরি ও কখন রক্ত প্রয়োজন?'
+                    : 'How Urgent Is the Blood Need?'}
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                   {lang === 'bn'
-                    ? 'একাধিক উপযুক্ত ও সম্মতিপ্রাপ্ত রক্তদাতাকে একইসাথে নোটিফাই করা হবে এবং সাড়া না পেলে পরিধি বাড়ানো হবে।'
-                    : 'Notifies multiple matching opted-in donors concurrently and expands radius if no one responds.'}
+                    ? 'রোগীর অবস্থা অনুযায়ী নিচের যেকোনো একটি ধাপ নির্বাচন করুন।'
+                    : 'Choose the urgency level so nearby available donors are alerted immediately.'}
                 </p>
               </div>
 
@@ -399,27 +385,24 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   [
                     {
                       id: 'CRITICAL' as UrgencyLevel,
-                      titleBn: 'Critical (জীবন-মরণ জরুরি)',
-                      titleEn: 'Critical (Immediate Emergency)',
-                      descBn: 'তাৎক্ষণিক রক্ত প্রয়োজন — ১০ কিমি পরিধিতে অগ্রাধিকার ব্রডকাস্ট।',
-                      descEn: 'Life-threatening need — priority concurrent alert to nearby donors.',
-                      radius: '10 km start',
+                      titleBn: 'অতি জরুরি — এখনই রক্ত প্রয়োজন',
+                      titleEn: 'Critical — Needed Immediately',
+                      descBn: 'অপারেশন, দুর্ঘটনা বা মুমূর্ষু রোগীর জন্য তাৎক্ষণিক রক্ত প্রয়োজন।',
+                      descEn: 'Life-saving transfusion needed right away at the hospital.',
                     },
                     {
                       id: 'URGENT' as UrgencyLevel,
-                      titleBn: 'Urgent (আজকের মধ্যে প্রয়োজন)',
-                      titleEn: 'Urgent (Needed Today)',
-                      descBn: 'ডায়ালাইসিস, ডেলিভারি বা চলমান চিকিৎসার জন্য কয়েক ঘণ্টার মধ্যে।',
-                      descEn: 'Needed within hours for ongoing hospital care or procedure.',
-                      radius: '25 km start',
+                      titleBn: 'জরুরি — আজকের মধ্যে প্রয়োজন',
+                      titleEn: 'Urgent — Needed Today',
+                      descBn: 'ডায়ালাইসিস, ডেলিভারি বা চলমান চিকিৎসার জন্য কয়েক ঘণ্টার মধ্যে প্রয়োজন।',
+                      descEn: 'Needed within a few hours for ongoing hospital treatment.',
                     },
                     {
                       id: 'STANDARD' as UrgencyLevel,
-                      titleBn: 'Standard (নির্ধারিত অপারেশন)',
-                      titleEn: 'Standard (Scheduled Procedure)',
-                      descBn: 'পরিকল্পিত সার্জারি বা আগামীকালের জন্য রক্ত সংগ্রহ।',
+                      titleBn: 'সাধারণ — নির্ধারিত অপারেশন বা আগামীকাল',
+                      titleEn: 'Scheduled — Planned Procedure',
+                      descBn: 'নির্ধারিত সার্জারি বা থ্যালাসেমিয়া রোগীর জন্য অগ্রিম রক্ত সংগ্রহ।',
                       descEn: 'Planned surgical reserve or next-day transfusion.',
-                      radius: '50 km start',
                     },
                   ] as const
                 ).map((item) => {
@@ -444,9 +427,9 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                         <span className="text-sm font-bold text-slate-900 dark:text-white">
                           {lang === 'bn' ? item.titleBn : item.titleEn}
                         </span>
-                        <span className="text-xs font-mono tabular-nums font-semibold text-rose-600 dark:text-rose-400">
-                          {item.radius}
-                        </span>
+                        {active && (
+                          <CheckCircle2 className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                        )}
                       </div>
                       <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
                         {lang === 'bn' ? item.descBn : item.descEn}
@@ -456,55 +439,30 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                 })}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {lang === 'bn' ? 'কখন প্রয়োজন' : 'Required Time Window'}
-                  </label>
-                  <select
-                    value={requiredTimeWindow}
-                    onChange={(e) =>
-                      setRequiredTimeWindow(e.target.value as RequiredTimeWindow)
-                    }
-                    className="w-full h-10 px-3 text-xs rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
-                  >
-                    <option value="IMMEDIATE_2H">
-                      {lang === 'bn' ? '২ ঘণ্টার মধ্যে' : 'Within 2 hours'}
-                    </option>
-                    <option value="TODAY_6H">
-                      {lang === 'bn' ? '৬ ঘণ্টার মধ্যে' : 'Within 6 hours'}
-                    </option>
-                    <option value="WITHIN_24H">
-                      {lang === 'bn' ? '২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
-                    </option>
-                    <option value="SCHEDULED">
-                      {lang === 'bn' ? 'নির্ধারিত তারিখ' : 'Scheduled'}
-                    </option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {lang === 'bn'
-                      ? 'সাড়া না পেলে পরিধি বৃদ্ধির বিরতি'
-                      : 'No-Response Escalation Interval'}
-                  </label>
-                  <select
-                    value={escalationIntervalMinutes}
-                    onChange={(e) => setEscalationIntervalMinutes(Number(e.target.value))}
-                    className="w-full h-10 px-3 text-xs rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 tabular-nums"
-                  >
-                    <option value={5}>
-                      {lang === 'bn' ? 'প্রতি ৫ মিনিট পর' : 'Every 5 minutes'}
-                    </option>
-                    <option value={10}>
-                      {lang === 'bn' ? 'প্রতি ১০ মিনিট পর' : 'Every 10 minutes'}
-                    </option>
-                    <option value={15}>
-                      {lang === 'bn' ? 'প্রতি ১৫ মিনিট পর' : 'Every 15 minutes'}
-                    </option>
-                  </select>
-                </div>
+              <div className="pt-1">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {lang === 'bn' ? 'কখন রক্ত প্রয়োজন?' : 'When is blood needed?'}
+                </label>
+                <select
+                  value={requiredTimeWindow}
+                  onChange={(e) =>
+                    setRequiredTimeWindow(e.target.value as RequiredTimeWindow)
+                  }
+                  className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
+                >
+                  <option value="IMMEDIATE_2H">
+                    {lang === 'bn' ? '২ ঘণ্টার মধ্যে (তাৎক্ষণিক)' : 'Within 2 hours (Immediate)'}
+                  </option>
+                  <option value="TODAY_6H">
+                    {lang === 'bn' ? 'আজ ৬ ঘণ্টার মধ্যে' : 'Today within 6 hours'}
+                  </option>
+                  <option value="WITHIN_24H">
+                    {lang === 'bn' ? 'আগামী ২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
+                  </option>
+                  <option value="SCHEDULED">
+                    {lang === 'bn' ? 'নির্ধারিত তারিখে' : 'On a scheduled date'}
+                  </option>
+                </select>
               </div>
             </div>
           )}
@@ -641,10 +599,10 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                     <input
                       type="tel"
                       required
-                      placeholder="+88017XXXXXXXX"
+                      placeholder="01712345678"
                       value={contactPhone}
                       onChange={(e) => setContactPhone(e.target.value)}
-                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono"
+                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono tabular-nums"
                     />
                   </div>
                 </div>
@@ -713,26 +671,13 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   </div>
                 </label>
 
-                {/* Honest Preview of Notification Channels */}
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
-                  <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-                    <Radio className="w-3.5 h-3.5 text-rose-500" />
-                    <span>
-                      {lang === 'bn'
-                        ? `সম্মতিপ্রাপ্ত ম্যাচিং ডোনার প্রস্তুত: ${initialEscalationPlan.eligibleDonorsToNotify.length} জন (${initialEscalationPlan.tierLabelBn})`
-                        : `Eligible opted-in donors in initial tier: ${initialEscalationPlan.eligibleDonorsToNotify.length} (${initialEscalationPlan.tierLabelEn})`}
-                    </span>
+                {initialEscalationPlan.eligibleDonorsToNotify.length > 0 && (
+                  <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 text-xs text-emerald-900 dark:text-emerald-200 font-semibold">
+                    {lang === 'bn'
+                      ? `এই এলাকায় ${initialEscalationPlan.eligibleDonorsToNotify.length} জন রক্তদাতার কাছে সাথে সাথে নোটিফিকেশন যাবে।`
+                      : `${initialEscalationPlan.eligibleDonorsToNotify.length} matching donors in your area will be notified immediately.`}
                   </div>
-                  <p>
-                    {capabilities?.smsProviderConfigured
-                      ? lang === 'bn'
-                        ? `সার্ভার SMS ফ্যালব্যাক সক্রিয় (${capabilities.smsProvider})।`
-                        : `Server SMS fallback configured (${capabilities.smsProvider}).`
-                      : lang === 'bn'
-                      ? 'সার্ভার SMS গেটওয়ে কনফিগার করা নেই — ইন-অ্যাপ রিয়েল-টাইম অ্যালার্ট ও সরাসরি কল/WhatsApp ব্যবহৃত হবে।'
-                      : 'Server SMS gateway not configured — dispatching concurrent real-time in-app alerts + direct Call/WhatsApp.'}
-                  </p>
-                </div>
+                )}
 
                 {validationError && (
                   <p className="text-xs font-bold text-red-600 dark:text-red-400">
@@ -743,7 +688,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
             </div>
           )}
 
-          {/* STEP 4: HONEST DELIVERY STATUS + PARALLEL DIRECT CALL TO MATCHING DONORS */}
+          {/* STEP 4: CONFIRMATION + PARALLEL DIRECT CALL TO MATCHING DONORS */}
           {step === 4 && (
             <div className="py-4 space-y-4">
               <div className="flex items-start gap-3">
@@ -752,61 +697,20 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                    {dispatchResult?.syncedToCloud
-                      ? lang === 'bn'
-                        ? 'জরুরি ব্রডকাস্ট সক্রিয় হয়েছে'
-                        : 'Emergency Broadcast Active'
-                      : lang === 'bn'
-                      ? 'রিকোয়েস্ট সংরক্ষিত হয়েছে (সরাসরি কল করুন)'
-                      : 'Request Saved Locally (Call Donors Directly)'}
+                    {lang === 'bn'
+                      ? 'আপনার রক্তের আবেদন সফলভাবে প্রকাশিত হয়েছে'
+                      : 'Your Blood Request Is Now Live'}
                   </h2>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
-                    {dispatchResult?.honestNotice}
+                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+                    {lang === 'bn'
+                      ? dispatchResult?.alertsWritten
+                        ? `${dispatchResult.alertsWritten} জন উপযুক্ত রক্তদাতার কাছে জরুরি বার্তা পাঠানো হয়েছে। দ্রুত রক্ত পেতে নিচের রক্তদাতাদের সরাসরি কল করুন।`
+                        : 'আপনার আবেদনটি রিকোয়েস্ট ফিডে যুক্ত হয়েছে। দ্রুত রক্ত পেতে নিচের উপলব্ধ রক্তদাতাদের সরাসরি কল করুন।'
+                      : dispatchResult?.alertsWritten
+                      ? `${dispatchResult.alertsWritten} matching donors have been alerted. Call available donors below directly for the fastest response.`
+                      : 'Your request is live on the feed. Call available donors below directly for the fastest response.'}
                   </p>
                 </div>
-              </div>
-
-              {/* Honest Channel Delivery Matrix */}
-              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    {lang === 'bn' ? 'ইন-অ্যাপ ডোনার অ্যালার্ট প্রেরিত:' : 'Concurrent In-App Alerts Dispatched:'}
-                  </span>
-                  <span className="font-mono tabular-nums font-bold text-slate-900 dark:text-white">
-                    {dispatchResult?.alertsWritten ?? 0}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    {lang === 'bn' ? 'ব্যাকগ্রাউন্ড পুশ (FCM):' : 'Background Push (FCM):'}
-                  </span>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200">
-                    {dispatchResult?.pushChannelState === 'CONFIGURED'
-                      ? lang === 'bn'
-                        ? 'সক্রিয়'
-                        : 'Configured'
-                      : lang === 'bn'
-                      ? 'ব্রাউজার/ইন-অ্যাপ রিয়েল-টাইম'
-                      : 'Browser/In-App Realtime'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    {lang === 'bn' ? 'সার্ভার SMS ফ্যালব্যাক:' : 'Server SMS Fallback:'}
-                  </span>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
-                    {dispatchResult?.smsChannelState === 'SENT'
-                      ? `Sent (${dispatchResult.smsSentCount})`
-                      : lang === 'bn'
-                      ? 'কনফিগার করা নেই (নিচের SMS বাটন ব্যবহার করুন)'
-                      : 'Not configured (use device SMS or Call)'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-amber-800 dark:text-amber-300 pt-1 border-t border-slate-200 dark:border-slate-800">
-                  {lang === 'bn'
-                    ? 'সতর্কতা: নোটিফিকেশন ডেলিভারি হওয়া মানেই ডোনার সেটি দেখেছেন তা নিশ্চিত নয়। সময় বাঁচাতে নিচের উপলব্ধ রক্তদাতাদের এখনই সরাসরি কল করুন।'
-                    : 'Honest Delivery Note: A dispatched notification does not prove a donor has read it. Call opted-in available donors directly below while alerts run.'}
-                </p>
               </div>
 
               {/* Direct Call Strip While Alerts Are Running */}
@@ -878,21 +782,48 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                 </div>
               )}
 
-              {/* Device Native SMS Fallback */}
-              <a
-                href={buildOfflineEmergencySmsUri(
-                  '',
-                  `Emergency: ${bloodGroup} blood needed (${unitsNeeded} unit(s)) at ${hospitalName} (${district}). Callback: ${contactPhone}`
-                )}
-                className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-2"
-              >
-                <Mail className="w-4 h-4" />
-                <span>
-                  {lang === 'bn'
-                    ? 'ফোনের SMS অ্যাপ খুলে পরিচিতদের বার্তা পাঠান'
-                    : 'Open Phone SMS App for Offline Fallback'}
-                </span>
-              </a>
+              {/* Device Native SMS + 1-Click Copy Emergency Text */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <a
+                  href={buildOfflineEmergencySmsUri(
+                    '',
+                    `Emergency: ${bloodGroup} blood needed (${unitsNeeded} unit(s)) at ${hospitalName} (${district}). Callback: ${contactPhone}`
+                  )}
+                  className="min-h-[42px] px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-2 whitespace-nowrap"
+                >
+                  <Mail className="w-4 h-4 shrink-0" />
+                  <span>
+                    {lang === 'bn' ? 'সিম SMS অ্যাপ খুলুন' : 'Open Phone SMS App'}
+                  </span>
+                </a>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await copyTextReliable(
+                      lang === 'bn'
+                        ? `জরুরি রক্তের প্রয়োজন: ${bloodGroup} (${unitsNeeded} ব্যাগ)\nহাসপাতাল: ${hospitalName} (${district})\nযোগাযোগ: ${contactPhone}`
+                        : `Emergency: ${bloodGroup} blood needed (${unitsNeeded} unit(s)) at ${hospitalName} (${district}). Contact: ${contactPhone}`
+                    );
+                    if (ok) {
+                      setCopiedFallbackSms(true);
+                      window.setTimeout(() => setCopiedFallbackSms(false), 2200);
+                    }
+                  }}
+                  className="min-h-[42px] px-3 py-2 rounded-xl btn-surface font-bold text-xs flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  {copiedFallbackSms ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>{lang === 'bn' ? 'বার্তা কপি হয়েছে ✓' : 'Copied ✓'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4 shrink-0" />
+                      <span>{lang === 'bn' ? 'জরুরি বার্তা কপি করুন' : 'Copy Emergency Text'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
 
               {/* Medical Emergency Disclaimer */}
               <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/35 border border-amber-300/70 dark:border-amber-800/70 flex items-start gap-2 text-[11px] text-amber-950 dark:text-amber-200">
@@ -919,12 +850,12 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
               <span>
                 {isDispatching
                   ? lang === 'bn'
-                    ? 'ডোনারদের কাছে পাঠানো হচ্ছে...'
-                    : 'Dispatching Concurrent Alerts...'
+                    ? 'পাঠানো হচ্ছে...'
+                    : 'Sending Request...'
                   : step === 3
                   ? lang === 'bn'
-                    ? 'জরুরি ব্রডকাস্ট পাঠান'
-                    : 'Broadcast Emergency Request'
+                    ? 'রক্তের আবেদন প্রকাশ করুন'
+                    : 'Publish Blood Request'
                   : lang === 'bn'
                   ? 'পরবর্তী ধাপ →'
                   : 'Continue →'}

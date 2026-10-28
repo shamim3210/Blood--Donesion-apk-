@@ -33,7 +33,9 @@ import {
   canDonorGiveToPatient,
   playEmergencySosChime,
   dispatchBrowserSosNotification,
+  shareOrCopyEmergencyText,
 } from './utils/sosAlertEngine';
+import { isPhoneMaskedOrInvalid } from './utils/donorMatcher';
 import {
   auth,
   onAuthStateChanged,
@@ -46,14 +48,12 @@ import {
   subscribePublicRequests,
   subscribeCommunityMessages,
   createBloodRequestInFirestore,
-  pledgeBloodRequestUnitInFirestore,
+  submitVolunteerResponseInFirestore,
+  adminDeleteRequestInFirestore,
   subscribeIncomingAlertsForDonor,
   respondToRequestAlertInFirestore,
   updateBloodRequestTrackingInFirestore,
-  signInWithGoogleReal,
   signOutReal,
-  getTokenServiceAlert,
-  dismissTokenServiceAlert,
   subscribeActiveAnnouncements,
   isBootstrappedAdminUser,
   ownerPurgeFakeCloudRecordsOnlyInFirestore,
@@ -61,7 +61,6 @@ import {
   maskPhoneNumber,
   DEFAULT_AVATAR_DATA_URI,
   OwnerAnnouncementItem,
-  TokenServiceAlertInfo,
   User as FirebaseUser,
 } from './firebase';
 import { useBrandConfig } from './config/brandConfig';
@@ -305,9 +304,6 @@ export default function App() {
   }, []);
 
   const [liveFirebaseUser, setLiveFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [tokenServiceAlert, setTokenServiceAlert] = useState<TokenServiceAlertInfo | null>(() =>
-    getTokenServiceAlert()
-  );
   const [incomingDonorAlerts, setIncomingDonorAlerts] = useState<RequestAlertItem[]>([]);
   const [unsuccessfulDonorIds, setUnsuccessfulDonorIds] = useState<string[]>([]);
   const [confirmedDonorId, setConfirmedDonorId] = useState<string | null>(null);
@@ -371,11 +367,6 @@ export default function App() {
 
   // Real Firebase Auth & Cloud Firestore Live Listeners
   useEffect(() => {
-    const syncTokenAlert = () => {
-      setTokenServiceAlert(getTokenServiceAlert());
-    };
-    window.addEventListener('bloodsearch_token_service_alert', syncTokenAlert);
-
     completeRealGmailSignInIfPresent().catch(() => {});
 
     let unsubProfile: (() => void) | null = null;
@@ -511,10 +502,31 @@ export default function App() {
         const prevCloudIds = cloudRequestIdsRef.current;
         cloudRequestIdsRef.current = nextCloudIds;
         setRequests((prev) => {
+          const prevById = new Map(prev.map((p) => [p.id, p]));
+          const mergedCloud = cloudReqs.map((cr) => {
+            const existing = prevById.get(cr.id);
+            const hasCloudValidPhone = !isPhoneMaskedOrInvalid(cr.contactPhone);
+            const hasExistingValidPhone =
+              existing && !isPhoneMaskedOrInvalid(existing.contactPhone);
+            return {
+              ...cr,
+              contactPhone: hasCloudValidPhone
+                ? cr.contactPhone
+                : hasExistingValidPhone
+                  ? existing.contactPhone
+                  : cr.contactPhone,
+              contactName:
+                cr.contactName && cr.contactName !== cr.patientName
+                  ? cr.contactName
+                  : existing?.contactName || cr.contactName,
+              responders:
+                cr.responders.length > 0 ? cr.responders : existing?.responders || [],
+            };
+          });
           const realLocalOnly = prev.filter(
             (p) => !isSeedRequestId(p.id) && !nextCloudIds.has(p.id) && !prevCloudIds.has(p.id)
           );
-          return evictSeedsProgressively([...cloudReqs, ...realLocalOnly], INITIAL_REQUESTS);
+          return evictSeedsProgressively([...mergedCloud, ...realLocalOnly], INITIAL_REQUESTS);
         });
       });
       unsubAnnouncements = subscribeActiveAnnouncements(setActiveAnnouncements);
@@ -563,7 +575,6 @@ export default function App() {
     window.addEventListener('bloodsearch_real_mode_changed', syncRealOnlyMode);
 
     return () => {
-      window.removeEventListener('bloodsearch_token_service_alert', syncTokenAlert);
       window.removeEventListener('bloodsearch_real_mode_changed', syncRealOnlyMode);
       unsubAuth();
       if (unsubProfile) unsubProfile();
@@ -771,66 +782,141 @@ export default function App() {
 
   // Volunteer Response to SOS
   const handleRespondToRequest = useCallback(
-    (
+    async (
       requestId: string,
       responderName: string,
       responderPhone: string,
       group: BloodGroup,
       note?: string
-    ) => {
+    ): Promise<{ ok: boolean; reason?: string }> => {
+      const res = await submitVolunteerResponseInFirestore({
+        requestId,
+        responderName,
+        responderPhone,
+        bloodGroup: group,
+        note,
+      });
+
+      if (!res.ok && res.reason !== 'LOCAL_ONLY_REQUEST') {
+        return res;
+      }
+
       setRequests((prev) =>
         prev.map((r) => {
           if (r.id === requestId) {
+            const uid = auth.currentUser?.uid;
+            if (uid && r.responders.some((resp) => resp.responderUid === uid)) {
+              return r;
+            }
             const newResponder = {
-              id: `resp-${Date.now()}`,
+              id: uid ? `${requestId}__${uid}` : `resp-${Date.now()}`,
+              responderUid: uid,
               name: responderName,
               phone: responderPhone,
               bloodGroup: group,
-              timestamp: lang === 'bn' ? 'এইমাত্র' : 'Just now',
+              timestamp: new Date().toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
               notes: note,
             };
+            const nextUnits = Math.min(r.unitsNeeded, r.unitsCollected + 1);
             return {
               ...r,
-              unitsCollected: Math.min(r.unitsNeeded, r.unitsCollected + 1),
-              status: r.unitsCollected + 1 >= r.unitsNeeded ? 'FULFILLED' : r.status,
-              responders: [newResponder, ...r.responders],
+              unitsCollected: nextUnits,
+              respondedCount: Math.max((r.respondedCount || 0) + 1, r.responders.length + 1),
+              status: nextUnits >= r.unitsNeeded ? 'FULFILLED' : r.status,
+              responders: [...r.responders, newResponder],
             };
           }
           return r;
         })
       );
 
-      pledgeBloodRequestUnitInFirestore(requestId).catch(() => {});
       addAuditLog(
         'RESPOND_SOS',
         `Volunteer ${responderName} (${group}) responded to request ${requestId}`
       );
+      return { ok: true };
     },
-    [lang, addAuditLog]
+    [addAuditLog]
   );
 
-  // Direct Quick-Share from Home Request Cards
-  const handleQuickShareRequest = useCallback(
+  const handleDeleteRequest = useCallback(async (reqId: string): Promise<boolean> => {
+    setRequests((prev) => prev.filter((r) => r.id !== reqId));
+    try {
+      await adminDeleteRequestInFirestore(reqId);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleStartChatWithRequester = useCallback(
     (req: BloodRequest) => {
-      const shareText = `🚨 জরুরি রক্তের আবেদন! ${req.bloodGroup} রক্ত প্রয়োজন (${Math.max(
-        1,
-        req.unitsNeeded - req.unitsCollected
-      )} ব্যাগ) — ${req.hospitalName}, ${req.district}। রোগী: ${req.patientName}। যোগাযোগ: ${req.contactPhone}`;
-      if (navigator.share) {
-        navigator
-          .share({ title: `${brand.brandName} SOS`, text: shareText, url: window.location.href })
-          .catch(() => {});
-      } else if (navigator.clipboard) {
-        navigator.clipboard.writeText(shareText).catch(() => {});
-        setAppShareToast(
-          lang === 'bn'
-            ? `✓ ${req.bloodGroup} জরুরি রক্তের আবেদনের তথ্য কপি হয়েছে — এখন যেকোনো গ্রুপে পেস্ট করুন!`
-            : `✓ ${req.bloodGroup} SOS details copied to clipboard!`
-        );
-        window.setTimeout(() => setAppShareToast(null), 3200);
+      if (!req.authorUid) {
+        handleSelectTab('chat');
+        return;
       }
+      const peerObj: Donor = {
+        id: req.authorUid,
+        name: req.contactName || req.patientName,
+        bloodGroup: req.bloodGroup,
+        division: req.division || 'dhaka',
+        district: req.district || 'dhaka',
+        upazila: req.upazila || 'dhanmondi',
+        phone: !isPhoneMaskedOrInvalid(req.contactPhone) ? req.contactPhone : '017****00',
+        whatsappPhone: !isPhoneMaskedOrInvalid(req.contactPhone) ? req.contactPhone : undefined,
+        available: true,
+        lastDonatedDate: '',
+        totalDonations: 0,
+        verifiedBadge: true,
+        rating: 5,
+        reviewsCount: 0,
+        age: req.patientAge || 28,
+        gender: 'MALE',
+        weightKg: 60,
+        hospitalAffiliation: req.hospitalName,
+      };
+      setActiveDonorForChat(peerObj);
+      handleSelectTab('chat');
     },
-    [lang]
+    [handleSelectTab]
+  );
+
+  // Direct Quick-Share from Home Request Cards (Iframe-Safe)
+  const handleQuickShareRequest = useCallback(
+    async (req: BloodRequest) => {
+      const contactStr = !isPhoneMaskedOrInvalid(req.contactPhone)
+        ? req.contactPhone
+        : req.hospitalName;
+      const shareText =
+        lang === 'bn'
+          ? `জরুরি রক্তের আবেদন (${req.bloodGroup}) — ${Math.max(
+              1,
+              req.unitsNeeded - req.unitsCollected
+            )} ব্যাগ প্রয়োজন।\nহাসপাতাল: ${req.hospitalName}, ${req.district}\nরোগী: ${req.patientName}\nযোগাযোগ: ${contactStr}`
+          : `Urgent ${req.bloodGroup} Blood Needed (${Math.max(
+              1,
+              req.unitsNeeded - req.unitsCollected
+            )} bag(s))\nHospital: ${req.hospitalName}, ${req.district}\nPatient: ${req.patientName}\nContact: ${contactStr}`;
+      const outcome = await shareOrCopyEmergencyText({
+        title: `${brand.brandName} SOS`,
+        text: shareText,
+        url: window.location.origin,
+      });
+      setAppShareToast(
+        outcome === 'SHARED'
+          ? lang === 'bn'
+            ? `✓ ${req.bloodGroup} জরুরি আবেদন শেয়ার করা হয়েছে!`
+            : `✓ ${req.bloodGroup} emergency request shared!`
+          : lang === 'bn'
+            ? `✓ ${req.bloodGroup} জরুরি আবেদনের সম্পূর্ণ তথ্য কপি হয়েছে — এখন WhatsApp/Facebook-এ পেস্ট করুন!`
+            : `✓ ${req.bloodGroup} emergency details copied to clipboard!`
+      );
+      window.setTimeout(() => setAppShareToast(null), 3200);
+    },
+    [brand.brandName, lang]
   );
 
   // Direct Quick-Donate from Home Request Cards -> Opens that exact patient's Respond Modal
@@ -925,77 +1011,6 @@ export default function App() {
           {appShareToast && (
             <div className="mb-3 p-3 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-sm text-left">
               {appShareToast}
-            </div>
-          )}
-
-          {/* Actionable Session Renew / GCP Token Service API Enable Card */}
-          {tokenServiceAlert?.active && (
-            <div className="mb-3.5 p-3.5 sm:p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/80 shadow-xs text-left">
-              <div className="flex items-start justify-between gap-2">
-                <div className="space-y-1">
-                  <div className="text-xs sm:text-sm font-black text-amber-950 dark:text-amber-200">
-                    {lang === 'bn'
-                      ? 'লগইন সেশন নবায়ন ও Google Cloud Token Service API নোটিশ'
-                      : 'Session Renewal & Google Cloud Token Service API Notice'}
-                  </div>
-                  <p className="text-[11px] sm:text-xs text-amber-900/90 dark:text-amber-200/90 leading-relaxed">
-                    {lang === 'bn'
-                      ? `আপনার পূর্ববর্তী লগইন সেশনের (${
-                          tokenServiceAlert.expiredEmail || 'Google Account'
-                        }) মেয়াদ শেষ হয়েছে। স্থায়ী অটো-লগইন চালু রাখতে নিচের নীল বাটনে ট্যাপ করে Google Cloud-এ "Token Service API" Enable করুন, অথবা এখনই ১-ক্লিকে পুনরায় লগইন করুন।`
-                      : `Your previous session (${
-                          tokenServiceAlert.expiredEmail || 'Google Account'
-                        }) expired because Token Service API (securetoken.googleapis.com) is disabled in your GCP project. Click Enable once for automatic token refresh, or re-login below.`}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => dismissTokenServiceAlert()}
-                  className="min-h-[32px] min-w-[32px] rounded-lg text-amber-800 dark:text-amber-300 hover:bg-amber-200/60 dark:hover:bg-amber-900/50 text-xs font-bold cursor-pointer shrink-0"
-                  aria-label="Dismiss"
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    signInWithGoogleReal(tokenServiceAlert.expiredEmail)
-                      .then(async (u) => {
-                        setLiveFirebaseUser(u);
-                        try {
-                          const profile = await fetchUserProfileFromFirestore(u.uid);
-                          const isAdmin = await checkIsVerifiedAdminInFirestore(u);
-                          if (profile) {
-                            if (isAdmin) profile.role = 'ADMIN';
-                            localStorage.setItem(
-                              'bloodsearch_current_user',
-                              JSON.stringify(profile)
-                            );
-                            window.dispatchEvent(new Event('bloodsearch_user_changed'));
-                          }
-                        } catch {}
-                      })
-                      .catch(() => {
-                        setIsAuthModalOpen(true);
-                      });
-                  }}
-                  className="min-h-[38px] px-3.5 py-2 rounded-xl btn-obsidian font-bold text-xs cursor-pointer whitespace-nowrap"
-                >
-                  {lang === 'bn' ? '✓ ১-ক্লিকে পুনরায় Google লগইন' : '✓ 1-Click Google Re-Login'}
-                </button>
-                <a
-                  href={tokenServiceAlert.enableApiUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-h-[38px] inline-flex items-center px-3.5 py-2 rounded-xl btn-emerald font-bold text-xs whitespace-nowrap"
-                >
-                  {lang === 'bn'
-                    ? 'Google Cloud → Token Service API অন করুন ↗'
-                    : 'Enable Token Service API in GCP ↗'}
-                </a>
-              </div>
             </div>
           )}
 
@@ -1206,6 +1221,9 @@ export default function App() {
               lang={lang}
               onOpenSOSModal={() => openSOSWithContext()}
               onRespondToRequest={handleRespondToRequest}
+              onDeleteRequest={handleDeleteRequest}
+              onOpenAuthModal={() => setIsAuthModalOpen(true)}
+              onStartChatWithRequester={handleStartChatWithRequester}
               onRevealPhone={handleRevealPhone}
               onUpdateRequestLocal={handleUpdateRequestLocal}
               initialRespondRequest={pendingRespondRequest}

@@ -35,7 +35,6 @@ import {
   VolumeX,
   User as UserIcon,
 } from 'lucide-react';
-import { CURRENT_APP_VERSION } from '../../utils/appUpdateManager';
 
 interface MobileAppHeaderProps {
   activeTab: ActiveTab;
@@ -407,10 +406,8 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
           <div className="max-w-6xl mx-auto px-3.5 sm:px-6 py-4 space-y-3">
             {/* Quick Preferences Bar (Language, Theme, Large Text, Update Check) */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <span className="text-xs font-bold text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                {lang === 'bn'
-                  ? `দ্রুত সেটিংস · ভার্সন v${CURRENT_APP_VERSION}`
-                  : `Quick Settings · v${CURRENT_APP_VERSION}`}
+              <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                {lang === 'bn' ? 'দ্রুত সেটিংস' : 'Quick Settings'}
               </span>
               <div className="flex items-center gap-2 flex-wrap">
                 <button
@@ -571,7 +568,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                 </button>
               )}
 
-              {onOpenPlayStoreModal && (
+              {isAdminUnlocked && onOpenPlayStoreModal && (
                 <button
                   type="button"
                   onClick={() => {
@@ -587,7 +584,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                 </button>
               )}
 
-              {onOpenCommercialModal && (
+              {isAdminUnlocked && onOpenCommercialModal && (
                 <button
                   type="button"
                   onClick={() => {
@@ -603,19 +600,21 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => {
-                  onOpenSlideDeck();
-                  setMenuOpen(false);
-                }}
-                className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
-              >
-                <Layers className="w-4 h-4 text-slate-500 shrink-0" />
-                <span className="truncate">
-                  {lang === 'bn' ? 'প্রজেক্ট ওভারভিউ ও আর্কিটেকচার' : 'Overview & Architecture'}
-                </span>
-              </button>
+              {isAdminUnlocked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenSlideDeck();
+                    setMenuOpen(false);
+                  }}
+                  className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
+                >
+                  <Layers className="w-4 h-4 text-slate-500 shrink-0" />
+                  <span className="truncate">
+                    {lang === 'bn' ? 'প্রজেক্ট ওভারভিউ ও আর্কিটেকচার' : 'Overview & Architecture'}
+                  </span>
+                </button>
+              )}
 
               {liveUserLabel && onSignOut && (
                 <button

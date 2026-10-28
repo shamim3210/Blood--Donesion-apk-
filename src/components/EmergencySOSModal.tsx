@@ -3,6 +3,11 @@ import { BloodGroup, UrgencyLevel, BloodRequest, Language } from '../types';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { DIVISIONS, DISTRICTS } from '../data/bangladeshGeo';
 import { getTranslation } from '../utils/translations';
+import {
+  isValidBangladeshMobilePhone,
+  normalizeValidBangladeshMobileE164,
+} from '../utils/donorMatcher';
+import { copyTextReliable } from '../utils/sosAlertEngine';
 import { 
   Flame, 
   X, 
@@ -49,6 +54,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
   const [reason, setReason] = useState('');
   const [submittedRequest, setSubmittedRequest] = useState<BloodRequest | null>(null);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -74,47 +80,63 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!patientName || !hospitalName || !contactPhone) return;
+    setFormError(null);
+    if (!patientName.trim() || !hospitalName.trim() || !contactPhone.trim()) return;
 
+    const normalizedPhone = normalizeValidBangladeshMobileE164(contactPhone);
+    if (!normalizedPhone || !isValidBangladeshMobilePhone(contactPhone)) {
+      setFormError(
+        lang === 'bn'
+          ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
+      );
+      return;
+    }
+
+    const nowMs = Date.now();
     const newReq: BloodRequest = {
-      id: `sos-${Date.now()}`,
-      patientName,
+      id: `sos_${nowMs}`,
+      patientName: patientName.trim(),
       patientAge: Number(patientAge) || 30,
       bloodGroup,
       unitsNeeded: Number(unitsNeeded) || 1,
       unitsCollected: 0,
-      hospitalName,
+      hospitalName: hospitalName.trim(),
       division,
       district,
       upazila,
       urgency,
-      contactName: contactName || patientName,
-      contactPhone,
+      contactName: contactName.trim() || patientName.trim(),
+      contactPhone: normalizedPhone,
       requiredDate,
-      reason: reason || 'জরুরি রক্তের আবেদন',
+      reason: reason.trim() || 'জরুরি রক্তের আবেদন',
       responders: [],
       createdAt: lang === 'bn' ? 'এইমাত্র' : 'Just now',
+      createdAtMs: nowMs,
       status: 'ACTIVE',
     };
 
     onSubmitSOS(newReq);
     onLogAudit(
       'CREATE_SOS',
-      `Created SOS request for ${bloodGroup} blood at ${hospitalName} (${unitsNeeded} units)`
+      `Created SOS request for ${bloodGroup} blood at ${hospitalName.trim()} (${unitsNeeded} units)`
     );
     setSubmittedRequest(newReq);
   };
 
-  const handleCopyLink = () => {
+  const handleCopyLink = async () => {
     if (!submittedRequest) return;
-    const shareText = `🚨 *BloodSearch জরুরি রক্তের আবেদন (Emergency Blood Request)* 🚨\n\n🩸 রক্তের গ্রুপ: *${submittedRequest.bloodGroup}*\n🏥 হাসপাতাল: *${submittedRequest.hospitalName}*\n📍 এলাকা: *${submittedRequest.district}*\n📦 পরিমাণ: *${submittedRequest.unitsNeeded} ব্যাগ*\n📞 যোগাযোগ: *${submittedRequest.contactPhone}*\n\nজরুরি সাড়া দিতে অ্যাপ ভিজিট করুন: ${window.location.origin}`;
-    navigator.clipboard.writeText(shareText);
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 2500);
+    const shareText = `জরুরি রক্তের আবেদন (Emergency Blood Request)\nরক্তের গ্রুপ: ${submittedRequest.bloodGroup}\nহাসপাতাল: ${submittedRequest.hospitalName}\nএলাকা: ${submittedRequest.district}\nপরিমাণ: ${submittedRequest.unitsNeeded} ব্যাগ\nযোগাযোগ: ${submittedRequest.contactPhone}\nলিঙ্ক: ${window.location.origin}`;
+    const ok = await copyTextReliable(shareText);
+    if (ok) {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2500);
+    }
   };
 
   const handleResetAndClose = () => {
     setSubmittedRequest(null);
+    setFormError(null);
     setPatientName('');
     setHospitalName('');
     setContactPhone('');
@@ -128,8 +150,8 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
         {/* Header */}
         <div className="flex items-start justify-between pb-4 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-rose-600 flex items-center justify-center text-white shadow-md shadow-rose-600/30">
-              <Flame className="w-5 h-5 animate-pulse" />
+            <div className="w-10 h-10 rounded-xl bg-rose-600 flex items-center justify-center text-white shadow-sm">
+              <Flame className="w-5 h-5" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900 dark:text-white">
@@ -410,13 +432,19 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
               />
             </div>
 
+            {formError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-300">
+                {formError}
+              </div>
+            )}
+
             {/* Submit Action */}
             <div className="pt-2">
               <button
                 type="submit"
-                className="w-full min-h-[46px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-lg shadow-rose-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-98"
+                className="w-full min-h-[46px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
               >
-                <Send className="w-4 h-4" />
+                <Send className="w-4 h-4 shrink-0" />
                 <span>{t.submitSos}</span>
               </button>
             </div>

@@ -31,6 +31,7 @@ export type PortalMode = 'showcase' | 'donor_app' | 'command_center' | 'blood_ba
 
 export interface Responder {
   id: string;
+  responderUid?: string;
   name: string;
   phone: string;
   bloodGroup: BloodGroup;

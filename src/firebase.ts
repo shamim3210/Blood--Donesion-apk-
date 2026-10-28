@@ -14,6 +14,7 @@ import {
   onAuthStateChanged as firebaseOnAuthStateChanged,
   RecaptchaVerifier,
   signInWithPhoneNumber,
+  linkWithPhoneNumber,
   ConfirmationResult,
   sendSignInLinkToEmail,
   isSignInWithEmailLink,
@@ -52,9 +53,13 @@ import {
   RequestAlertItem,
   RequestLifecycleState,
   RequiredTimeWindow,
+  Responder,
   UserAccount,
 } from './types';
-import { deriveRequestLifecycleState } from './utils/donorMatcher';
+import {
+  deriveRequestLifecycleState,
+  normalizeValidBangladeshMobileE164,
+} from './utils/donorMatcher';
 import { isFakeIdentifier, isFakePersonName } from './data/mockDonors';
 
 // ============================================================================
@@ -809,11 +814,11 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code: 'auth/token-service-disabled',
       messageBn:
-        'আপনার Google Cloud প্রজেক্টে (194868852449) "Token Service API (securetoken.googleapis.com)" এখনো চালু (Enable) করা হয়নি। নিচের নীল বাটনে ক্লিক করে ১ ক্লিকে "Enable" চাপুন, অথবা এখনই সরাসরি Google বাটনে ট্যাপ করে নতুন সেশন শুরু করুন!',
+        'আপনার পূর্ববর্তী সেশনের মেয়াদ শেষ হয়েছে। অনুগ্রহ করে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনে ট্যাপ করে পুনরায় যুক্ত হোন।',
       messageEn:
-        'Token Service API (securetoken.googleapis.com) is currently disabled in your Google Cloud project (194868852449). Click Enable below so sessions auto-refresh seamlessly.',
-      needsConsoleProviderEnable: true,
-      consoleUrl: GCP_TOKEN_SERVICE_API_URL,
+        'Your session has expired. Please tap "Continue with Google" above to sign in again.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
 
@@ -826,85 +831,128 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code,
       messageBn:
-        'আপনার Firebase প্রজেক্টে (fifth-receiver-v5v9p) বর্তমানে শুধু "Google Direct Sign-In" চালু আছে — কিন্তু "Phone SMS" এবং "Email/Password" অপশনটি Firebase Console থেকে এখনো অন (Enable) করা হয়নি! নিচের নীল বাটনে ক্লিক করে Firebase Console থেকে অন করুন, অথবা উপরের "Google / Gmail দিয়ে ১-ক্লিকে সরাসরি লগইন" বাটনটি চাপুন (এটি এখনই ১০০% কাজ করবে)!',
+        'এই মুহূর্তে এই পদ্ধতিটি সাময়িক বন্ধ আছে। অনুগ্রহ করে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনে ট্যাপ করে সাথে সাথে লগইন করুন।',
       messageEn:
-        'Phone SMS / Email-Password is currently disabled in your Firebase Console (fifth-receiver-v5v9p). Enable it via the Console button below, or use 1-Click Direct Google Sign-In above right now!',
-      needsConsoleProviderEnable: true,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+        'This sign-in method is currently unavailable. Please use "Continue with Google" above for instant access.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
+
   if (
     code === 'auth/billing-not-enabled' ||
     code === 'auth/quota-exceeded' ||
-    rawMsg.includes('BILLING_NOT_ENABLED')
+    rawMsg.includes('BILLING_NOT_ENABLED') ||
+    rawMsg.includes('QUOTA_EXCEEDED') ||
+    rawMsg.includes('SMS unable to be sent until this region enabled') ||
+    rawMsg.includes('REGION_NOT_ENABLED') ||
+    code === 'auth/unsupported-first-factor'
   ) {
     return {
       code,
       messageBn:
-        'গুগলের নিয়ম অনুযায়ী বাংলাদেশের গ্রামীণফোন/রবি/বাংলালিংক সিমে সরাসরি অটো SMS পাঠাতে Firebase প্রজেক্টে Blaze Plan চালু থাকতে হয়। তবে একদম ফ্রিতে (০ টাকায়) টেস্ট করতে চাইলে Firebase Console -> Authentication -> Sign-in method -> Phone -> "Phone numbers for testing"-এ আপনার নম্বর (+8801...) ও ৬-ডিজিট কোড যোগ করুন, অথবা উপরের "Google / Gmail ১-ক্লিক লগইন" ব্যবহার করুন!',
+        'এই মুহূর্তে মোবাইল এসএমএস সার্ভিস ব্যস্ত আছে। কোনো অপেক্ষা ছাড়াই লগইন করতে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনটি ব্যবহার করুন।',
       messageEn:
-        'Real carrier SMS requires Firebase Blaze billing, OR add your SIM number for FREE under "Phone numbers for testing" in Firebase Console -> Phone.',
-      needsConsoleProviderEnable: true,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+        'SMS delivery is temporarily unavailable right now. Please tap "Continue with Google" above to sign in immediately.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
+
+  if (
+    code === 'auth/captcha-check-failed' ||
+    code === 'auth/invalid-app-credential' ||
+    code === 'auth/missing-app-credential' ||
+    code === 'auth/missing-client-identifier' ||
+    rawMsg.includes('CAPTCHA_CHECK_FAILED') ||
+    rawMsg.includes('INVALID_APP_CREDENTIAL')
+  ) {
+    return {
+      code: 'auth/captcha-check-failed',
+      messageBn:
+        'নিরাপত্তা যাচাই সম্পন্ন হয়নি। আবার চেষ্টা করুন অথবা সরাসরি "Google দিয়ে ১-ক্লিকে লগইন করুন" ব্যবহার করুন।',
+      messageEn:
+        'Security verification did not complete. Please try again or use "Continue with Google" above.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
+    };
+  }
+
+  if (code === 'auth/too-many-requests' || rawMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
+    return {
+      code,
+      messageBn:
+        'অল্প সময়ে একাধিকবার চেষ্টা করা হয়েছে। কিছুক্ষণ পর আবার চেষ্টা করুন অথবা সরাসরি Google দিয়ে লগইন করুন।',
+      messageEn:
+        'Too many attempts in a short time. Please wait a moment or sign in with Google above.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
+    };
+  }
+
   if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
     return {
       code,
       messageBn:
-        'আপনার ব্রাউজার Google লগইন পপ-আপ উইন্ডোটি ব্লক করেছে! ব্রাউজারের অ্যাড্রেস বারের ডানদিকে "Popup Blocked" আইকনে ক্লিক করে "Always allow popups" অন করে আবার বাটনে চাপুন।',
+        'আপনার ব্রাউজারে পপ-আপ ব্লক করা আছে। ব্রাউজারে পপ-আপ অনুমতি দিয়ে আবার লগইন বাটনে ট্যাপ করুন।',
       messageEn:
-        'Browser blocked the Google sign-in popup! Please allow popups for this site in your browser address bar and click again.',
+        'Your browser blocked the sign-in window. Please allow popups for this site and tap again.',
       needsConsoleProviderEnable: false,
       isPopupBlocked: true,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   if (code === 'auth/unauthorized-domain') {
     return {
       code,
-      messageBn: `এই ডোমেইনটি (${window.location.hostname}) এখনো Firebase Authorized Domains তালিকায় যুক্ত নেই। নিচের লিংকে গিয়ে ডোমেইনটি যোগ করুন।`,
-      messageEn: `Domain (${window.location.hostname}) is not in Firebase Authorized Domains.`,
-      needsConsoleProviderEnable: true,
-      consoleUrl: FIREBASE_SETTINGS_URL,
+      messageBn: 'এই ঠিকানা থেকে লগইন সাময়িক সীমাবদ্ধ রয়েছে। অনুগ্রহ করে কিছুক্ষণ পর চেষ্টা করুন।',
+      messageEn: 'Sign-in from this domain is temporarily restricted.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
+
   if (code === 'auth/popup-closed-by-user') {
     return {
       code,
-      messageBn: 'গুগল লগইন পপ-আপটি সম্পূর্ণ হওয়ার আগেই বন্ধ হয়ে গেছে। আবার ক্লিক করে আপনার Gmail অ্যাকাউন্টটির ওপর ট্যাপ করুন।',
-      messageEn: 'Google sign-in popup was closed before selecting an account. Please try again.',
+      messageBn: 'লগইন সম্পন্ন হওয়ার আগেই উইন্ডোটি বন্ধ হয়ে গেছে। আবার ট্যাপ করে আপনার অ্যাকাউন্ট নির্বাচন করুন।',
+      messageEn: 'Sign-in window was closed before selecting an account. Please tap again.',
       needsConsoleProviderEnable: false,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   if (code === 'auth/invalid-phone-number') {
     return {
       code,
-      messageBn: 'মোবাইল নম্বরটির ফরম্যাট সঠিক নয়। সঠিক ১১ সংখ্যার নম্বর দিন (যেমন: 01712345678)।',
-      messageEn: 'Invalid phone number format. Enter an 11-digit number like 01712345678.',
+      messageBn: 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678)।',
+      messageEn: 'Please enter a valid 11-digit mobile number (e.g. 01712345678).',
       needsConsoleProviderEnable: false,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   if (code === 'auth/invalid-verification-code') {
     return {
       code,
-      messageBn: 'ওটিপি (OTP) কোডটি মেলেনি! সঠিক ৬-সংখ্যার কোডটি লিখুন।',
-      messageEn: 'Invalid verification code. Please enter the exact 6-digit SMS code.',
+      messageBn: 'ওটিপি কোডটি সঠিক নয়। অনুগ্রহ করে ৬-সংখ্যার কোডটি মিলিয়ে আবার লিখুন।',
+      messageEn: 'Incorrect verification code. Please check the 6-digit SMS code and try again.',
       needsConsoleProviderEnable: false,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   if (code === 'auth/code-expired') {
     return {
       code,
-      messageBn: 'ওটিপি (OTP) কোডের মেয়াদ শেষ হয়ে গেছে। অনুগ্রহ করে পুনরায় কোড পাঠান।',
+      messageBn: 'কোডটির মেয়াদ শেষ হয়ে গেছে। অনুগ্রহ করে নতুন কোড পাঠান।',
       messageEn: 'Verification code expired. Please request a new code.',
       needsConsoleProviderEnable: false,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   if (
     code === 'auth/invalid-credential' ||
     code === 'auth/wrong-password' ||
@@ -913,27 +961,30 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code,
       messageBn:
-        'ইমেইল বা পাসওয়ার্ড সঠিক নয়, অথবা এখনো পাসওয়ার্ড অ্যাকাউন্ট খোলা হয়নি। সরাসরি লগইনের জন্য উপরের "Google / Gmail দিয়ে ১-ক্লিকে লগইন" বাটনটি ব্যবহার করুন!',
-      messageEn: 'Invalid email or password. Use 1-Click Google Sign-In above or Register mode.',
+        'ইমেইল বা পাসওয়ার্ড মেলেনি। সহজে লগইন করতে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনটি ব্যবহার করুন।',
+      messageEn:
+        'Incorrect email or password. Use "Continue with Google" above for 1-click sign-in.',
       needsConsoleProviderEnable: false,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   if (code === 'auth/email-already-in-use') {
     return {
       code,
-      messageBn: 'এই Gmail দিয়ে আগেই অ্যাকাউন্ট খোলা আছে! লগইন মোডে যান অথবা সরাসরি Google বাটনে ক্লিক করুন।',
-      messageEn: 'This Gmail is already registered. Sign in directly or use Google Sign-In.',
+      messageBn: 'এই ইমেইল দিয়ে আগেই অ্যাকাউন্ট খোলা আছে। সরাসরি লগইন করুন অথবা Google বাটন ব্যবহার করুন।',
+      messageEn: 'This email is already registered. Sign in or continue with Google above.',
       needsConsoleProviderEnable: false,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+      consoleUrl: '',
     };
   }
+
   return {
     code,
-    messageBn: `অথেনটিকেশন ত্রুটি (${code}): ${error?.message || 'আবার চেষ্টা করুন।'}`,
-    messageEn: `Authentication error (${code}): ${error?.message || 'Please try again.'}`,
+    messageBn: 'লগইন সম্পন্ন করা যায়নি। অনুগ্রহ করে ইন্টারনেট সংযোগ চেক করে আবার চেষ্টা করুন।',
+    messageEn: 'Could not complete sign-in. Please check your connection and try again.',
     needsConsoleProviderEnable: false,
-    consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+    consoleUrl: '',
   };
 }
 
@@ -1027,31 +1078,101 @@ export function clearPhoneRecaptchaVerifier(recaptchaContainerId?: string): void
   }
 }
 
+export interface SendPhoneOtpOptions {
+  forceVisibleRecaptcha?: boolean;
+  onRecaptchaChallengeShown?: () => void;
+  onRecaptchaSolved?: () => void;
+}
+
+async function dispatchPhoneOtpWithVerifier(
+  formattedPhone: string,
+  verifier: RecaptchaVerifier
+): Promise<ConfirmationResult> {
+  // If user is already signed in with Google/Email without a linked phone, try linking first
+  // so they don't lose their existing Google/Admin session; fall back to signInWithPhoneNumber
+  // if this phone number is already linked to an existing account.
+  const current = auth.currentUser;
+  if (current && !current.phoneNumber) {
+    try {
+      return await linkWithPhoneNumber(current, formattedPhone, verifier);
+    } catch (linkErr: any) {
+      const code = String(linkErr?.code || '');
+      if (
+        code === 'auth/credential-already-in-use' ||
+        code === 'auth/provider-already-linked' ||
+        code === 'auth/account-exists-with-different-credential'
+      ) {
+        return await signInWithPhoneNumber(auth, formattedPhone, verifier);
+      }
+      throw linkErr;
+    }
+  }
+  return await signInWithPhoneNumber(auth, formattedPhone, verifier);
+}
+
 export async function sendRealPhoneSmsOtp(
   rawPhone: string,
-  recaptchaContainerId: string
+  recaptchaContainerId: string,
+  options?: SendPhoneOtpOptions
 ): Promise<ConfirmationResult> {
   const formattedPhone = formatBangladeshE164(rawPhone);
-  clearPhoneRecaptchaVerifier(recaptchaContainerId);
-
-  const host = document.getElementById(recaptchaContainerId);
-  if (!host) {
+  if (!isValidBangladeshMobile(rawPhone)) {
     throw {
-      code: 'auth/internal-error',
-      message: 'reCAPTCHA mount element not found in DOM.',
+      code: 'auth/invalid-phone-number',
+      message: 'Invalid Bangladesh E.164 phone number.',
     };
   }
 
-  // Create a fresh child element every attempt so Google reCAPTCHA never throws "already rendered"
-  const widgetEl = document.createElement('div');
-  host.appendChild(widgetEl);
+  const attemptWithSize = async (sizeMode: 'invisible' | 'normal'): Promise<ConfirmationResult> => {
+    clearPhoneRecaptchaVerifier(recaptchaContainerId);
+    const host = document.getElementById(recaptchaContainerId);
+    if (!host) {
+      throw {
+        code: 'auth/internal-error',
+        message: 'reCAPTCHA mount element not found in DOM.',
+      };
+    }
 
-  activeRecaptchaVerifier = new RecaptchaVerifier(auth, widgetEl, {
-    size: 'normal',
-  });
+    // Fresh child node prevents "reCAPTCHA has already been rendered in this element"
+    const widgetEl = document.createElement('div');
+    host.appendChild(widgetEl);
 
-  await activeRecaptchaVerifier.render();
-  return await signInWithPhoneNumber(auth, formattedPhone, activeRecaptchaVerifier);
+    activeRecaptchaVerifier = new RecaptchaVerifier(auth, widgetEl, {
+      size: sizeMode,
+      callback: () => {
+        options?.onRecaptchaSolved?.();
+      },
+    });
+
+    await activeRecaptchaVerifier.render();
+    if (sizeMode === 'normal') {
+      options?.onRecaptchaChallengeShown?.();
+    }
+    return await dispatchPhoneOtpWithVerifier(formattedPhone, activeRecaptchaVerifier);
+  };
+
+  if (options?.forceVisibleRecaptcha) {
+    return await attemptWithSize('normal');
+  }
+
+  try {
+    // 1st attempt: Invisible reCAPTCHA — sends OTP in 1 click without hanging on a hidden/unclicked checkbox!
+    return await attemptWithSize('invisible');
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    const shouldFallbackToVisibleCheckbox =
+      code === 'auth/captcha-check-failed' ||
+      code === 'auth/missing-client-identifier' ||
+      code === 'auth/internal-error' ||
+      msg.includes('CAPTCHA_CHECK_FAILED') ||
+      msg.includes('Timeout');
+
+    if (shouldFallbackToVisibleCheckbox) {
+      return await attemptWithSize('normal');
+    }
+    throw err;
+  }
 }
 
 export async function signOutReal(): Promise<void> {
@@ -1370,7 +1491,7 @@ export async function ensureUserAutoSyncedInFirestore(
     const safeWa = normalizeAsciiDigits(cachedLocal?.whatsappPhone || safePhone).trim() || safePhone;
     const idCardNumber =
       cachedLocal?.idCardNumber ||
-      (isAdmin ? `ADMIN-BD-${cleanUidSuffix}` : `BD-AUTO-${cleanUidSuffix}`);
+      (isAdmin ? `ADMIN-BD-${cleanUidSuffix}` : `BS-${cleanUidSuffix}`);
     const nowMs = Date.now();
 
     const autoAccount: UserAccount = {
@@ -1834,12 +1955,90 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
   });
 }
 
+const requestDirectContactCache = new Map<
+  string,
+  { contactName: string; contactPhone: string } | null
+>();
+const inFlightRequestContactIds = new Set<string>();
+
+export async function fetchRequestDirectContact(
+  requestId: string
+): Promise<{ contactName: string; contactPhone: string } | null> {
+  if (!requestId || !/^[a-zA-Z0-9_-]{1,80}$/.test(requestId)) return null;
+  if (requestDirectContactCache.has(requestId)) {
+    return requestDirectContactCache.get(requestId) ?? null;
+  }
+  await waitForHealthyAuthBoot();
+  try {
+    const snap = await getDoc(doc(db, 'requestDirectContacts', requestId));
+    if (snap.exists()) {
+      const d = snap.data();
+      const validPhone = normalizeValidBangladeshMobileE164(String(d.contactPhone || ''));
+      if (validPhone && d.shareDirectContact !== false && d.status === 'ACTIVE') {
+        const result = {
+          contactName: String(d.contactName || ''),
+          contactPhone: validPhone,
+        };
+        requestDirectContactCache.set(requestId, result);
+        return result;
+      }
+    }
+    requestDirectContactCache.set(requestId, null);
+    return null;
+  } catch {
+    requestDirectContactCache.set(requestId, null);
+    return null;
+  }
+}
+
 export function subscribePublicRequests(onData: (requests: BloodRequest[]) => void): () => void {
   return attachSnapshotAfterBoot(() => {
     const path = 'requests';
-    const q = query(collection(db, path), where('isPublic', '==', true));
-    return onSnapshot(
-      q,
+    const qReq = query(collection(db, path), where('isPublic', '==', true));
+    const qResp = query(collection(db, 'requestResponses'), where('isPublic', '==', true));
+
+    let latestRawDocs: { req: BloodRequest; sortMs: number }[] = [];
+    let responsesByReq = new Map<string, Responder[]>();
+    let disposed = false;
+
+    const emitMerged = () => {
+      if (disposed) return;
+      const seenActiveSig = new Set<string>();
+      const finalItems: BloodRequest[] = [];
+
+      for (const item of latestRawDocs) {
+        const r = item.req;
+        if (r.status === 'ACTIVE') {
+          const sig = `${r.patientName.trim().toLowerCase()}|${r.hospitalName.trim().toLowerCase()}|${r.bloodGroup}`;
+          if (seenActiveSig.has(sig)) {
+            continue;
+          }
+          seenActiveSig.add(sig);
+        }
+
+        const cachedContact = requestDirectContactCache.get(r.id);
+        const cloudResponders = responsesByReq.get(r.id) || [];
+        const effectiveRespondedCount = Math.max(
+          r.respondedCount || 0,
+          cloudResponders.length
+        );
+
+        const enriched: BloodRequest = {
+          ...r,
+          contactName: cachedContact?.contactName || r.contactName,
+          contactPhone: cachedContact?.contactPhone || r.contactPhone,
+          responders: cloudResponders,
+          respondedCount: effectiveRespondedCount,
+        };
+        enriched.lifecycleState = deriveRequestLifecycleState(enriched);
+        finalItems.push(enriched);
+      }
+
+      onData(finalItems);
+    };
+
+    const unsubReq = onSnapshot(
+      qReq,
       (snapshot) => {
         const mapped = snapshot.docs
           .filter((d) => {
@@ -1848,75 +2047,147 @@ export function subscribePublicRequests(onData: (requests: BloodRequest[]) => vo
           })
           .map((d) => {
             const data = d.data();
-          const createdAtMs =
-            data.createdAt instanceof Timestamp
-              ? data.createdAt.toMillis()
-              : data.updatedAt instanceof Timestamp
-                ? data.updatedAt.toMillis()
-                : 0;
-          const status = (data.status as BloodRequest['status']) || 'ACTIVE';
-          const notifiedCount = Number(data.notifiedCount) || 0;
-          const viewedCount = Number(data.viewedCount) || 0;
-          const respondedCount = Number(data.respondedCount) || 0;
-          const contactAttemptsCount = Number(data.contactAttemptsCount) || 0;
-          const expiresAtMs =
-            typeof data.expiresAtMs === 'number' ? data.expiresAtMs : undefined;
-
-          const baseReq: BloodRequest = {
-            id: d.id,
-            authorUid: typeof data.authorUid === 'string' ? data.authorUid : undefined,
-            patientName: data.patientName,
-            patientAge: Number(data.patientAge) || 25,
-            bloodGroup: data.bloodGroup as BloodGroup,
-            unitsNeeded: Number(data.unitsNeeded) || 1,
-            unitsCollected: Number(data.unitsCollected) || 0,
-            hospitalName: data.hospitalName,
-            division: data.division,
-            district: data.district,
-            upazila: data.upazila,
-            urgency: data.urgency || 'CRITICAL',
-            requiredTimeWindow:
-              (data.requiredTimeWindow as RequiredTimeWindow | undefined) || 'IMMEDIATE_2H',
-            contactName: data.patientName,
-            contactPhone: 'হাসপাতাল জরুরি কাউন্টার',
-            requiredDate: data.requiredDate || 'জরুরি',
-            reason: data.reason || 'জরুরি রক্ত সঞ্চালন',
-            responders: [],
-            createdAt:
+            const createdAtMs =
               data.createdAt instanceof Timestamp
-                ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : 'এইমাত্র',
-            createdAtMs: createdAtMs || undefined,
-            expiresAtMs,
-            status,
-            lifecycleState: data.lifecycleState as RequestLifecycleState | undefined,
-            notifiedCount,
-            viewedCount,
-            respondedCount,
-            contactAttemptsCount,
-            confirmedDonorId:
-              typeof data.confirmedDonorId === 'string' && data.confirmedDonorId
-                ? data.confirmedDonorId
-                : undefined,
-            confirmedDonorName:
-              typeof data.confirmedDonorName === 'string' && data.confirmedDonorName
-                ? data.confirmedDonorName
-                : undefined,
-            escalationLevel: Number(data.escalationLevel) || 0,
-            searchRadiusKm: Number(data.searchRadiusKm) || 10,
-            escalationIntervalMinutes: Number(data.escalationIntervalMinutes) || 10,
-            exchangeAllowed: Boolean(data.exchangeAllowed),
-          };
-          baseReq.lifecycleState = deriveRequestLifecycleState(baseReq);
-          return { req: baseReq, sortMs: createdAtMs };
-        });
+                ? data.createdAt.toMillis()
+                : data.updatedAt instanceof Timestamp
+                  ? data.updatedAt.toMillis()
+                  : 0;
+            const status = (data.status as BloodRequest['status']) || 'ACTIVE';
+            const notifiedCount = Number(data.notifiedCount) || 0;
+            const viewedCount = Number(data.viewedCount) || 0;
+            const respondedCount = Number(data.respondedCount) || 0;
+            const contactAttemptsCount = Number(data.contactAttemptsCount) || 0;
+            const expiresAtMs =
+              typeof data.expiresAtMs === 'number' ? data.expiresAtMs : undefined;
+
+            const baseReq: BloodRequest = {
+              id: d.id,
+              authorUid: typeof data.authorUid === 'string' ? data.authorUid : undefined,
+              patientName: data.patientName,
+              patientAge: Number(data.patientAge) || 25,
+              bloodGroup: data.bloodGroup as BloodGroup,
+              unitsNeeded: Number(data.unitsNeeded) || 1,
+              unitsCollected: Number(data.unitsCollected) || 0,
+              hospitalName: data.hospitalName,
+              division: data.division,
+              district: data.district,
+              upazila: data.upazila,
+              urgency: data.urgency || 'CRITICAL',
+              requiredTimeWindow:
+                (data.requiredTimeWindow as RequiredTimeWindow | undefined) || 'IMMEDIATE_2H',
+              contactName: data.patientName,
+              contactPhone: 'হাসপাতাল জরুরি কাউন্টার',
+              requiredDate: data.requiredDate || 'জরুরি',
+              reason: data.reason || 'জরুরি রক্ত সঞ্চালন',
+              responders: [],
+              createdAt:
+                data.createdAt instanceof Timestamp
+                  ? data.createdAt.toDate().toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : 'সাম্প্রতিক আবেদন',
+              createdAtMs: createdAtMs || undefined,
+              expiresAtMs,
+              status,
+              lifecycleState: data.lifecycleState as RequestLifecycleState | undefined,
+              notifiedCount,
+              viewedCount,
+              respondedCount,
+              contactAttemptsCount,
+              confirmedDonorId:
+                typeof data.confirmedDonorId === 'string' && data.confirmedDonorId
+                  ? data.confirmedDonorId
+                  : undefined,
+              confirmedDonorName:
+                typeof data.confirmedDonorName === 'string' && data.confirmedDonorName
+                  ? data.confirmedDonorName
+                  : undefined,
+              escalationLevel: Number(data.escalationLevel) || 0,
+              searchRadiusKm: Number(data.searchRadiusKm) || 10,
+              escalationIntervalMinutes: Number(data.escalationIntervalMinutes) || 10,
+              exchangeAllowed: Boolean(data.exchangeAllowed),
+            };
+            baseReq.lifecycleState = deriveRequestLifecycleState(baseReq);
+            return { req: baseReq, sortMs: createdAtMs };
+          });
+
         mapped.sort((a, b) => b.sortMs - a.sortMs);
-        onData(mapped.map((m) => m.req));
+        latestRawDocs = mapped;
+        emitMerged();
+
+        // Resolve opted-in hospital callback phones for active requests via single-doc get
+        for (const item of mapped) {
+          const rid = item.req.id;
+          if (
+            item.req.status === 'ACTIVE' &&
+            !requestDirectContactCache.has(rid) &&
+            !inFlightRequestContactIds.has(rid)
+          ) {
+            inFlightRequestContactIds.add(rid);
+            fetchRequestDirectContact(rid)
+              .then((res) => {
+                if (res && !disposed) {
+                  emitMerged();
+                }
+              })
+              .finally(() => {
+                inFlightRequestContactIds.delete(rid);
+              });
+          } else if (item.req.status !== 'ACTIVE') {
+            requestDirectContactCache.set(rid, null);
+          }
+        }
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, path);
       }
     );
+
+    const unsubResp = onSnapshot(
+      qResp,
+      (snap) => {
+        const nextMap = new Map<string, Responder[]>();
+        const sortedDocs = [...snap.docs].sort((a, b) => {
+          const ta = a.data().createdAt instanceof Timestamp ? a.data().createdAt.toMillis() : 0;
+          const tb = b.data().createdAt instanceof Timestamp ? b.data().createdAt.toMillis() : 0;
+          return ta - tb;
+        });
+
+        for (const docSnap of sortedDocs) {
+          const d = docSnap.data();
+          const reqId = String(d.requestId || '');
+          if (!reqId) continue;
+          const tsLabel =
+            d.createdAt instanceof Timestamp
+              ? d.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : 'ভেরিফাইড সাড়া';
+          const list = nextMap.get(reqId) || [];
+          list.push({
+            id: docSnap.id,
+            responderUid: String(d.responderUid || ''),
+            name: String(d.responderName || 'রক্তদাতা'),
+            phone: '',
+            bloodGroup: (d.bloodGroup as BloodGroup) || 'O+',
+            timestamp: tsLabel,
+            notes: d.note ? String(d.note) : undefined,
+          });
+          nextMap.set(reqId, list);
+        }
+        responsesByReq = nextMap;
+        emitMerged();
+      },
+      (err) => {
+        console.warn('Public requestResponses listener warning:', err);
+      }
+    );
+
+    return () => {
+      disposed = true;
+      unsubReq();
+      unsubResp();
+    };
   });
 }
 
@@ -1963,30 +2234,118 @@ export async function createBloodRequestInFirestore(newReq: BloodRequest): Promi
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    // Persist consent-isolated hospital attendant callback phone in /requestDirectContacts/{safeId}
+    const validCallbackE164 = normalizeValidBangladeshMobileE164(newReq.contactPhone);
+    const shouldShareDirect = newReq.seekerSharePhone !== false && Boolean(validCallbackE164);
+    if (validCallbackE164 && shouldShareDirect) {
+      const cleanAttendantName = clampStr(
+        newReq.contactName || newReq.patientName,
+        2,
+        80,
+        'রোগীর স্বজন'
+      );
+      try {
+        await setDoc(doc(db, 'requestDirectContacts', safeId), {
+          requestId: safeId,
+          authorUid: user.uid,
+          contactName: cleanAttendantName,
+          contactPhone: validCallbackE164,
+          shareDirectContact: true,
+          status: 'ACTIVE',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        requestDirectContactCache.set(safeId, {
+          contactName: cleanAttendantName,
+          contactPhone: validCallbackE164,
+        });
+      } catch (contactErr) {
+        console.warn('Could not persist requestDirectContact:', contactErr);
+      }
+    }
+
     return safeId;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
 
-export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<boolean> {
+export async function submitVolunteerResponseInFirestore(params: {
+  requestId: string;
+  responderName: string;
+  responderPhone: string;
+  bloodGroup: BloodGroup;
+  note?: string;
+}): Promise<{
+  ok: boolean;
+  reason?:
+    | 'AUTH_REQUIRED'
+    | 'SELF_PLEDGE'
+    | 'ALREADY_RESPONDED'
+    | 'ALREADY_FULFILLED'
+    | 'LOCAL_ONLY_REQUEST';
+}> {
   const user = await ensureValidAuthSession();
-  if (!user || !isUserVerifiedForWrites(user)) return false;
+  if (!user || !isUserVerifiedForWrites(user)) {
+    return { ok: false, reason: 'AUTH_REQUIRED' };
+  }
   await ensureUserAutoSyncedInFirestore(user).catch(() => null);
-  const safeId = reqId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
-  const path = `requests/${safeId}`;
+
+  const safeId = params.requestId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  const reqRef = doc(db, 'requests', safeId);
+  const reqSnap = await getDoc(reqRef);
+  if (!reqSnap.exists()) {
+    return { ok: false, reason: 'LOCAL_ONLY_REQUEST' };
+  }
+
+  const prev = reqSnap.data();
+  const authorUid = String(prev.authorUid || '');
+  if (authorUid === user.uid) {
+    return { ok: false, reason: 'SELF_PLEDGE' };
+  }
+  if (prev.status !== 'ACTIVE' || prev.unitsCollected >= prev.unitsNeeded) {
+    return { ok: false, reason: 'ALREADY_FULFILLED' };
+  }
+
+  const responseId = `${safeId}__${user.uid}`;
+  const respRef = doc(db, 'requestResponses', responseId);
+  const existingResp = await getDoc(respRef);
+  if (existingResp.exists()) {
+    return { ok: false, reason: 'ALREADY_RESPONDED' };
+  }
+
+  const cleanName = clampStr(
+    params.responderName.trim() || user.displayName || 'রক্তদাতা',
+    2,
+    80,
+    'রক্তদাতা'
+  );
+  const cleanNote = sanitizeSafeText(params.note || '').slice(0, 200);
+
   try {
-    const ref = doc(db, 'requests', safeId);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return false;
-    const prev = snap.data();
-    if (prev.status !== 'ACTIVE' || prev.unitsCollected >= prev.unitsNeeded) return false;
-    const nextCollected = prev.unitsCollected + 1;
-    const nextStatus = nextCollected >= prev.unitsNeeded ? 'FULFILLED' : 'ACTIVE';
-    const nextResponded = clampNum((Number(prev.respondedCount) || 0) + 1, 1, 5000, 1);
-    const nextLifecycle: RequestLifecycleState =
-      nextStatus === 'FULFILLED' ? 'FULFILLED' : 'RESPONSES_RECEIVED';
-    await setDoc(ref, {
+    await setDoc(respRef, {
+      requestId: safeId,
+      authorUid,
+      responderUid: user.uid,
+      responderName: cleanName,
+      bloodGroup: params.bloodGroup,
+      note: cleanNote,
+      isPublic: true,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `requestResponses/${responseId}`);
+  }
+
+  const nextCollected = Math.min(Number(prev.unitsNeeded) || 1, (Number(prev.unitsCollected) || 0) + 1);
+  const nextStatus = nextCollected >= prev.unitsNeeded ? 'FULFILLED' : 'ACTIVE';
+  const nextResponded = clampNum((Number(prev.respondedCount) || 0) + 1, 1, 5000, 1);
+  const nextLifecycle: RequestLifecycleState =
+    nextStatus === 'FULFILLED' ? 'FULFILLED' : 'RESPONSES_RECEIVED';
+
+  try {
+    await setDoc(reqRef, {
       ...prev,
       unitsCollected: nextCollected,
       respondedCount: nextResponded,
@@ -1994,10 +2353,37 @@ export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<
       status: nextStatus,
       updatedAt: serverTimestamp(),
     });
-    return true;
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
+    handleFirestoreError(error, OperationType.UPDATE, `requests/${safeId}`);
   }
+
+  // Privately deliver volunteer's verified callback phone to the patient's family via 1-to-1 Inbox
+  const validPhone = normalizeValidBangladeshMobileE164(params.responderPhone);
+  if (authorUid && authorUid !== user.uid && validPhone) {
+    const privateMsg = `আসসালামু আলাইকুম, আমি ${cleanName} (${params.bloodGroup})। "${prev.patientName}"-এর জরুরি রক্তের আবেদনে (${prev.hospitalName}) রক্ত দিতে প্রস্তুত। আমার সরাসরি মোবাইল নম্বর: ${validPhone}${cleanNote ? ` · নোট: ${cleanNote}` : ''}`;
+    sendDirectMessageInFirestore({
+      myName: cleanName,
+      myGroup: params.bloodGroup,
+      myWhatsapp: validPhone,
+      peerUid: authorUid,
+      peerName: String(prev.patientName || 'রোগীর স্বজন'),
+      peerGroup: (prev.bloodGroup as BloodGroup) || params.bloodGroup,
+      text: privateMsg,
+    }).catch(() => {});
+  }
+
+  return { ok: true };
+}
+
+export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<boolean> {
+  const res = await submitVolunteerResponseInFirestore({
+    requestId: reqId,
+    responderName: auth.currentUser?.displayName || 'রক্তদাতা',
+    responderPhone: auth.currentUser?.phoneNumber || '',
+    bloodGroup: 'O+',
+    note: '',
+  });
+  return res.ok;
 }
 
 export async function adminToggleDonorVerifiedInFirestore(donorId: string): Promise<boolean> {
@@ -2050,6 +2436,18 @@ export async function adminMarkRequestFulfilledInFirestore(reqId: string): Promi
       status: 'FULFILLED',
       updatedAt: serverTimestamp(),
     });
+    try {
+      const dcRef = doc(db, 'requestDirectContacts', reqId);
+      const dcSnap = await getDoc(dcRef);
+      if (dcSnap.exists()) {
+        await setDoc(dcRef, {
+          ...dcSnap.data(),
+          status: 'FULFILLED',
+          updatedAt: serverTimestamp(),
+        });
+      }
+      requestDirectContactCache.set(reqId, null);
+    } catch {}
     return true;
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
@@ -2065,6 +2463,14 @@ export async function adminDeleteRequestInFirestore(reqId: string): Promise<bool
     const snap = await getDoc(ref);
     if (!snap.exists()) return false;
     await deleteDoc(ref);
+    try {
+      const dcRef = doc(db, 'requestDirectContacts', reqId);
+      const dcSnap = await getDoc(dcRef);
+      if (dcSnap.exists()) {
+        await deleteDoc(dcRef);
+      }
+      requestDirectContactCache.delete(reqId);
+    } catch {}
     return true;
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
@@ -3659,8 +4065,21 @@ export async function updateBloodRequestTrackingInFirestore(params: {
     updatedAt: serverTimestamp(),
   });
 
-  // If terminal state reached (FULFILLED, CANCELLED, EXPIRED), stop server escalations & mark active alerts stopped
+  // If terminal state reached (FULFILLED, CANCELLED, EXPIRED), lock /requestDirectContacts/{safeId} & stop alerts
   if (nextStatus !== 'ACTIVE') {
+    try {
+      const dcRef = doc(db, 'requestDirectContacts', safeId);
+      const dcSnap = await getDoc(dcRef);
+      if (dcSnap.exists()) {
+        await setDoc(dcRef, {
+          ...dcSnap.data(),
+          status: nextStatus,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      requestDirectContactCache.set(safeId, null);
+    } catch {}
+
     try {
       const idToken = await user.getIdToken();
       await fetch('/api/emergency/stop', {
@@ -4100,12 +4519,23 @@ export async function ownerPurgeFakeCloudRecordsOnlyInFirestore(): Promise<{
   }
 
   const reqSnap = await getDocs(query(collection(db, 'requests'), where('isPublic', '==', true)));
-  for (const r of reqSnap.docs) {
+  const sortedReqs = [...reqSnap.docs].sort((a, b) => {
+    const ta = a.data().createdAt instanceof Timestamp ? a.data().createdAt.toMillis() : 0;
+    const tb = b.data().createdAt instanceof Timestamp ? b.data().createdAt.toMillis() : 0;
+    return tb - ta;
+  });
+  const seenActiveSigs = new Set<string>();
+  for (const r of sortedReqs) {
     const data = r.data();
+    const sig = `${String(data.patientName || '').trim().toLowerCase()}|${String(data.hospitalName || '').trim().toLowerCase()}|${String(data.bloodGroup || '')}`;
+    const isDuplicateActive = data.status === 'ACTIVE' && seenActiveSigs.has(sig);
+    if (data.status === 'ACTIVE') seenActiveSigs.add(sig);
+
     const isFakeReq =
       isFakeIdentifier(r.id) ||
       isFakePersonName(String(data.patientName || '')) ||
       !data.authorUid ||
+      isDuplicateActive ||
       String(data.hospitalName || '').toLowerCase().includes('test');
     if (isFakeReq) {
       await deleteDoc(doc(db, 'requests', r.id));

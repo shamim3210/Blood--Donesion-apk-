@@ -24,24 +24,28 @@
    - Created strictly by verified `authorUid` when parent `/requests/$(requestId)` exists, belongs to `authorUid`, and has `status == 'ACTIVE'`.
    - Readable/listable strictly via O(1) Query Enforcer `donorUid == request.auth.uid || authorUid == request.auth.uid` (zero `get()` inside `allow list`).
    - Terminal lock: once `deliveryState == 'STOPPED_RESOLVED'`, no further client mutations are allowed.
-8. **Terminal State Locking**:
+8. **Request Direct Contacts & Volunteer Responses (`/requestDirectContacts/{requestId}` & `/requestResponses/{responseId}`)**:
+   - `/requestDirectContacts/{requestId}` isolates emergency hospital attendant callback numbers with `allow list: if false` (prevents bulk PII scraping). Single-doc `get` is permitted only while `shareDirectContact == true && status == 'ACTIVE'`, or to `authorUid` / `isAdmin()`. Validated against strict 11-digit Bangladesh mobile regex `^(\+?8801[3-9][0-9]{8}|01[3-9][0-9]{8})$`.
+   - `/requestResponses/{responseId}` enforces canonical deterministic ID `requestId + '__' + request.auth.uid`, contains zero phone/email PII, forbids self-pledging (`authorUid != request.auth.uid`), and verifies parent `/requests/$(requestId)` exists and is `ACTIVE`.
+9. **Terminal State Locking**:
    - Once `/requests/{requestId}` reaches `status in ['FULFILLED', 'CANCELLED', 'EXPIRED']`, non-admin users cannot mutate it further.
-9. **Temporal & Immutable Integrity**:
-   - `createdAt == request.time` on `create`; `updatedAt == request.time` on `update`; `uid`, `ownerUid`, `authorUid`, `seekerUid`, `donorUid`, `participantOneUid`, `participantTwoUid`, and `createdAt` are immutable on `update`.
+10. **Temporal & Immutable Integrity**:
+   - `createdAt == request.time` on `create`; `updatedAt == request.time` on `update`; `uid`, `ownerUid`, `authorUid`, `seekerUid`, `donorUid`, `responderUid`, `participantOneUid`, `participantTwoUid`, and `createdAt` are immutable on `update`.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads (Must Return PERMISSION_DENIED)
 1. **Payload 1 (Privilege Escalation / Self-Admin)**: `POST /users/attacker1` with `{ ..., "panelType": "ADMIN" }` without `/admins/attacker1` existing.
 2. **Payload 2 (Forged Admin Secret Proof)**: `POST /admins/attacker1` with `{ "uid": "attacker1", "secretProofHash": "0000...0000" }`.
 3. **Payload 3 (Email Spoofing Attack)**: Unverified account (`email: "shamimrakib015@gmail.com"`, `email_verified: false`) attempting `GET /users/victim1`.
-4. **Payload 4 (PII Cross-User Read & Non-Opted-In Donor Contact Read)**: Authenticated user `uid: "userA"` attempting `GET /users/userB` or `GET /donorDirectContacts/privateDonor` where `shareDirectContact == false` or `contactVisibility == 'REQUEST_ONLY'` or `availabilityStatus == 'DND'`.
-5. **Payload 5 (PII Collection Scraping)**: Authenticated user attempting `LIST /users` or `LIST /donorDirectContacts`.
+4. **Payload 4 (PII Cross-User Read & Non-Opted-In Contact Read)**: Authenticated user `uid: "userA"` attempting `GET /users/userB`, `GET /donorDirectContacts/privateDonor` where `shareDirectContact == false`, or `GET /requestDirectContacts/fulfilledReq` where `status == 'FULFILLED'`.
+5. **Payload 5 (PII Collection Scraping)**: Authenticated user attempting `LIST /users`, `LIST /donorDirectContacts`, or `LIST /requestDirectContacts`.
 6. **Payload 6 (Shadow / Ghost Field Injection)**: `POST /donors/donor1` or `POST /requestAlerts/req1__donor1` with valid fields plus `"isSuperVerified": true`.
-7. **Payload 7 (Identity & Canonical ID Spoofing on Create)**: Authenticated `uid: "userA"` creating `/contactRequests/fakeId` or `/requestAlerts/fakeId` not matching canonical `uidA__uidB` / `reqId__donorUid`.
-8. **Payload 8 (ID Poisoning / Denial of Wallet)**: Creating `/donors/../../bad$id` or 500-char ID.
+7. **Payload 7 (Identity & Canonical ID Spoofing on Create)**: Authenticated `uid: "userA"` creating `/contactRequests/fakeId`, `/requestAlerts/fakeId`, or `/requestResponses/fakeId` not matching canonical `uidA__uidB` / `reqId__donorUid` / `reqId__responderUid`.
+8. **Payload 8 (ID Poisoning / Invalid Phone Format)**: Creating `/requestDirectContacts/req1` with a truncated 10-digit local phone `+880174333969` or `/donors/../../bad$id`.
 9. **Payload 9 (Value Poisoning on Update)**: Updating whitelisted field `available` on `/donors/donor1` with string `"yes"` instead of `bool`.
-10. **Payload 10 (Self-Approving Contact Consent Request)**: Seeker `userA` attempting to update `/contactRequests/userA__donorB` to `status: "APPROVED"`.
+10. **Payload 10 (Self-Approving Contact Consent or Self-Pledging Own Request)**: Seeker `userA` attempting to update `/contactRequests/userA__donorB` to `status: "APPROVED"` or creating `/requestResponses/req1__userA` where `authorUid == "userA"`.
 11. **Payload 11 (Terminal State Re-opening)**: Author attempting to change `/requests/req1` from `status: "FULFILLED"` or `"CANCELLED"` back to `"ACTIVE"`.
 12. **Payload 12 (Client Timestamp Forgery)**: Creating `/requestAlerts/req1__donor1` with a client `Timestamp` instead of `serverTimestamp()` (`request.time`).
 
 ## 3. Test Suite Reference
 See `/firestore.rules.test.ts` and `/tests/emergencyContactSystem.test.ts` for executable verification.
+

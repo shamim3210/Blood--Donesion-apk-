@@ -987,10 +987,10 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 <span>
                   {lang === 'bn'
                     ? includeNearbyDistricts
-                      ? '✓ পার্শ্ববর্তী জেলা যুক্ত (৮৫ কিমি)'
+                      ? '✓ পার্শ্ববর্তী জেলা যুক্ত'
                       : '+ পার্শ্ববর্তী জেলা যুক্ত করুন'
                     : includeNearbyDistricts
-                    ? '✓ Nearby Districts (85 km)'
+                    ? '✓ Nearby Districts Included'
                     : '+ Nearby Districts'}
                 </span>
               </button>
@@ -1223,7 +1223,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             </div>
                           ) : availabilityConfidence === 'DND' ? (
                             <div className="text-xs font-bold text-slate-500">
-                              {lang === 'bn' ? 'বিরত (DND)' : 'Do Not Disturb'}
+                              {lang === 'bn' ? 'সাময়িক বিরতি' : 'Paused'}
                             </div>
                           ) : (
                             <div className="text-xs font-bold text-slate-500">
@@ -1334,8 +1334,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                       {consentCheck.allowed ? (
                         <span className="text-emerald-700 dark:text-emerald-400 font-semibold truncate">
                           {lang === 'bn'
-                            ? 'সরাসরি কল ও WhatsApp অনুমোদিত (ডায়ালার/অ্যাপ খুলবে)'
-                            : 'Opted-in direct contact · Opens dialer or WhatsApp'}
+                            ? 'সরাসরি কল ও WhatsApp করা যাবে'
+                            : 'Direct Call & WhatsApp available'}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-slate-500 truncate">

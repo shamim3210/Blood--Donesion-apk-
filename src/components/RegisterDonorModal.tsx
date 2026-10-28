@@ -26,6 +26,11 @@ import {
   User,
 } from '../firebase';
 import {
+  isValidBangladeshMobilePhone,
+  normalizeValidBangladeshMobileE164,
+} from '../utils/donorMatcher';
+import { copyTextReliable } from '../utils/sosAlertEngine';
+import {
   X,
   Check,
   UserPlus,
@@ -215,8 +220,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     let score = 25; // Role + BloodGroup selected by default
     if (firebaseUser && isUserVerifiedForWrites(firebaseUser)) score += 20;
     if (name.trim().length >= 2) score += 15;
-    if (normalizeAsciiDigits(phone).trim().length >= 6) score += 15;
-    if (normalizeAsciiDigits(whatsappPhone || phone).trim().length >= 6) score += 10;
+    if (isValidBangladeshMobilePhone(phone)) score += 15;
+    if (isValidBangladeshMobilePhone(whatsappPhone || phone)) score += 10;
     if (facebookUrl.trim().length >= 5) score += 15;
     return Math.min(100, score);
   }, [firebaseUser, name, phone, whatsappPhone, facebookUrl]);
@@ -302,25 +307,33 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     }
 
     if (targetStep === 3) {
-      const cleanPhone = normalizeAsciiDigits(phone).trim();
-      const cleanWa = normalizeAsciiDigits(whatsappPhone || phone).trim();
-      const fb = facebookUrl.trim();
+      const normalizedPhone = normalizeValidBangladeshMobileE164(phone);
+      const normalizedWa = normalizeValidBangladeshMobileE164(whatsappPhone || phone);
 
-      if (name.trim().length < 2 || cleanPhone.length < 6) {
+      if (name.trim().length < 2) {
         setStep(2);
         setFormError(
           lang === 'bn'
-            ? 'অনুগ্রহ করে আপনার পূর্ণ নাম এবং সঠিক মোবাইল নম্বর লিখুন।'
-            : 'Please enter your full name and valid mobile number.'
+            ? 'অনুগ্রহ করে আপনার পূর্ণ নাম লিখুন।'
+            : 'Please enter your full name.'
         );
         return;
       }
-      if (cleanWa.length < 6) {
+      if (!normalizedPhone || !isValidBangladeshMobilePhone(phone)) {
         setStep(2);
         setFormError(
           lang === 'bn'
-            ? 'সঠিক মোবাইল অথবা হোয়াটসঅ্যাপ নম্বর দিন।'
-            : 'Please provide a valid mobile or WhatsApp number.'
+            ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+            : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
+        );
+        return;
+      }
+      if (!normalizedWa) {
+        setStep(2);
+        setFormError(
+          lang === 'bn'
+            ? 'সঠিক ১১ ডিজিটের হোয়াটসঅ্যাপ নম্বর দিন অথবা খালি রাখুন।'
+            : 'Please provide a valid 11-digit WhatsApp number or leave it blank.'
         );
         return;
       }
@@ -334,8 +347,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     setFormError(null);
     setAdminError('');
 
-    const cleanPhone = normalizeAsciiDigits(phone).trim();
-    const cleanWa = normalizeAsciiDigits(whatsappPhone || phone).trim();
+    const cleanPhone = normalizeValidBangladeshMobileE164(phone);
+    const cleanWa = normalizeValidBangladeshMobileE164(whatsappPhone || phone);
     const fb = facebookUrl.trim();
 
     // SYNCHRONOUS FORMAT CHECK (Zero `await` before signInWithGoogleReal so popup is NEVER blocked!)
@@ -352,22 +365,22 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       }
     }
 
-    if (name.trim().length < 2 || cleanPhone.length < 6) {
+    if (name.trim().length < 2 || !cleanPhone || !isValidBangladeshMobilePhone(phone)) {
       setStep(2);
       setFormError(
         lang === 'bn'
-          ? 'অনুগ্রহ করে আপনার পূর্ণ নাম এবং সঠিক মোবাইল নম্বর প্রদান করুন।'
-          : 'Please provide your full name and valid mobile phone number.'
+          ? 'অনুগ্রহ করে আপনার পূর্ণ নাম এবং সঠিক ১১ ডিজিটের বাংলাদেশি মোবাইল নম্বর (017XXXXXXXX) প্রদান করুন।'
+          : 'Please provide your full name and a valid 11-digit Bangladesh mobile number.'
       );
       return;
     }
 
-    if (cleanWa.length < 6) {
+    if (!cleanWa) {
       setStep(2);
       setFormError(
         lang === 'bn'
-          ? 'সঠিক মোবাইল অথবা হোয়াটসঅ্যাপ নম্বর দিন।'
-          : 'Please provide a valid mobile or WhatsApp number.'
+          ? 'সঠিক ১১ ডিজিটের হোয়াটসঅ্যাপ নম্বর দিন।'
+          : 'Please provide a valid 11-digit WhatsApp number.'
       );
       return;
     }
@@ -544,19 +557,21 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     } catch (err: any) {
       setFormError(
         lang === 'bn'
-          ? `ডাটাবেজে সংরক্ষণ করতে সমস্যা হয়েছে: ${err?.message || 'আবার চেষ্টা করুন'}`
-          : `Failed to save Smart ID to Firestore: ${err?.message || 'Please retry'}`
+          ? 'প্রোফাইল সংরক্ষণ করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।'
+          : 'Could not save profile right now. Please try again.'
       );
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleCopyCardId = () => {
+  const handleCopyCardId = async () => {
     if (createdAccount) {
-      navigator.clipboard.writeText(createdAccount.idCardNumber);
-      setIsCopiedId(true);
-      setTimeout(() => setIsCopiedId(false), 2000);
+      const ok = await copyTextReliable(createdAccount.idCardNumber);
+      if (ok) {
+        setIsCopiedId(true);
+        setTimeout(() => setIsCopiedId(false), 2000);
+      }
     }
   };
 
@@ -588,16 +603,16 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white leading-snug">
                 {createdAccount
                   ? lang === 'bn'
-                    ? 'অফিসিয়াল ডিজিটাল স্মার্ট আইডি কার্ড'
-                    : 'Official Digital Smart ID Card'
+                    ? 'ডিজিটাল রক্তদাতা স্মার্ট কার্ড'
+                    : 'Digital Donor Smart Card'
                   : lang === 'bn'
-                  ? 'স্মার্ট আইডি স্টুডিও (৩টি সহজ ধাপ)'
-                  : 'Smart ID Studio (3 Quick Steps)'}
+                  ? 'রক্তদাতা নিবন্ধন ও প্রোফাইল'
+                  : 'Donor Registration & Profile'}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
                 {lang === 'bn'
-                  ? 'লাইভ কার্ড প্রিভিউসহ ৩০ সেকেন্ডে আপনার ভেরিফাইড আইডি তৈরি করুন'
-                  : 'Build your verified Smart ID with live preview in 30 seconds'}
+                  ? 'সহজ ৩টি ধাপে আপনার ভেরিফাইড ডোনার কার্ড তৈরি করুন'
+                  : 'Create your verified donor profile in 3 quick steps'}
               </p>
             </div>
           </div>
@@ -745,7 +760,9 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                         {createdAccount.idCardNumber}
                       </strong>
                     </span>
-                    <span className="text-emerald-400 font-bold">LIVE SYNC</span>
+                    <span className="text-emerald-400 font-bold">
+                      {lang === 'bn' ? 'সক্রিয় সদস্য' : 'Verified Member'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -957,16 +974,16 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-black text-xs sm:text-sm text-slate-900 dark:text-white">
-                        {lang === 'bn' ? '👤 ইউজার প্যানেল' : '👤 User Panel'}
+                        {lang === 'bn' ? 'সাধারণ ডোনার প্রোফাইল' : 'Donor Profile'}
                       </span>
                       {accountRole === 'USER' && (
                         <CheckCircle2 className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
                       )}
                     </div>
-                    <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-snug">
                       {lang === 'bn'
-                        ? 'সাধারণ ইউজার, রক্তদাতা ও মেসেজিং (কোড লাগবে না)'
-                        : 'Standard Donor & Chat ID (No code needed)'}
+                        ? 'স্বেচ্ছাসেবী রক্তদাতা ও সদস্য হিসেবে যুক্ত হোন'
+                        : 'Register as a voluntary blood donor & member'}
                     </p>
                   </button>
 
@@ -981,16 +998,16 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-black text-xs sm:text-sm text-slate-900 dark:text-white">
-                        {lang === 'bn' ? '🛡️ অ্যাডমিন প্যানেল' : '🛡️ Admin Panel'}
+                        {lang === 'bn' ? 'সমন্বয়ক / অ্যাডমিন' : 'Admin Coordinator'}
                       </span>
                       {accountRole === 'ADMIN' && (
                         <CheckCircle2 className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
                       )}
                     </div>
-                    <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-snug">
                       {lang === 'bn'
-                        ? 'শুধুমাত্র গোপন মাস্টার কোড দিয়ে অ্যাডমিন আইডি'
-                        : 'Authorized Admin ID (Requires secret code)'}
+                        ? 'শুধুমাত্র অনুমোদিত গোপন কোডধারীদের জন্য'
+                        : 'For authorized team members with invite code'}
                     </p>
                   </button>
                 </div>
@@ -1003,8 +1020,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                         <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
                         <span>
                           {lang === 'bn'
-                            ? '👑 সুপার ওনার ভেরিফাইড (shamimrakib015@gmail.com) — কোনো কোড ছাড়াই সরাসরি অ্যাডমিন আইডি তৈরি হবে।'
-                            : '👑 Super Owner Verified — Direct Admin ID creation unlocked without code.'}
+                            ? 'মূল অ্যাডমিন অ্যাকাউন্ট যাচাই হয়েছে — সরাসরি অ্যাডমিন কার্ড তৈরি করা যাবে।'
+                            : 'Super Owner verified — direct Admin ID creation unlocked.'}
                         </span>
                       </div>
                     ) : (
@@ -1014,12 +1031,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                             <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                             <span>
                               {lang === 'bn'
-                                ? 'ওনার অনুমোদিত গোপন ইনভাইট কোড *'
-                                : 'Owner-Issued Admin Invite Code *'}
+                                ? 'অনুমোদিত অ্যাডমিন কোড *'
+                                : 'Authorized Admin Invite Code *'}
                             </span>
                           </label>
                           <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
-                            {lang === 'bn' ? 'Owner-Locked 🔒' : 'Owner-Locked 🔒'}
+                            {lang === 'bn' ? 'সুরক্ষিত' : 'Protected'}
                           </span>
                         </div>
 
@@ -1084,10 +1101,14 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                     ) : (
                       <>
                         <span className="text-xs font-bold text-slate-900 dark:text-white block">
-                          ⚡ ১-ক্লিকে নাম ও ছবি অটো-ফিল করুন
+                          {lang === 'bn'
+                            ? '১-ক্লিকে নাম ও ছবি অটো-ফিল করুন'
+                            : '1-Click Auto-Fill Name & Photo'}
                         </span>
                         <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
-                          আপনার আসল Gmail দিয়ে ভেরিফাই ও দ্রুত ফর্ম পূরণ
+                          {lang === 'bn'
+                            ? 'Google অ্যাকাউন্ট দিয়ে দ্রুত ফর্ম পূরণ করুন'
+                            : 'Connect Google to fill details automatically'}
                         </span>
                       </>
                     )}
@@ -1210,13 +1231,13 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   </div>
                 </div>
 
-                {/* Mandatory WhatsApp Box with 1-Tap Copy Helper */}
+                {/* WhatsApp Box with Auto-Fill from Mobile */}
                 <div className="p-3.5 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-300 dark:border-emerald-800 space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs font-black text-emerald-950 dark:text-emerald-200">
+                    <label className="text-xs font-bold text-emerald-950 dark:text-emerald-200">
                       {lang === 'bn'
-                        ? '💬 WhatsApp নম্বর (সরাসরি চ্যাট সংযোগের জন্য বাধ্যতামূলক) *'
-                        : '💬 WhatsApp Number (Mandatory for Direct Chat) *'}
+                        ? 'WhatsApp নম্বর (ঐচ্ছিক — খালি রাখলে মোবাইল নম্বরই ব্যবহৃত হবে)'
+                        : 'WhatsApp Number (Optional — defaults to mobile number)'}
                     </label>
                     {phone.trim().length >= 5 && whatsappPhone !== phone && (
                       <button
@@ -1224,7 +1245,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                         onClick={() => setWhatsappPhone(phone)}
                         className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 underline cursor-pointer shrink-0"
                       >
-                        মোবাইল নম্বরই দিন
+                        {lang === 'bn' ? 'মোবাইল নম্বরই দিন' : 'Use mobile'}
                       </button>
                     )}
                   </div>
@@ -1237,13 +1258,13 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   />
                 </div>
 
-                {/* Mandatory Facebook Link Box with 1-Tap Prefix Helper */}
+                {/* Optional Facebook Link Box */}
                 <div className="p-3.5 rounded-2xl bg-sky-50/70 dark:bg-sky-950/25 border border-sky-300 dark:border-sky-800 space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs font-black text-sky-950 dark:text-sky-200">
+                    <label className="text-xs font-bold text-sky-950 dark:text-sky-200">
                       {lang === 'bn'
-                        ? '🌐 ফেসবুক প্রোফাইল লিংক বা ইউজারনেম (বাধ্যতামূলক) *'
-                        : '🌐 Facebook Profile Link (Mandatory) *'}
+                        ? 'ফেসবুক প্রোফাইল লিংক (ঐচ্ছিক)'
+                        : 'Facebook Profile Link (Optional)'}
                     </label>
                     {!facebookUrl.includes('facebook.com/') && (
                       <button
@@ -1257,7 +1278,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                         }
                         className="px-2 py-0.5 rounded-lg bg-sky-600 text-white text-[10px] font-bold cursor-pointer shrink-0"
                       >
-                        + facebook.com/ বসান
+                        + facebook.com/
                       </button>
                     )}
                   </div>
@@ -1280,7 +1301,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 {/* 1-Tap Popular Cities so users don't get bored scrolling dropdowns */}
                 <div>
                   <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1.5">
-                    {lang === 'bn' ? '⚡ ১-ট্যাপে দ্রুত শহর নির্বাচন করুন' : '⚡ Quick Select City'}
+                    {lang === 'bn' ? 'দ্রুত শহর নির্বাচন করুন' : 'Quick Select City'}
                   </label>
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
                     {QUICK_CITIES.map((c) => {

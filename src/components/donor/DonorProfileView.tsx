@@ -294,7 +294,11 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   const displayAvatar = currentUser?.photoUrl || firebaseUser?.photoURL || DEFAULT_AVATAR_DATA_URI;
   const displayId =
     currentUser?.idCardNumber ||
-    (firebaseUser ? `BD-2026-${firebaseUser.uid.slice(0, 4).toUpperCase()}` : 'GUEST-PASS');
+    (firebaseUser
+      ? `BS-${firebaseUser.uid.slice(0, 6).toUpperCase()}`
+      : lang === 'bn'
+      ? 'লগইন করলে যুক্ত হবে'
+      : 'Sign in to generate');
   const rawDistrict = currentUser?.district || 'dhaka';
   const displayDistrict =
     rawDistrict.toLowerCase() === 'dhaka' ? (lang === 'bn' ? 'ঢাকা' : 'Dhaka') : rawDistrict;
@@ -560,7 +564,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <span className="text-xs font-bold text-slate-900 dark:text-white block">
-                {lang === 'bn' ? 'রক্তদান প্রস্তুতি স্ট্যাটাস (Availability & DND)' : 'Availability & Do Not Disturb'}
+                {lang === 'bn' ? 'রক্তদান প্রস্তুতি স্ট্যাটাস' : 'Donation Availability'}
               </span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
                 {confirmedAtMs
@@ -595,17 +599,17 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               [
                 {
                   id: 'AVAILABLE' as const,
-                  bn: 'প্রস্তুত (Available)',
+                  bn: 'রক্তদানে প্রস্তুত',
                   en: 'Available',
                 },
                 {
                   id: 'TEMPORARILY_UNAVAILABLE' as const,
                   bn: 'সাময়িক অনুপস্থিত',
-                  en: 'Temporarily Unavailable',
+                  en: 'Temporarily Away',
                 },
                 {
                   id: 'DND' as const,
-                  bn: 'ডু নট ডিস্টার্ব (DND)',
+                  bn: 'বিরতি মোড',
                   en: 'Do Not Disturb',
                 },
               ] as const
@@ -685,7 +689,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </option>
               <option value="REQUEST_ONLY">
                 {lang === 'bn'
-                  ? 'নম্বর গোপন — ইন-অ্যাপ চ্যাট বা অনুমতি অনুরোধ (Request Only)'
+                  ? 'নম্বর গোপন — ইন-অ্যাপ চ্যাট বা অনুমতি সাপেক্ষে'
                   : 'Private — In-App Chat or Consent Request Only'}
               </option>
             </select>
@@ -742,14 +746,20 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
             >
               <span>
-                {lang === 'bn' ? 'জরুরি ব্রডকাস্ট অ্যালার্ট গ্রহণ' : 'Emergency Broadcast Opt-In'}
+                {lang === 'bn' ? 'জরুরি রক্তের নোটিফিকেশন' : 'Emergency Blood Alerts'}
               </span>
               <span
-                className={`font-mono font-bold ${
+                className={`font-bold ${
                   emergencyAlertsOptIn ? 'text-emerald-600' : 'text-slate-400'
                 }`}
               >
-                {emergencyAlertsOptIn ? 'ON' : 'OFF'}
+                {emergencyAlertsOptIn
+                  ? lang === 'bn'
+                    ? 'চালু'
+                    : 'On'
+                  : lang === 'bn'
+                  ? 'বন্ধ'
+                  : 'Off'}
               </span>
             </button>
 
@@ -764,14 +774,20 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             >
               <span className="flex items-center gap-1.5">
                 <BellOff className="w-3.5 h-3.5 text-amber-600" />
-                <span>{lang === 'bn' ? 'অ্যালার্ট সাময়িক বিরতি (Pause)' : 'Pause Alerts'}</span>
+                <span>{lang === 'bn' ? 'নোটিফিকেশন সাময়িক বিরতি' : 'Pause Notifications'}</span>
               </span>
               <span
-                className={`font-mono font-bold ${
+                className={`font-bold ${
                   alertsPaused ? 'text-amber-600' : 'text-slate-400'
                 }`}
               >
-                {alertsPaused ? 'PAUSED' : 'ACTIVE'}
+                {alertsPaused
+                  ? lang === 'bn'
+                    ? 'বিরত'
+                    : 'Paused'
+                  : lang === 'bn'
+                  ? 'সচল'
+                  : 'Active'}
               </span>
             </button>
           </div>
@@ -983,19 +999,19 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </p>
           </div>
           <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
-            100% Fit
+            {lang === 'bn' ? 'সুস্থ ও উপযুক্ত' : 'Healthy'}
           </span>
         </div>
 
         <div className="space-y-3 pt-1">
           {[
-            { id: 'nonAlcoholic' as const, label: lang === 'bn' ? 'মদ্যপানমুক্ত (Non-alcoholic)' : 'Non-alcoholic' },
-            { id: 'hivNegative' as const, label: lang === 'bn' ? 'এইচআইভি নেগেটিভ (HIV negative)' : 'HIV negative' },
-            { id: 'rheumaticFeverNegative' as const, label: lang === 'bn' ? 'বাতজ্বর মুক্ত (No Rheumatic fever)' : 'Rheumatic fever negative' },
-            { id: 'covidNegative' as const, label: lang === 'bn' ? 'কোভিড নেগেটিভ (COVID negative)' : 'COVID negative' },
-            { id: 'thalassemiaNegative' as const, label: lang === 'bn' ? 'থ্যালাসেমিয়ামুক্ত (No Thalassemia)' : 'Thalassemia negative' },
-            { id: 'hepatitisNegative' as const, label: lang === 'bn' ? 'হেপাটাইটিস নেগেটিভ (Hepatitis negative)' : 'Hepatitis negative' },
-            { id: 'normalBloodPressure' as const, label: lang === 'bn' ? 'স্বাভাবিক রক্তচাপ (Normal blood pressure)' : 'Normal blood-pressure' },
+            { id: 'nonAlcoholic' as const, label: lang === 'bn' ? 'ধূমপান ও মাদকমুক্ত' : 'Non-alcoholic' },
+            { id: 'hivNegative' as const, label: lang === 'bn' ? 'এইচআইভি নেগেটিভ' : 'HIV negative' },
+            { id: 'rheumaticFeverNegative' as const, label: lang === 'bn' ? 'বাতজ্বর মুক্ত' : 'No rheumatic fever' },
+            { id: 'covidNegative' as const, label: lang === 'bn' ? 'সংক্রামক জ্বরমুক্ত' : 'No active infection' },
+            { id: 'thalassemiaNegative' as const, label: lang === 'bn' ? 'থ্যালাসেমিয়ামুক্ত' : 'No thalassemia' },
+            { id: 'hepatitisNegative' as const, label: lang === 'bn' ? 'হেপাটাইটিস ও জন্ডিসমুক্ত' : 'Hepatitis negative' },
+            { id: 'normalBloodPressure' as const, label: lang === 'bn' ? 'স্বাভাবিক রক্তচাপ' : 'Normal blood pressure' },
           ].map((item) => {
             const isChecked = healthConditions[item.id];
             return (

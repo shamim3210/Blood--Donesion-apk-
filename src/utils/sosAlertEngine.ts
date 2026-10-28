@@ -543,15 +543,148 @@ export function downloadSmartDonorIdCardPng(params: {
   );
 }
 
+const BN_DIGITS_TO_ASCII: Record<string, string> = {
+  '০': '0',
+  '১': '1',
+  '২': '2',
+  '৩': '3',
+  '৪': '4',
+  '৫': '5',
+  '৬': '6',
+  '৭': '7',
+  '৮': '8',
+  '৯': '9',
+};
+
+function toAsciiPhone(phone: string): string {
+  const ascii = (phone || '').replace(/[০-৯]/g, (ch) => BN_DIGITS_TO_ASCII[ch] ?? ch);
+  const digits = ascii.replace(/\D/g, '');
+  if (digits.length === 11 && /^01[3-9]\d{8}$/.test(digits)) return `+88${digits}`;
+  if (digits.length === 13 && /^8801[3-9]\d{8}$/.test(digits)) return `+${digits}`;
+  if (digits.length === 10 && /^1[3-9]\d{8}$/.test(digits)) return `+880${digits}`;
+  return ascii.replace(/[^0-9+]/g, '');
+}
+
 /**
  * Builds a universal cross-platform native SMS URI (works with zero mobile internet on both Android & iOS).
  */
 export function buildOfflineEmergencySmsUri(phone: string, bodyText: string): string {
-  const cleanDigits = (phone || '').replace(/[^0-9+]/g, '');
+  const cleanDigits = toAsciiPhone(phone);
   const isApple =
     typeof navigator !== 'undefined' && /iPad|iPhone|iPod/i.test(navigator.userAgent || '');
   const sep = isApple ? '&' : '?';
   return `sms:${cleanDigits}${sep}body=${encodeURIComponent(bodyText)}`;
+}
+
+/**
+ * Copies text reliably across desktop, mobile, and sandboxed preview iframes.
+ */
+export async function copyTextReliable(text: string): Promise<boolean> {
+  if (!text) return false;
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to execCommand fallback for iframe permissions policy
+    }
+  }
+  if (typeof document !== 'undefined') {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'true');
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Shares via native Web Share sheet ONLY in top-level mobile/desktop windows;
+ * inside iframes or when Web Share fails/cancels, falls back to reliable clipboard copy.
+ */
+export async function shareOrCopyEmergencyText(params: {
+  title: string;
+  text: string;
+  url?: string;
+}): Promise<'SHARED' | 'COPIED'> {
+  const fullPayload = params.url ? `${params.text}\n${params.url}` : params.text;
+  const isTopWindow =
+    typeof window !== 'undefined' &&
+    (() => {
+      try {
+        return window.self === window.top;
+      } catch {
+        return false;
+      }
+    })();
+
+  if (isTopWindow && typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      await navigator.share({
+        title: params.title,
+        text: params.text,
+        url: params.url,
+      });
+      return 'SHARED';
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        await copyTextReliable(fullPayload);
+        return 'COPIED';
+      }
+    }
+  }
+
+  await copyTextReliable(fullPayload);
+  return 'COPIED';
+}
+
+/**
+ * Live relative timestamp formatter so request cards never freeze on "Just now".
+ */
+export function formatRelativeRequestTime(
+  createdAtMs?: number,
+  fallbackLabel?: string,
+  lang: Language = 'bn',
+  nowMs: number = Date.now()
+): string {
+  if (!createdAtMs || createdAtMs <= 0) {
+    if (fallbackLabel && fallbackLabel !== 'Just now' && fallbackLabel !== 'এইমাত্র') {
+      return fallbackLabel;
+    }
+    return lang === 'bn' ? 'সাম্প্রতিক আবেদন' : 'Recent request';
+  }
+  const diffSec = Math.max(0, Math.floor((nowMs - createdAtMs) / 1000));
+  if (diffSec < 60) {
+    return lang === 'bn' ? 'এইমাত্র পোস্ট করা হয়েছে' : 'Posted just now';
+  }
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) {
+    return lang === 'bn' ? `${diffMin} মিনিট আগে` : `${diffMin}m ago`;
+  }
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) {
+    return lang === 'bn' ? `${diffHours} ঘণ্টা আগে` : `${diffHours}h ago`;
+  }
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays <= 7) {
+    return lang === 'bn' ? `${diffDays} দিন আগে` : `${diffDays}d ago`;
+  }
+  return new Date(createdAtMs).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-US', {
+    day: 'numeric',
+    month: 'short',
+  });
 }
 
 /**

@@ -512,6 +512,45 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidRequestDirectContact(data) {
+      return data.keys().hasAll([
+          'requestId', 'authorUid', 'contactName', 'contactPhone',
+          'shareDirectContact', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'requestId', 'authorUid', 'contactName', 'contactPhone',
+          'shareDirectContact', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.requestId) && data.requestId.size() <= 80
+        && isValidId(data.authorUid)
+        && data.contactName is string && data.contactName.size() >= 2 && data.contactName.size() <= 80 && isSafeText(data.contactName)
+        && data.contactPhone is string && data.contactPhone.size() >= 11 && data.contactPhone.size() <= 16
+        && data.contactPhone.matches('^(\\+?8801[3-9][0-9]{8}|01[3-9][0-9]{8})$')
+        && data.shareDirectContact is bool
+        && data.status is string && data.status.size() <= 16 && data.status in ['ACTIVE', 'FULFILLED', 'CANCELLED', 'EXPIRED']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRequestResponse(data) {
+      return data.keys().hasAll([
+          'requestId', 'authorUid', 'responderUid', 'responderName',
+          'bloodGroup', 'note', 'isPublic', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'requestId', 'authorUid', 'responderUid', 'responderName',
+          'bloodGroup', 'note', 'isPublic', 'createdAt'
+        ])
+        && isValidId(data.requestId) && data.requestId.size() <= 80
+        && isValidId(data.authorUid)
+        && isValidId(data.responderUid)
+        && data.responderName is string && data.responderName.size() >= 2 && data.responderName.size() <= 80 && isSafeText(data.responderName)
+        && isValidBloodGroup(data.bloodGroup)
+        && data.note is string && data.note.size() <= 200 && isSafeText(data.note)
+        && data.isPublic is bool
+        && data.createdAt is timestamp;
+    }
+
     // =========================================================================
     // COLLECTION 1: /users/{userId} — STRICT PII ISOLATION & OWNER ANTI-HIJACK
     // =========================================================================
@@ -1010,6 +1049,92 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() && isValidId(requestId) && (
         existing().authorUid == request.auth.uid || isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 4B: /requestDirectContacts/{requestId} — CONSENT CALLBACK PII
+    // =========================================================================
+    match /requestDirectContacts/{requestId} {
+      allow get: if isValidId(requestId) && (
+        (
+          resource != null
+          && existing().shareDirectContact == true
+          && existing().status == 'ACTIVE'
+        ) ||
+        (
+          isSignedIn()
+          && resource != null
+          && existing().authorUid == request.auth.uid
+        ) ||
+        isAdmin()
+      );
+
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(requestId)
+        && isValidRequestDirectContact(incoming())
+        && incoming().requestId == requestId
+        && incoming().authorUid == request.auth.uid
+        && incoming().status == 'ACTIVE'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/requests/$(requestId))
+        && get(/databases/$(database)/documents/requests/$(requestId)).data.authorUid == request.auth.uid;
+
+      allow update: if isValidRequestDirectContact(incoming())
+        && isVerifiedUser()
+        && isValidId(requestId)
+        && incoming().requestId == existing().requestId
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().authorUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'contactName', 'contactPhone', 'shareDirectContact', 'status', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(requestId) && (
+        existing().authorUid == request.auth.uid || isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 4C: /requestResponses/{responseId} — VOLUNTEER DONOR PLEDGES
+    // =========================================================================
+    match /requestResponses/{responseId} {
+      allow get: if isValidId(responseId) && (
+        (resource != null && existing().isPublic == true) ||
+        isAdmin()
+      );
+
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isVerifiedUser()
+        && isValidId(responseId)
+        && isValidRequestResponse(incoming())
+        && incoming().responderUid == request.auth.uid
+        && incoming().authorUid != request.auth.uid
+        && responseId == incoming().requestId + '__' + request.auth.uid
+        && incoming().isPublic == true
+        && incoming().createdAt == request.time
+        && hasRegisteredUserProfile()
+        && exists(/databases/$(database)/documents/requests/$(incoming().requestId))
+        && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.status == 'ACTIVE'
+        && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.authorUid == incoming().authorUid;
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser() && isValidId(responseId) && (
+        existing().responderUid == request.auth.uid ||
+        existing().authorUid == request.auth.uid ||
+        isAdmin()
       );
     }
 

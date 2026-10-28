@@ -17,6 +17,8 @@ import {
   getStoredDonationLogs,
   canDonorGiveToPatient,
   DonationIntervalType,
+  formatRelativeRequestTime,
+  copyTextReliable,
 } from '../../utils/sosAlertEngine';
 import {
   auth,
@@ -51,6 +53,8 @@ import {
   Sparkles,
   Stethoscope,
   FlaskConical,
+  Copy,
+  Check,
 } from 'lucide-react';
 import type { CareSuiteTab } from '../ecosystem/EmergencyCareSuiteModal';
 
@@ -160,6 +164,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
   });
 
   const [clockTick, setClockTick] = useState(0);
+  const [copiedPinPhone, setCopiedPinPhone] = useState(false);
   useEffect(() => {
     const id = window.setInterval(() => setClockTick((n) => n + 1), 30000);
     return () => window.clearInterval(id);
@@ -601,6 +606,16 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
           ) : (
             activeRequests.map((req) => {
               const isCompatibleForMe = canDonorGiveToPatient(displayGroup, req.bloodGroup);
+              const isMyOwnRequest = Boolean(
+                (firebaseUser?.uid && req.authorUid === firebaseUser.uid) ||
+                  (!req.authorUid && req.id.startsWith('sos_'))
+              );
+              const liveTime = formatRelativeRequestTime(
+                req.createdAtMs,
+                req.createdAt,
+                lang,
+                Date.now() + clockTick * 0
+              );
               return (
                 <div
                   key={req.id}
@@ -621,9 +636,15 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                             ? lang === 'bn'
                               ? 'অতি জরুরি'
                               : 'Critical'
-                            : req.urgency}
+                            : req.urgency === 'URGENT'
+                            ? lang === 'bn'
+                              ? 'জরুরি'
+                              : 'Urgent'
+                            : lang === 'bn'
+                            ? 'নির্ধারিত'
+                            : 'Scheduled'}
                         </span>
-                        {isCompatibleForMe && (
+                        {isCompatibleForMe && !isMyOwnRequest && (
                           <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
                             · {lang === 'bn' ? 'আপনার গ্রুপ ম্যাচ করে' : 'Matches You'}
                           </span>
@@ -635,6 +656,8 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                           <span>{req.district}</span>
                         </span>
                         <span>·</span>
+                        <span>{liveTime}</span>
+                        <span>·</span>
                         <span className="font-semibold text-slate-800 dark:text-slate-200">
                           {Math.max(1, req.unitsNeeded - req.unitsCollected)}{' '}
                           {lang === 'bn' ? 'ব্যাগ প্রয়োজন' : 'bag(s) needed'}
@@ -644,13 +667,23 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onQuickDonate(req)}
-                      className="min-h-[42px] px-4 py-2 btn-crimson font-bold text-xs rounded-xl cursor-pointer whitespace-nowrap"
-                    >
-                      {lang === 'bn' ? 'আমি রক্ত দেব' : 'Respond to Donate'}
-                    </button>
+                    {isMyOwnRequest ? (
+                      <button
+                        type="button"
+                        onClick={() => onNavigateTab('requests')}
+                        className="min-h-[42px] px-4 py-2 btn-obsidian font-bold text-xs rounded-xl cursor-pointer whitespace-nowrap"
+                      >
+                        {lang === 'bn' ? 'আপনার আবেদন দেখুন' : 'Manage Request'}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onQuickDonate(req)}
+                        className="min-h-[42px] px-4 py-2 btn-crimson font-bold text-xs rounded-xl cursor-pointer whitespace-nowrap"
+                      >
+                        {lang === 'bn' ? 'আমি রক্ত দেব' : 'Respond to Donate'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => onSelectRequest(req)}
@@ -776,13 +809,36 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
 
               <div className="flex items-center gap-1.5 shrink-0">
                 {activeSelectedPin.canDirectCall && activeSelectedPin.phone ? (
-                  <a
-                    href={`tel:${activeSelectedPin.phone}`}
-                    className="min-h-[38px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                  >
-                    <Phone className="w-3.5 h-3.5 shrink-0" />
-                    <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
-                  </a>
+                  <>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (activeSelectedPin.phone) {
+                          const ok = await copyTextReliable(activeSelectedPin.phone);
+                          if (ok) {
+                            setCopiedPinPhone(true);
+                            window.setTimeout(() => setCopiedPinPhone(false), 2000);
+                          }
+                        }
+                      }}
+                      className="min-h-[38px] px-2.5 py-1.5 btn-surface font-bold text-xs rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      title={activeSelectedPin.phone}
+                    >
+                      {copiedPinPhone ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span className="font-mono tabular-nums">{activeSelectedPin.phone}</span>
+                    </button>
+                    <a
+                      href={`tel:${activeSelectedPin.phone}`}
+                      className="min-h-[38px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Phone className="w-3.5 h-3.5 shrink-0" />
+                      <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
+                    </a>
+                  </>
                 ) : null}
                 <button
                   type="button"

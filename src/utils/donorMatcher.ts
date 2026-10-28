@@ -171,11 +171,81 @@ export function formatAvailabilityTimestamp(
     : `Last confirmed ${diffDays}d ago (unconfirmed today)`;
 }
 
+const BENGALI_DIGIT_MAP: Record<string, string> = {
+  '০': '0',
+  '১': '1',
+  '২': '2',
+  '৩': '3',
+  '৪': '4',
+  '৫': '5',
+  '৬': '6',
+  '৭': '7',
+  '৮': '8',
+  '৯': '9',
+};
+
+const KNOWN_PLACEHOLDER_PHONES = new Set([
+  '01700000000',
+  '8801700000000',
+  '01711000000',
+  '8801711000000',
+  '01712345678',
+  '8801712345678',
+  '01700000001',
+  '8801700000001',
+]);
+
+export function normalizePhoneAsciiDigits(raw?: string | null): string {
+  if (!raw) return '';
+  return String(raw).replace(/[০-৯]/g, (ch) => BENGALI_DIGIT_MAP[ch] ?? ch);
+}
+
+/**
+ * Normalizes a Bangladesh mobile number to `+8801[3-9]XXXXXXXX` (14 chars, 11 local digits)
+ * or returns `null` if invalid/truncated (e.g. rejects 10-digit `+880174333969` or placeholders).
+ */
+export function normalizeValidBangladeshMobileE164(raw?: string | null): string | null {
+  if (!raw) return null;
+  const ascii = normalizePhoneAsciiDigits(raw).trim();
+  if (!ascii || ascii.includes('*') || ascii.includes('X') || ascii.includes('•')) {
+    return null;
+  }
+  const digits = ascii.replace(/\D/g, '');
+  let local11 = '';
+  if (digits.length === 11 && /^01[3-9]\d{8}$/.test(digits)) {
+    local11 = digits;
+  } else if (digits.length === 13 && /^8801[3-9]\d{8}$/.test(digits)) {
+    local11 = digits.slice(2);
+  } else if (digits.length === 10 && /^1[3-9]\d{8}$/.test(digits)) {
+    local11 = `0${digits}`;
+  } else {
+    return null;
+  }
+
+  if (KNOWN_PLACEHOLDER_PHONES.has(local11) || KNOWN_PLACEHOLDER_PHONES.has(`88${local11}`)) {
+    return null;
+  }
+  // Reject obvious all-repeating fake test numbers like 01711111111 or 01999999999
+  if (/^01[3-9](\d)\1{7}$/.test(local11)) {
+    return null;
+  }
+  return `+88${local11}`;
+}
+
+export function isValidBangladeshMobilePhone(raw?: string | null): boolean {
+  return normalizeValidBangladeshMobileE164(raw) !== null;
+}
+
+export function formatBangladeshPhoneDisplay(raw?: string | null): string {
+  const e164 = normalizeValidBangladeshMobileE164(raw);
+  if (!e164) return raw ? normalizePhoneAsciiDigits(raw).trim() : '';
+  // +8801712345678 -> +880 1712-345678
+  const local11 = e164.slice(3); // 01712345678
+  return `+880 ${local11.slice(1, 5)}-${local11.slice(5)}`;
+}
+
 export function isPhoneMaskedOrInvalid(phone?: string | null): boolean {
-  if (!phone) return true;
-  if (phone.includes('*')) return true;
-  const digits = phone.replace(/\D/g, '');
-  return digits.length < 10;
+  return normalizeValidBangladeshMobileE164(phone) === null;
 }
 
 export function canSeekerViewDirectContact(
@@ -228,19 +298,15 @@ export function canSeekerViewDirectContact(
 }
 
 export function normalizeBangladeshPhoneForWa(rawPhone: string): string | null {
-  if (isPhoneMaskedOrInvalid(rawPhone)) return null;
-  const digits = rawPhone.replace(/\D/g, '');
-  if (digits.startsWith('880') && digits.length >= 13) return digits;
-  if (digits.startsWith('01') && digits.length === 11) return `88${digits}`;
-  if (digits.length >= 10) return digits;
-  return null;
+  const e164 = normalizeValidBangladeshMobileE164(rawPhone);
+  if (!e164) return null;
+  return e164.replace(/\D/g, '');
 }
 
 export function buildDirectCallHref(rawPhone?: string | null): string | null {
-  if (!rawPhone || isPhoneMaskedOrInvalid(rawPhone)) return null;
-  const cleaned = rawPhone.replace(/[^\d+]/g, '');
-  if (cleaned.replace(/\D/g, '').length < 10) return null;
-  return `tel:${cleaned}`;
+  const e164 = normalizeValidBangladeshMobileE164(rawPhone);
+  if (!e164) return null;
+  return `tel:${e164}`;
 }
 
 export function buildWhatsAppHref(

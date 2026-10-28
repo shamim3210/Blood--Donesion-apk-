@@ -12,10 +12,13 @@ import {
   buildWhatsAppHref,
   canSeekerViewDirectContact,
   formatAvailabilityTimestamp,
+  formatBangladeshPhoneDisplay,
   getDonorAvailabilityConfidence,
   isPhoneMaskedOrInvalid,
+  isValidBangladeshMobilePhone,
+  normalizeValidBangladeshMobileE164,
 } from '../utils/donorMatcher';
-import { buildOfflineEmergencySmsUri } from '../utils/sosAlertEngine';
+import { buildOfflineEmergencySmsUri, copyTextReliable } from '../utils/sosAlertEngine';
 import {
   ShieldCheck,
   Phone,
@@ -63,6 +66,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
     allowSms?: boolean;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedSms, setCopiedSms] = useState(false);
 
   // Consent contact request form state when direct phone is private (REQUEST_ONLY)
   const [seekerName, setSeekerName] = useState('');
@@ -189,16 +193,27 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
       ? buildOfflineEmergencySmsUri(activePhone, plainSmsBody)
       : null;
 
-  const handleCopyPhone = () => {
+  const handleCopyPhone = async () => {
     if (!hasUnmaskedAuthorizedPhone) return;
-    navigator.clipboard.writeText(activePhone).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const ok = await copyTextReliable(activePhone);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopySms = async () => {
+    const ok = await copyTextReliable(plainSmsBody);
+    if (ok) {
+      setCopiedSms(true);
+      setTimeout(() => setCopiedSms(false), 2000);
+    }
   };
 
   const handleClose = () => {
     setResolvedContact(null);
     setCopied(false);
+    setCopiedSms(false);
     setShowScamForm(false);
     setScamFeedback(null);
     setConsentReqFeedback(null);
@@ -217,6 +232,16 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
       return;
     }
 
+    const normalizedSeekerPhone = normalizeValidBangladeshMobileE164(seekerPhone);
+    if (!normalizedSeekerPhone || !isValidBangladeshMobilePhone(seekerPhone)) {
+      setConsentReqFeedback(
+        lang === 'bn'
+          ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
+      );
+      return;
+    }
+
     setIsSendingConsentReq(true);
     setConsentReqFeedback(null);
     try {
@@ -224,7 +249,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
         donorUid: donor.id,
         donorName: donor.name,
         seekerName: seekerName.trim(),
-        seekerPhone: seekerPhone.trim(),
+        seekerPhone: normalizedSeekerPhone,
         bloodGroupNeeded: donor.bloodGroup,
         hospitalName: hospitalName.trim(),
         urgency: 'CRITICAL',
@@ -376,8 +401,8 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                     ? 'রক্তদাতা সরাসরি যোগাযোগের অনুমতি দিয়েছেন'
                     : 'Opted-In Direct Contact Number'}
                 </span>
-                <div className="text-2xl font-mono tabular-nums font-bold text-slate-900 dark:text-white tracking-wider flex items-center justify-center gap-2">
-                  <span>{activePhone}</span>
+                <div className="text-xl sm:text-2xl font-mono tabular-nums font-bold text-slate-900 dark:text-white tracking-wider flex items-center justify-center gap-2">
+                  <span>{formatBangladeshPhoneDisplay(activePhone)}</span>
                   <button
                     type="button"
                     onClick={handleCopyPhone}
@@ -460,10 +485,58 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                 )}
               </div>
 
+              {/* Pre-written SMS Copy Box for Desktop & Mobile Convenience */}
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    {lang === 'bn' ? 'প্রস্তুতকৃত জরুরি মেসেজ:' : 'Ready-to-Send SMS Text:'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopySms}
+                    className="min-h-[30px] px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  >
+                    {copiedSms ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-600" />
+                        <span>{lang === 'bn' ? 'মেসেজ কপি ✓' : 'Copied ✓'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>{lang === 'bn' ? 'মেসেজ কপি করুন' : 'Copy SMS Text'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {plainSmsBody}
+                </p>
+              </div>
+
+              {onStartChatWithDonor && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = donor;
+                    handleClose();
+                    onStartChatWithDonor(target);
+                  }}
+                  className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#075e54] hover:bg-[#064e46] text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  <span>
+                    {lang === 'bn'
+                      ? 'ইন-অ্যাপ লাইভ চ্যাটে বিনামূল্যে বার্তা পাঠান'
+                      : 'Send Free Message via In-App Live Chat'}
+                  </span>
+                </button>
+              )}
+
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                 {lang === 'bn'
-                  ? 'নোট: উপরের বাটনগুলো আপনার ফোনের ডায়ালার, WhatsApp বা SMS অ্যাপ চালু করবে; রক্তদাতা ফোন ধরার আগ পর্যন্ত যোগাযোগ নিশ্চিত নয়।'
-                  : 'Note: These actions open your device dialer, WhatsApp, or SMS app. Contact is only confirmed once the donor responds.'}
+                  ? 'নোট: মোবাইলে উপরের বাটনগুলো ফোনের ডায়ালার, WhatsApp বা SMS অ্যাপ খুলবে। কম্পিউটার ব্রাউজারে নম্বর/মেসেজ কপি করুন অথবা ইন-অ্যাপ চ্যাট ব্যবহার করুন।'
+                  : 'Note: On mobile, these open your dialer, WhatsApp, or SMS app. On desktop, copy the number/SMS above or use In-App Live Chat.'}
               </p>
 
               {/* Seeker Contact Tracking: Confirm Donor or Move to Next Donor */}

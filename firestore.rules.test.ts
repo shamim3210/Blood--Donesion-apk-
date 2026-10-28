@@ -146,4 +146,29 @@ export const DIRTY_DOZEN_TESTS: DirtyDozenTestCase[] = [
     payload: { createdAt: '1999-01-01T00:00:00Z' },
     expectedOutcome: 'PERMISSION_DENIED',
   },
+  {
+    id: 13,
+    name: 'Bulk Scraping /requestDirectContacts PII Vault',
+    collectionPath: '/requestDirectContacts',
+    operation: 'list',
+    auth: { uid: 'user_1', email: 'u1@gmail.com', email_verified: true },
+    expectedOutcome: 'PERMISSION_DENIED',
+  },
+  {
+    id: 14,
+    name: 'Invalid 10-digit Local Phone (+880174333969) on /requestDirectContacts',
+    collectionPath: '/requestDirectContacts/req_1',
+    operation: 'create',
+    auth: { uid: 'user_1', email: 'u1@gmail.com', email_verified: true },
+    payload: {
+      requestId: 'req_1',
+      authorUid: 'user_1',
+      contactName: 'Attendant',
+      contactPhone: '+880174333969',
+      shareDirectContact: true,
+      status: 'ACTIVE',
+    },
+    expectedOutcome: 'PERMISSION_DENIED',
+  },
 ];
+

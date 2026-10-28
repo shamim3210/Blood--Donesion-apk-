@@ -111,9 +111,28 @@ export function isRealOnlyModeEnabled(): boolean {
   return true;
 }
 
+function hasInvalidLocalRequestPhone(rawPhone?: string): boolean {
+  if (!rawPhone) return false;
+  const trimmed = String(rawPhone).trim();
+  // Allow hospital counter fallback label when cloud direct contact is still resolving
+  if (trimmed === 'হাসপাতাল জরুরি কাউন্টার' || trimmed === 'Hospital Emergency Desk') {
+    return false;
+  }
+  const ascii = trimmed.replace(/[০-৯]/g, (c) => String('০১২৩৪৫৬৭৮৯'.indexOf(c)));
+  const digits = ascii.replace(/\D/g, '');
+  if (digits.length === 11 && /^01[3-9]\d{8}$/.test(digits)) {
+    return digits === '01700000000' || digits === '01712345678' || digits === '01711000000';
+  }
+  if (digits.length === 13 && /^8801[3-9]\d{8}$/.test(digits)) {
+    const local11 = digits.slice(2);
+    return local11 === '01700000000' || local11 === '01712345678' || local11 === '01711000000';
+  }
+  return true;
+}
+
 /**
- * Scrubs any legacy fake/seed donors, requests, audit logs, or mock caches
- * stored in browser localStorage from older app versions, while keeping all genuine records intact.
+ * Scrubs any legacy fake/seed donors, broken/truncated-phone requests, duplicate requests,
+ * audit logs, or mock caches stored in browser localStorage from older app versions.
  */
 export function scrubFakeLocalStorageOnBoot(): void {
   if (typeof window === 'undefined') return;
@@ -135,13 +154,25 @@ export function scrubFakeLocalStorageOnBoot(): void {
     if (rawRequests) {
       const parsed = JSON.parse(rawRequests);
       if (Array.isArray(parsed)) {
-        const cleanReqs = parsed.filter(
-          (r) =>
-            r &&
-            typeof r.id === 'string' &&
-            !isFakeIdentifier(r.id) &&
-            !isFakePersonName(r.patientName)
-        );
+        const seenKeys = new Set<string>();
+        const cleanReqs = parsed.filter((r) => {
+          if (
+            !r ||
+            typeof r.id !== 'string' ||
+            isFakeIdentifier(r.id) ||
+            isFakePersonName(r.patientName) ||
+            hasInvalidLocalRequestPhone(r.contactPhone)
+          ) {
+            return false;
+          }
+          const sig =
+            r.status === 'ACTIVE'
+              ? `${String(r.patientName || '').trim().toLowerCase()}|${String(r.hospitalName || '').trim().toLowerCase()}|${String(r.bloodGroup || '')}`
+              : r.id;
+          if (seenKeys.has(sig)) return false;
+          seenKeys.add(sig);
+          return true;
+        });
         localStorage.setItem('bloodsearch_requests', JSON.stringify(cleanReqs));
       }
     }
@@ -157,13 +188,33 @@ export function scrubFakeLocalStorageOnBoot(): void {
       }
     }
 
+    // Scrub legacy fake Maternity Standby & Dengue demo entries
+    const rawMaternity = localStorage.getItem('bloodsearch_maternity_plan');
+    if (rawMaternity) {
+      const mat = JSON.parse(rawMaternity);
+      if (mat && Array.isArray(mat.standbyDonors)) {
+        mat.standbyDonors = mat.standbyDonors.filter(
+          (d: any) => d && d.id !== 'sb-1' && d.phone !== '+8801712345678'
+        );
+        localStorage.setItem('bloodsearch_maternity_plan', JSON.stringify(mat));
+      }
+    }
+
+    const rawDengue = localStorage.getItem('bloodsearch_dengue_logs');
+    if (rawDengue) {
+      const logs = JSON.parse(rawDengue);
+      if (Array.isArray(logs)) {
+        const cleanLogs = logs.filter((l: any) => l && l.id !== 'dl-1' && l.id !== 'dl-2');
+        localStorage.setItem('bloodsearch_dengue_logs', JSON.stringify(cleanLogs));
+      }
+    }
+
     const rawUser = localStorage.getItem('bloodsearch_current_user');
     if (rawUser) {
       const u = JSON.parse(rawUser);
       if (u && (isFakeIdentifier(u.id) || isFakePersonName(u.name))) {
         localStorage.removeItem('bloodsearch_current_user');
       } else if (u && u.district === 'ঢাকা') {
-        // Normalize legacy Bengali district ID on cached user profile so search filters match cleanly
         u.district = 'dhaka';
         if (u.upazila === 'সদর') u.upazila = 'dhanmondi';
         localStorage.setItem('bloodsearch_current_user', JSON.stringify(u));
@@ -174,12 +225,19 @@ export function scrubFakeLocalStorageOnBoot(): void {
   }
 }
 
-export function evictSeedsProgressively<T extends { id: string; name?: string; patientName?: string }>(
-  realItems: T[],
-  _seedItems: T[] = [],
-  _forceRealOnly = true
-): T[] {
+export function evictSeedsProgressively<
+  T extends {
+    id: string;
+    name?: string;
+    patientName?: string;
+    hospitalName?: string;
+    bloodGroup?: string;
+    status?: string;
+    contactPhone?: string;
+  },
+>(realItems: T[], _seedItems: T[] = [], _forceRealOnly = true): T[] {
   const seen = new Set<string>();
+  const seenActiveReqSig = new Set<string>();
   const uniqueReal: T[] = [];
   for (const item of realItems) {
     if (
@@ -189,9 +247,20 @@ export function evictSeedsProgressively<T extends { id: string; name?: string; p
       !isFakeIdentifier(item.id) &&
       !isFakePersonName(item.name || item.patientName)
     ) {
+      if (item.patientName && hasInvalidLocalRequestPhone(item.contactPhone)) {
+        continue;
+      }
+      if (item.patientName && item.status === 'ACTIVE') {
+        const sig = `${item.patientName.trim().toLowerCase()}|${String(item.hospitalName || '').trim().toLowerCase()}|${String(item.bloodGroup || '')}`;
+        if (seenActiveReqSig.has(sig)) {
+          continue;
+        }
+        seenActiveReqSig.add(sig);
+      }
       seen.add(item.id);
       uniqueReal.push(item);
     }
   }
   return uniqueReal;
 }
+
