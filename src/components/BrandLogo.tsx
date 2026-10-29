@@ -1,15 +1,17 @@
-import React, { useId } from 'react';
+import React, { useState } from 'react';
+import { Droplet } from 'lucide-react';
 import { useBrandConfig } from '../config/brandConfig';
 
 export interface BrandLogoProps {
   /**
-   * - 'mark': Compact squircle icon badge (crisp at 28px–64px)
-   * - 'lockup': Squircle icon badge + Brand Name + Tagline
-   * - 'card': Full official squircle artwork card (/assets/bloodsearch-logo-squircle.png)
+   * - 'mark': Compact squircle icon badge using the official BloodSearch emblem
+   * - 'lockup': Squircle icon badge + Brand Name (+ optional tagline/subtitle)
+   * - 'card': Full official BloodSearch logo artwork (/assets/aistudio/image_771fa3d8.png)
    */
   variant?: 'mark' | 'lockup' | 'card';
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   subtitle?: string;
+  hideSubtitle?: boolean;
   showTaglineDot?: boolean;
   className?: string;
 }
@@ -26,139 +28,55 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   variant = 'mark',
   size = 'md',
   subtitle,
+  hideSubtitle = false,
   className = '',
 }) => {
   const brand = useBrandConfig();
-  const rawId = useId().replace(/:/g, '');
-  const dropMainId = `bs-drop-main-${rawId}`;
-  const dropCrescentId = `bs-drop-crescent-${rawId}`;
-  const pulseRedId = `bs-pulse-red-${rawId}`;
-  const dropShadowId = `bs-drop-shadow-${rawId}`;
+  const [cardImgError, setCardImgError] = useState(false);
+  const [markImgError, setMarkImgError] = useState(false);
 
   if (variant === 'card') {
     return (
       <div
-        className={`inline-flex items-center justify-center rounded-3xl bg-white p-1.5 shadow-lg border border-slate-200/90 dark:border-slate-700/80 select-none overflow-hidden ${className}`}
+        className={`inline-flex items-center justify-center rounded-2xl sm:rounded-3xl bg-white p-1.5 shadow-md ring-1 ring-slate-200/90 dark:ring-white/20 select-none overflow-hidden ${className}`}
       >
-        <img
-          src="/assets/bloodsearch-logo-squircle.png"
-          alt={`${brand.brandName} - ${brand.tagline}`}
-          referrerPolicy="no-referrer"
-          className="w-full h-full object-contain rounded-2xl"
-        />
+        {!cardImgError ? (
+          <img
+            src="/assets/aistudio/image_771fa3d8.png"
+            alt={`${brand.brandName} - ${brand.tagline}`}
+            referrerPolicy="no-referrer"
+            onError={() => setCardImgError(true)}
+            className="w-full h-full object-contain rounded-xl sm:rounded-2xl bg-white"
+          />
+        ) : (
+          <div className="w-full h-full rounded-xl bg-gradient-to-br from-[#dc2626] to-[#0b2239] flex flex-col items-center justify-center text-white p-2 text-center">
+            <Droplet className="w-7 h-7 fill-white mb-1" />
+            <span className="text-[11px] font-black tracking-tight leading-none">
+              {brand.brandName}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
 
   const markBadge = (
     <div
-      className={`${MARK_SIZE_CLASSES[size]} bg-white dark:bg-white shadow-sm ring-1 ring-slate-200/90 dark:ring-white/20 flex items-center justify-center shrink-0 overflow-hidden select-none`}
+      className={`${MARK_SIZE_CLASSES[size]} bg-white shadow-xs ring-1 ring-slate-200/95 dark:ring-white/25 flex items-center justify-center shrink-0 overflow-hidden select-none p-0.5`}
     >
-      <svg
-        viewBox="0 0 512 512"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        className="w-[92%] h-[92%]"
-        aria-hidden="true"
-      >
-        <defs>
-          <linearGradient id={dropMainId} x1="180" y1="74" x2="338" y2="438" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#f32424" />
-            <stop offset="52%" stopColor="#ce1212" />
-            <stop offset="100%" stopColor="#7a0707" />
-          </linearGradient>
-          <linearGradient id={dropCrescentId} x1="160" y1="180" x2="290" y2="400" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#fc3535" stopOpacity="0.92" />
-            <stop offset="100%" stopColor="#b81010" stopOpacity="0.88" />
-          </linearGradient>
-          <linearGradient id={pulseRedId} x1="28" y1="268" x2="484" y2="268" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#dc1c1c" />
-            <stop offset="50%" stopColor="#b91010" />
-            <stop offset="100%" stopColor="#dc1c1c" />
-          </linearGradient>
-          <radialGradient id={dropShadowId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#0f172a" stopOpacity="0.26" />
-            <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-
-        {/* Ground Shadow */}
-        <ellipse cx="256" cy="450" rx="92" ry="13" fill={`url(#${dropShadowId})`} />
-
-        {/* Left Donor Silhouette */}
-        <circle cx="58" cy="240" r="17" fill={`url(#${pulseRedId})`} />
-        <path
-          d="M28 292C28 273 41 261 58 261C75 261 88 273 88 292V305C88 311 83 315 77 315H39C33 315 28 311 28 305V292Z"
-          fill={`url(#${pulseRedId})`}
+      {!markImgError ? (
+        <img
+          src="/assets/bloodsearch-emblem-mark.png"
+          alt={brand.brandName}
+          referrerPolicy="no-referrer"
+          onError={() => setMarkImgError(true)}
+          className="w-full h-full object-contain bg-white"
         />
-
-        {/* Left ECG Pulse Line */}
-        <path
-          d="M84 290H112L122 258L135 326L151 212L164 290H182"
-          stroke={`url(#${pulseRedId})`}
-          strokeWidth="13"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-
-        {/* Right ECG Pulse Line */}
-        <path
-          d="M330 290H348L361 212L377 326L390 258L400 290H426"
-          stroke={`url(#${pulseRedId})`}
-          strokeWidth="13"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-
-        {/* Right Heart Icon */}
-        <path
-          d="M454 316C454 316 418 292 418 268C418 254 429 244 441 244C449 244 454 249 454 253C454 249 459 244 467 244C479 244 490 254 490 268C490 292 454 316 454 316Z"
-          fill={`url(#${pulseRedId})`}
-        />
-
-        {/* Main 3D Crimson Blood Drop */}
-        <path
-          d="M256 64C256 64 140 214 140 310C140 376.274 191.935 430 256 430C320.065 430 372 376.274 372 310C372 214 256 64 256 64Z"
-          fill={`url(#${dropMainId})`}
-        />
-
-        {/* Left-Side 3D Curved Crescent Highlight */}
-        <path
-          d="M256 82C235 114 156 226 156 306C156 360 194 401 245 410C203 389 180 349 182 296C184 235 235 136 256 82Z"
-          fill={`url(#${dropCrescentId})`}
-        />
-
-        {/* Magnifier Handle Crimson Rim */}
-        <path
-          d="M308 352L356 400"
-          stroke="#990d0d"
-          strokeWidth="36"
-          strokeLinecap="round"
-        />
-
-        {/* Magnifier White Handle & Lens Ring */}
-        <path
-          d="M298 342L354 398"
-          stroke="#ffffff"
-          strokeWidth="23"
-          strokeLinecap="round"
-        />
-        <circle
-          cx="256"
-          cy="300"
-          r="66"
-          stroke="#ffffff"
-          strokeWidth="19"
-          fill="#8c0b0b"
-          fillOpacity="0.32"
-        />
-
-        {/* Inner White Blood Droplet Inside Lens */}
-        <path
-          d="M256 255C256 255 226 296 226 318C226 334.569 239.431 348 256 348C272.569 348 286 334.569 286 318C286 296 256 255 256 255Z"
-          fill="#ffffff"
-        />
-      </svg>
+      ) : (
+        <div className="w-full h-full rounded-lg bg-gradient-to-br from-[#dc2626] to-[#0b2239] flex items-center justify-center text-white">
+          <Droplet className="w-4 h-4 fill-white" />
+        </div>
+      )}
     </div>
   );
 
@@ -166,28 +84,33 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
     return className ? <div className={`inline-flex ${className}`}>{markBadge}</div> : markBadge;
   }
 
+  const isJoinedWordmark =
+    !brand.brandName.includes(' ') &&
+    Boolean(brand.brandPrimaryWord && brand.brandSecondaryWord);
+
   return (
     <div className={`inline-flex items-center gap-2.5 min-w-0 select-none ${className}`}>
       {markBadge}
       <div className="min-w-0 leading-none">
-        <div className="font-extrabold text-sm sm:text-base tracking-tight truncate">
-          <span className="text-[#c81018] dark:text-[#f83b3b]">{brand.brandPrimaryWord}</span>
+        <div className="font-extrabold text-[15px] sm:text-[17px] tracking-tight whitespace-nowrap truncate">
+          <span className="text-[#dc2626] dark:text-[#fb7185]">{brand.brandPrimaryWord}</span>
           {brand.brandSecondaryWord ? (
             <>
-              {' '}
-              <span className="text-slate-900 dark:text-white">{brand.brandSecondaryWord}</span>
+              {isJoinedWordmark ? '' : ' '}
+              <span className="text-[#0b2239] dark:text-white">{brand.brandSecondaryWord}</span>
             </>
           ) : null}
         </div>
-        {subtitle ? (
-          <span className="text-[10px] sm:text-[11px] font-bold text-slate-600 dark:text-slate-300 block mt-0.5 truncate">
-            {subtitle}
-          </span>
-        ) : (
-          <span className="text-[9px] sm:text-[10px] font-extrabold tracking-[0.1em] uppercase text-slate-700 dark:text-slate-300 block mt-1 truncate">
-            {brand.tagline}
-          </span>
-        )}
+        {!hideSubtitle &&
+          (subtitle ? (
+            <span className="text-[10px] sm:text-[11px] font-semibold text-slate-600 dark:text-slate-300 block mt-0.5 truncate">
+              {subtitle}
+            </span>
+          ) : (
+            <span className="text-[9px] sm:text-[10px] font-bold tracking-[0.08em] text-[#0b2239]/80 dark:text-slate-300 block mt-1 truncate">
+              {brand.tagline}
+            </span>
+          ))}
       </div>
     </div>
   );

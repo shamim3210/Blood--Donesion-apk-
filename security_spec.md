@@ -27,25 +27,28 @@
 8. **Request Direct Contacts & Volunteer Responses (`/requestDirectContacts/{requestId}` & `/requestResponses/{responseId}`)**:
    - `/requestDirectContacts/{requestId}` isolates emergency hospital attendant callback numbers with `allow list: if false` (prevents bulk PII scraping). Single-doc `get` is permitted only while `shareDirectContact == true && status == 'ACTIVE'`, or to `authorUid` / `isAdmin()`. Validated against strict 11-digit Bangladesh mobile regex `^(\+?8801[3-9][0-9]{8}|01[3-9][0-9]{8})$`.
    - `/requestResponses/{responseId}` enforces canonical deterministic ID `requestId + '__' + request.auth.uid`, contains zero phone/email PII, forbids self-pledging (`authorUid != request.auth.uid`), and verifies parent `/requests/$(requestId)` exists and is `ACTIVE`.
-9. **Terminal State Locking**:
-   - Once `/requests/{requestId}` reaches `status in ['FULFILLED', 'CANCELLED', 'EXPIRED']`, non-admin users cannot mutate it further.
-10. **Temporal & Immutable Integrity**:
+9. **Live Donor-to-Hospital Trip Tracking (`/liveDonorTrips/{tripId}`)**:
+   - Deterministic ID `requestId + '__' + request.auth.uid` prevents duplicate or spoofed tracking sessions.
+   - Pair-isolated privacy: `allow get` and O(1) `allow list` (`resource.data.donorUid == request.auth.uid || resource.data.seekerUid == request.auth.uid`) restrict live GPS coordinates strictly to the traveling donor and the target patient's requester (`seekerUid`), blocking third-party location stalking.
+   - Strict Bangladesh geographic bounds (`20.0 <= lat <= 27.0`, `87.5 <= lng <= 93.0`), parent `/requests/$(requestId)` relational ownership check, and terminal state locking once `tripStatus in ['COMPLETED', 'CANCELLED']`.
+10. **Terminal State Locking**:
+   - Once `/requests/{requestId}` reaches `status in ['FULFILLED', 'CANCELLED', 'EXPIRED']` or `/liveDonorTrips/{tripId}` reaches `tripStatus in ['COMPLETED', 'CANCELLED']`, non-admin users cannot mutate them further.
+11. **Temporal & Immutable Integrity**:
    - `createdAt == request.time` on `create`; `updatedAt == request.time` on `update`; `uid`, `ownerUid`, `authorUid`, `seekerUid`, `donorUid`, `responderUid`, `participantOneUid`, `participantTwoUid`, and `createdAt` are immutable on `update`.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads (Must Return PERMISSION_DENIED)
 1. **Payload 1 (Privilege Escalation / Self-Admin)**: `POST /users/attacker1` with `{ ..., "panelType": "ADMIN" }` without `/admins/attacker1` existing.
 2. **Payload 2 (Forged Admin Secret Proof)**: `POST /admins/attacker1` with `{ "uid": "attacker1", "secretProofHash": "0000...0000" }`.
 3. **Payload 3 (Email Spoofing Attack)**: Unverified account (`email: "shamimrakib015@gmail.com"`, `email_verified: false`) attempting `GET /users/victim1`.
-4. **Payload 4 (PII Cross-User Read & Non-Opted-In Contact Read)**: Authenticated user `uid: "userA"` attempting `GET /users/userB`, `GET /donorDirectContacts/privateDonor` where `shareDirectContact == false`, or `GET /requestDirectContacts/fulfilledReq` where `status == 'FULFILLED'`.
-5. **Payload 5 (PII Collection Scraping)**: Authenticated user attempting `LIST /users`, `LIST /donorDirectContacts`, or `LIST /requestDirectContacts`.
-6. **Payload 6 (Shadow / Ghost Field Injection)**: `POST /donors/donor1` or `POST /requestAlerts/req1__donor1` with valid fields plus `"isSuperVerified": true`.
-7. **Payload 7 (Identity & Canonical ID Spoofing on Create)**: Authenticated `uid: "userA"` creating `/contactRequests/fakeId`, `/requestAlerts/fakeId`, or `/requestResponses/fakeId` not matching canonical `uidA__uidB` / `reqId__donorUid` / `reqId__responderUid`.
-8. **Payload 8 (ID Poisoning / Invalid Phone Format)**: Creating `/requestDirectContacts/req1` with a truncated 10-digit local phone `+880174333969` or `/donors/../../bad$id`.
+4. **Payload 4 (PII Cross-User Read & Foreign Live Trip Stalking)**: Authenticated user `uid: "userA"` attempting `GET /users/userB`, `GET /donorDirectContacts/privateDonor` where `shareDirectContact == false`, or `GET /liveDonorTrips/req1__donorB` when neither `seekerUid` nor `donorUid` equals `userA`.
+5. **Payload 5 (PII Collection Scraping)**: Authenticated user attempting `LIST /users`, `LIST /donorDirectContacts`, `LIST /requestDirectContacts`, or unfiltered `LIST /liveDonorTrips`.
+6. **Payload 6 (Shadow / Ghost Field Injection)**: `POST /donors/donor1` or `POST /liveDonorTrips/req1__donor1` with valid fields plus `"isSuperVerified": true`.
+7. **Payload 7 (Identity & Canonical ID Spoofing on Create)**: Authenticated `uid: "userA"` creating `/contactRequests/fakeId`, `/requestAlerts/fakeId`, `/requestResponses/fakeId`, or `/liveDonorTrips/fakeId` not matching canonical `requestId__donorUid`.
+8. **Payload 8 (ID Poisoning / Out-of-Bounds Coordinates)**: Creating `/requestDirectContacts/req1` with a truncated 10-digit local phone `+880174333969`, `/liveDonorTrips/req1__donor1` with `lat: 999`, or `/donors/../../bad$id`.
 9. **Payload 9 (Value Poisoning on Update)**: Updating whitelisted field `available` on `/donors/donor1` with string `"yes"` instead of `bool`.
-10. **Payload 10 (Self-Approving Contact Consent or Self-Pledging Own Request)**: Seeker `userA` attempting to update `/contactRequests/userA__donorB` to `status: "APPROVED"` or creating `/requestResponses/req1__userA` where `authorUid == "userA"`.
-11. **Payload 11 (Terminal State Re-opening)**: Author attempting to change `/requests/req1` from `status: "FULFILLED"` or `"CANCELLED"` back to `"ACTIVE"`.
-12. **Payload 12 (Client Timestamp Forgery)**: Creating `/requestAlerts/req1__donor1` with a client `Timestamp` instead of `serverTimestamp()` (`request.time`).
+10. **Payload 10 (Self-Approving Contact Consent or Self-Tracking Own Request)**: Seeker `userA` attempting to update `/contactRequests/userA__donorB` to `status: "APPROVED"` or creating `/liveDonorTrips/req1__userA` where `seekerUid == "userA"`.
+11. **Payload 11 (Terminal State Re-opening)**: Author attempting to change `/requests/req1` from `status: "CANCELLED"` back to `"ACTIVE"`, or donor attempting to change `/liveDonorTrips/req1__donor1` from `tripStatus: "COMPLETED"` back to `"ON_THE_WAY"`.
+12. **Payload 12 (Client Timestamp Forgery)**: Creating `/requestAlerts/req1__donor1` or `/liveDonorTrips/req1__donor1` with a client `Timestamp` instead of `serverTimestamp()` (`request.time`).
 
 ## 3. Test Suite Reference
 See `/firestore.rules.test.ts` and `/tests/emergencyContactSystem.test.ts` for executable verification.
-

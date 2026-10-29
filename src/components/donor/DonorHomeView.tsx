@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import L from 'leaflet';
 import {
   BloodRequest,
   BloodGroup,
@@ -8,10 +9,14 @@ import {
 import { isSeedDonorId, isSeedRequestId } from '../../data/mockDonors';
 import { DISTRICTS } from '../../data/bangladeshGeo';
 import {
-  requestRealDeviceGPS,
+  requestRealDeviceGPSWithStatus,
+  resolveBangladeshCoordinates,
+  calculateHaversineDistance,
+  formatDistance,
   Coordinates,
   DEFAULT_BANGLADESH_COORDS,
 } from '../../utils/geolocation';
+import { isPhoneMaskedOrInvalid } from '../../utils/donorMatcher';
 import {
   calculateRecoveryCountdown,
   getStoredDonationLogs,
@@ -36,26 +41,21 @@ import {
   MapPin,
   Search,
   Compass,
-  Award,
   Phone,
   ExternalLink,
+  Navigation,
   Building2,
   UserPlus,
   MessageSquare,
   CalendarCheck,
   Clock,
-  HeartHandshake,
-  Activity,
-  Truck,
-  Smartphone,
-  Utensils,
-  FileCheck2,
-  Sparkles,
   Stethoscope,
   FlaskConical,
   Copy,
   Check,
+  Download,
 } from 'lucide-react';
+import { BrandLogo } from '../BrandLogo';
 import type { CareSuiteTab } from '../ecosystem/EmergencyCareSuiteModal';
 
 interface DonorHomeViewProps {
@@ -67,6 +67,7 @@ interface DonorHomeViewProps {
   onSelectRequest: (req: BloodRequest) => void;
   onQuickDonate: (req: BloodRequest) => void;
   onNavigateTab: (tab: any) => void;
+  onFocusMapLocation?: (locationId?: string) => void;
   onQuickSearchByGroup?: (group: BloodGroup | 'ALL', district?: string) => void;
   onOpenDirectory?: () => void;
   onOpenPoster?: () => void;
@@ -80,52 +81,58 @@ interface MiniMapPin {
   name: string;
   label: string;
   type: 'DONOR' | 'SOS' | 'HOSPITAL';
-  distance: string;
+  statusLabel: string;
   district: string;
   phone?: string;
   canDirectCall: boolean;
-  x: number;
-  y: number;
+  lat: number;
+  lng: number;
 }
 
-const VERIFIED_HOSPITAL_MINI_PINS: MiniMapPin[] = [
+const VERIFIED_HOSPITAL_MINI_PINS: Omit<MiniMapPin, 'statusLabel'>[] = [
   {
     id: 'hosp-dmch',
-    name: 'ঢাকা মেডিকেল কলেজ ব্লাড ব্যাংক',
+    name: 'ঢাকা মেডিকেল কলেজ ব্লাড ব্যাংক (DMCH)',
     label: 'DMCH',
     type: 'HOSPITAL',
-    distance: 'সরকারি কেন্দ্র',
     district: 'শাহবাগ, ঢাকা',
-    phone: '02-55165088',
+    phone: '+880255165088',
     canDirectCall: true,
-    x: 50,
-    y: 44,
+    lat: 23.7260,
+    lng: 90.3976,
   },
   {
     id: 'hosp-bsmmu',
-    name: 'বিএসএমএমইউ ট্রান্সফিউশন মেডিসিন',
+    name: 'বিএসএমএমইউ ট্রান্সফিউশন মেডিসিন (BSMMU)',
     label: 'BSMMU',
     type: 'HOSPITAL',
-    distance: 'সরকারি কেন্দ্র',
     district: 'শাহবাগ, ঢাকা',
-    phone: '02-55165760',
+    phone: '+880255165760',
     canDirectCall: true,
-    x: 66,
-    y: 48,
+    lat: 23.7389,
+    lng: 90.3958,
   },
   {
     id: 'hosp-nicvd',
-    name: 'জাতীয় হৃদরোগ ইনস্টিটিউট ব্লাড ব্যাংক',
+    name: 'জাতীয় হৃদরোগ ইনস্টিটিউট ব্লাড ব্যাংক (NICVD)',
     label: 'NICVD',
     type: 'HOSPITAL',
-    distance: 'সরকারি কেন্দ্র',
     district: 'শের-ই-বাংলা নগর, ঢাকা',
-    phone: '02-9122560',
+    phone: '+88029122560',
     canDirectCall: true,
-    x: 34,
-    y: 32,
+    lat: 23.7708,
+    lng: 90.3695,
   },
 ];
+
+function escapeMiniPinHtml(raw: string): string {
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 const ALL_BLOOD_GROUPS: BloodGroup[] = ['A+', 'B+', 'O+', 'AB+', 'A-', 'B-', 'O-', 'AB-'];
 
@@ -138,12 +145,10 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
   onSelectRequest,
   onQuickDonate,
   onNavigateTab,
+  onFocusMapLocation,
   onQuickSearchByGroup,
   onOpenDirectory,
-  onOpenPoster,
-  onOpenThalassemia,
   onOpenPlayStore,
-  onOpenCareSuite,
 }) => {
   const [rareOnlyFilter, setRareOnlyFilter] = useState(false);
   const [expressGroup, setExpressGroup] = useState<BloodGroup>('B+');
@@ -230,15 +235,19 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
   });
   const readinessAllGood = Object.values(readinessChecks).every(Boolean);
 
-  const [, setUserCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
+  const [userCoords, setUserCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
   const [isGpsActive, setIsGpsActive] = useState<boolean>(false);
+
+  const miniMapContainerRef = useRef<HTMLDivElement | null>(null);
+  const miniMapInstanceRef = useRef<L.Map | null>(null);
+  const miniMarkersLayerRef = useRef<L.LayerGroup | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    requestRealDeviceGPS().then((coords) => {
+    requestRealDeviceGPSWithStatus().then(({ coords, isRealGps }) => {
       if (mounted) {
         setUserCoords(coords);
-        setIsGpsActive(true);
+        setIsGpsActive(isRealGps);
       }
     });
     return () => {
@@ -247,57 +256,67 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
   }, []);
 
   const liveMiniPins = useMemo<MiniMapPin[]>(() => {
-    const slots = [
-      { x: 54, y: 38 },
-      { x: 36, y: 54 },
-      { x: 62, y: 26 },
-      { x: 70, y: 58 },
-      { x: 28, y: 30 },
-      { x: 46, y: 68 },
-    ];
     const realItems: MiniMapPin[] = [];
     for (const req of activeRequestsAll) {
-      if (realItems.length < slots.length) {
-        const slot = slots[realItems.length];
-        const cleanPhone = req.contactPhone && !req.contactPhone.includes('*') ? req.contactPhone : undefined;
+      if (realItems.length < 5) {
+        const coords = resolveBangladeshCoordinates({
+          district: req.district,
+          upazila: req.upazila,
+          division: req.division || 'dhaka',
+          seedKey: `sos-${req.id}`,
+        });
+        const cleanCallable = !isPhoneMaskedOrInvalid(req.contactPhone);
+        const km = calculateHaversineDistance(userCoords, coords);
         realItems.push({
-          id: `real-sos-${req.id}`,
+          id: `real-map-sos-${req.id}`,
           name: req.hospitalName,
           label: req.bloodGroup,
           type: 'SOS',
-          distance: lang === 'bn' ? 'সক্রিয় SOS' : 'Active SOS',
-          district: req.district,
-          phone: cleanPhone,
-          canDirectCall: Boolean(cleanPhone),
-          x: slot.x,
-          y: slot.y,
+          statusLabel: `${lang === 'bn' ? 'সক্রিয় SOS' : 'Active SOS'} · ${formatDistance(km, lang)}`,
+          district: req.upazila ? `${req.upazila}, ${req.district}` : req.district,
+          phone: cleanCallable ? req.contactPhone : undefined,
+          canDirectCall: cleanCallable,
+          lat: coords.latitude,
+          lng: coords.longitude,
         });
       }
     }
     for (const d of donors) {
-      if (!isSeedDonorId(d.id) && d.available && realItems.length < slots.length) {
-        const slot = slots[realItems.length];
+      if (!isSeedDonorId(d.id) && d.available && realItems.length < 5) {
+        const coords = resolveBangladeshCoordinates({
+          district: d.district,
+          upazila: d.upazila,
+          division: d.division || 'dhaka',
+          seedKey: `donor-${d.id}`,
+        });
         const allowDirect =
           d.shareDirectContact !== false &&
           d.allowCall !== false &&
-          Boolean(d.phone) &&
-          !d.phone.includes('*');
+          !isPhoneMaskedOrInvalid(d.phone);
+        const km = calculateHaversineDistance(userCoords, coords);
         realItems.push({
-          id: `real-donor-${d.id}`,
+          id: `real-map-donor-${d.id}`,
           name: d.name,
           label: d.bloodGroup,
           type: 'DONOR',
-          distance: lang === 'bn' ? 'প্রস্তুত ডোনার' : 'Ready Donor',
+          statusLabel: `${lang === 'bn' ? 'প্রস্তুত ডোনার' : 'Ready Donor'} · ${formatDistance(km, lang)}`,
           district: `${d.upazila || ''}${d.upazila ? ', ' : ''}${d.district}`,
           phone: allowDirect ? d.phone : undefined,
           canDirectCall: allowDirect,
-          x: slot.x,
-          y: slot.y,
+          lat: coords.latitude,
+          lng: coords.longitude,
         });
       }
     }
-    return [...realItems, ...VERIFIED_HOSPITAL_MINI_PINS].slice(0, 8);
-  }, [donors, activeRequestsAll, lang]);
+    const hospitalPins: MiniMapPin[] = VERIFIED_HOSPITAL_MINI_PINS.map((h) => {
+      const km = calculateHaversineDistance(userCoords, { latitude: h.lat, longitude: h.lng });
+      return {
+        ...h,
+        statusLabel: `${lang === 'bn' ? 'সরকারি কেন্দ্র' : '24/7 Center'} · ${formatDistance(km, lang)}`,
+      };
+    });
+    return [...realItems, ...hospitalPins].slice(0, 8);
+  }, [donors, activeRequestsAll, userCoords, lang]);
 
   const [selectedPin, setSelectedPin] = useState<MiniMapPin | null>(null);
   const activeSelectedPin = useMemo(
@@ -307,6 +326,132 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
       null,
     [selectedPin, liveMiniPins]
   );
+
+  // Mount real interactive Leaflet street preview inside the Home Map card
+  useEffect(() => {
+    if (!miniMapContainerRef.current || miniMapInstanceRef.current) return;
+
+    const map = L.map(miniMapContainerRef.current, {
+      center: [23.7485, 90.3885],
+      zoom: 12,
+      minZoom: 6,
+      maxZoom: 17,
+      zoomControl: false,
+      attributionControl: true,
+      scrollWheelZoom: false,
+    });
+
+    let tileErrors = 0;
+    let usedFallback = false;
+    const primaryTiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    });
+
+    primaryTiles.on('tileerror', () => {
+      tileErrors += 1;
+      if (!usedFallback && tileErrors >= 4 && miniMapInstanceRef.current === map) {
+        usedFallback = true;
+        map.removeLayer(primaryTiles);
+        L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap',
+          maxZoom: 19,
+        }).addTo(map);
+      }
+    });
+
+    primaryTiles.addTo(map);
+    const markersGroup = L.layerGroup().addTo(map);
+
+    miniMapInstanceRef.current = map;
+    miniMarkersLayerRef.current = markersGroup;
+
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    ro.observe(miniMapContainerRef.current);
+
+    const t1 = window.setTimeout(() => map.invalidateSize(), 100);
+    const t2 = window.setTimeout(() => map.invalidateSize(), 350);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      ro.disconnect();
+      map.remove();
+      miniMapInstanceRef.current = null;
+      miniMarkersLayerRef.current = null;
+    };
+  }, []);
+
+  // Sync live pins and optional real GPS dot on Home mini-map
+  useEffect(() => {
+    const map = miniMapInstanceRef.current;
+    const group = miniMarkersLayerRef.current;
+    if (!map || !group) return;
+
+    group.clearLayers();
+
+    if (isGpsActive) {
+      const gpsIcon = L.divIcon({
+        className: 'bsbd-leaflet-pin',
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
+        html: `<div class="w-5 h-5 flex items-center justify-center"><span class="w-3.5 h-3.5 rounded-full bg-sky-600 border-2 border-white shadow ring-4 ring-sky-500/25"></span></div>`,
+      });
+      L.marker([userCoords.latitude, userCoords.longitude], {
+        icon: gpsIcon,
+        zIndexOffset: 850,
+      })
+        .bindTooltip(lang === 'bn' ? 'আপনার বর্তমান লোকেশন' : 'Your GPS Location', {
+          direction: 'top',
+          offset: [0, -8],
+        })
+        .addTo(group);
+    }
+
+    liveMiniPins.forEach((pin) => {
+      const isSelected = activeSelectedPin?.id === pin.id;
+      const safeLabel = escapeMiniPinHtml(pin.label);
+      const bgClass = isSelected
+        ? 'bg-rose-600 ring-2 ring-white shadow-lg scale-110'
+        : pin.type === 'SOS'
+          ? 'bg-red-600 ring-2 ring-white/90 shadow-md'
+          : pin.type === 'DONOR'
+            ? 'bg-emerald-600 ring-2 ring-white/90 shadow-md'
+            : 'bg-slate-800 ring-2 ring-white/90 shadow-md';
+
+      const icon = L.divIcon({
+        className: 'bsbd-leaflet-pin',
+        iconSize: [52, 28],
+        iconAnchor: [26, 14],
+        html: `
+          <div class="w-[52px] h-[28px] flex items-center justify-center select-none">
+            <div class="px-2 h-6 min-w-[30px] rounded-md text-white font-extrabold text-[10px] tracking-tight flex items-center justify-center whitespace-nowrap transition-transform ${bgClass}">
+              ${safeLabel}
+            </div>
+          </div>
+        `,
+      });
+
+      const marker = L.marker([pin.lat, pin.lng], {
+        icon,
+        zIndexOffset: isSelected ? 1000 : pin.type === 'SOS' ? 600 : pin.type === 'DONOR' ? 400 : 200,
+      });
+
+      marker.bindTooltip(`${pin.name}`, {
+        direction: 'top',
+        offset: [0, -12],
+      });
+
+      marker.on('click', () => {
+        setSelectedPin(pin);
+        map.panTo([pin.lat, pin.lng], { animate: true, duration: 0.45 });
+      });
+
+      marker.addTo(group);
+    });
+  }, [liveMiniPins, activeSelectedPin?.id, isGpsActive, userCoords, lang]);
 
   const [homeNotice, setHomeNotice] = useState<string | null>(null);
   const showTempNotice = (msg: string) => {
@@ -348,31 +493,47 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
         </div>
       )}
 
-      {/* 1. Primary Hero Command Card */}
-      <section className="rounded-2xl bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-        {/* Main Emergency Search & SOS Split Body */}
+      {/* 1. Signature Brand Hero Command Card (Deep Navy + Crimson) */}
+      <section className="rounded-3xl hero-brand-surface text-white overflow-hidden">
         <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
           <div className="lg:col-span-7 flex flex-col justify-between space-y-4">
-            <div className="space-y-2">
-              <div className="text-xs font-semibold text-rose-600 dark:text-rose-400 tracking-tight">
-                {lang === 'bn'
-                  ? 'বাংলাদেশ জরুরি রক্তদাতা সংযোগ নেটওয়ার্ক · ৬৪ জেলা'
-                  : 'Bangladesh Direct Blood Donor Network · 64 Districts'}
+            <div className="flex items-start gap-3.5 sm:gap-4">
+              <BrandLogo
+                variant="card"
+                className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 shadow-lg"
+              />
+              <div className="space-y-1.5 min-w-0 flex-1">
+                <div className="text-xs font-bold text-rose-300 tracking-tight">
+                  {lang === 'bn'
+                    ? 'বাংলাদেশ জরুরি রক্তদাতা সংযোগ নেটওয়ার্ক · ৬৪ জেলা'
+                    : 'Bangladesh Direct Blood Donor Network · 64 Districts'}
+                </div>
+                <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight leading-snug">
+                  {lang === 'bn'
+                    ? 'জরুরি মুহূর্তে সরাসরি প্রস্তুত রক্তদাতার সাথে যোগাযোগ করুন'
+                    : 'Find Verified Blood Donors & Contact Directly in Minutes'}
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-200/90 leading-relaxed max-w-2xl">
+                  {lang === 'bn'
+                    ? 'রক্তের গ্রুপ ও জেলা নির্বাচন করে ১ ক্লিকেই নিকটস্থ প্রস্তুত রক্তদাতাদের সরাসরি কল বা WhatsApp করুন, অথবা জরুরি SOS ব্রডকাস্ট পাঠান।'
+                    : 'Pick blood group & district below to call or WhatsApp available donors in one tap, or broadcast an emergency SOS alert.'}
+                </p>
               </div>
-              <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight leading-snug">
-                {lang === 'bn'
-                  ? 'জরুরি মুহূর্তে সরাসরি প্রস্তুত রক্তদাতার সাথে যোগাযোগ করুন'
-                  : 'Find Verified Blood Donors & Contact Directly in Minutes'}
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed max-w-2xl">
-                {lang === 'bn'
-                  ? 'রক্তের গ্রুপ ও জেলা নির্বাচন করে ১ ক্লিকেই নিকটস্থ প্রস্তুত রক্তদাতাদের সরাসরি কল বা WhatsApp করুন, অথবা জরুরি SOS ব্রডকাস্ট পাঠান।'
-                  : 'Pick blood group & district below to call or WhatsApp available donors in one tap, or broadcast an emergency SOS alert.'}
-              </p>
             </div>
 
-            {/* Instant 1-Step Express Blood Group & District Finder */}
-            <div className="p-3 sm:p-3.5 rounded-2xl bg-slate-50/90 dark:bg-[#0d1322] border border-slate-200/80 dark:border-slate-800 space-y-2.5">
+            {/* Instant 1-Step High-Contrast Express Blood Group & District Finder */}
+            <div className="p-3.5 sm:p-4 rounded-2xl bg-white/96 dark:bg-[#0d1527]/95 text-slate-900 dark:text-white border border-white/60 dark:border-slate-700/80 shadow-lg space-y-3">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-bold text-[#0b2239] dark:text-slate-200">
+                  {lang === 'bn'
+                    ? 'দ্রুত রক্তের গ্রুপ নির্বাচন করুন'
+                    : 'Select Blood Group Needed'}
+                </span>
+                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  {lang === 'bn' ? '১ ক্লিকে সরাসরি সার্চ' : '1-Tap Instant Search'}
+                </span>
+              </div>
+
               <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
                 {ALL_BLOOD_GROUPS.map((grp) => {
                   const selected = expressGroup === grp;
@@ -381,7 +542,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       key={grp}
                       type="button"
                       onClick={() => setExpressGroup(grp)}
-                      className={`min-h-[40px] min-w-[44px] px-2.5 py-1.5 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
+                      className={`min-h-[42px] min-w-[46px] px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
                         selected ? 'btn-crimson' : 'btn-surface'
                       }`}
                     >
@@ -396,7 +557,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   value={expressDistrict}
                   onChange={(e) => setExpressDistrict(e.target.value)}
                   aria-label="Express District Selector"
-                  className="sm:col-span-5 h-11 px-3 text-xs font-semibold rounded-xl bg-white dark:bg-[#111827] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                  className="sm:col-span-5 h-11 px-3 text-xs font-semibold rounded-xl bg-slate-50 dark:bg-[#111b30] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
                 >
                   <option value="ALL">
                     {lang === 'bn' ? 'সকল জেলা (সমগ্র বাংলাদেশ)' : 'All 64 Districts'}
@@ -417,7 +578,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       onNavigateTab('search');
                     }
                   }}
-                  className="sm:col-span-4 min-h-[44px] px-4 py-2 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="sm:col-span-4 min-h-[44px] px-4 py-2 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <Search className="w-4 h-4 shrink-0" />
                   <span>
@@ -435,7 +596,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       district: expressDistrict !== 'ALL' ? expressDistrict : undefined,
                     })
                   }
-                  className="sm:col-span-3 min-h-[44px] px-3 py-2 rounded-xl btn-obsidian font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="sm:col-span-3 min-h-[44px] px-3 py-2 rounded-xl btn-obsidian font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <Megaphone className="w-3.5 h-3.5 text-rose-400 shrink-0" />
                   <span>{lang === 'bn' ? 'SOS পোস্ট' : 'Post SOS'}</span>
@@ -452,15 +613,15 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 if (onQuickSearchByGroup) onQuickSearchByGroup('ALL', 'ALL');
                 else onNavigateTab('search');
               }}
-              className="p-3.5 rounded-xl bg-slate-50 hover:bg-rose-50/60 dark:bg-[#0d1322] dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-800 text-left transition-colors cursor-pointer"
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left transition-colors cursor-pointer backdrop-blur-xs"
             >
-              <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <div className="text-[11px] font-semibold text-slate-200">
                 {lang === 'bn' ? 'প্রস্তুত রক্তদাতা' : 'Ready Donors'}
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+              <div className="text-2xl sm:text-3xl font-black text-white font-mono tabular-nums mt-0.5">
                 {totalReadyDonors}
               </div>
-              <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold mt-1 flex items-center gap-1">
+              <div className="text-[11px] text-emerald-300 font-bold mt-1 flex items-center gap-1 whitespace-nowrap">
                 <span>{lang === 'bn' ? 'ডিরেক্টরি দেখুন' : 'Browse directory'}</span>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               </div>
@@ -469,15 +630,15 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigateTab('requests')}
-              className="p-3.5 rounded-xl bg-slate-50 hover:bg-rose-50/60 dark:bg-[#0d1322] dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-800 text-left transition-colors cursor-pointer"
+              className="p-3.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/28 border border-rose-300/25 text-left transition-colors cursor-pointer backdrop-blur-xs"
             >
-              <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <div className="text-[11px] font-semibold text-rose-100">
                 {lang === 'bn' ? 'সক্রিয় জরুরি আবেদন' : 'Active SOS Requests'}
               </div>
-              <div className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono tabular-nums mt-0.5">
+              <div className="text-2xl sm:text-3xl font-black text-white font-mono tabular-nums mt-0.5">
                 {activeRequestsAll.length}
               </div>
-              <div className="text-[11px] text-rose-600 dark:text-rose-400 font-semibold mt-1 flex items-center gap-1">
+              <div className="text-[11px] text-rose-200 font-bold mt-1 flex items-center gap-1 whitespace-nowrap">
                 <span>{lang === 'bn' ? 'সকল আবেদন দেখুন' : 'View requests'}</span>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               </div>
@@ -486,26 +647,28 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigateTab('chat')}
-              className="p-3.5 rounded-xl bg-slate-50 hover:bg-slate-100 dark:bg-[#0d1322] dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-800 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer"
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer backdrop-blur-xs"
             >
               <div className="min-w-0">
-                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                <div className="text-xs font-bold text-white truncate">
                   {lang === 'bn' ? 'লাইভ চ্যাট ও GPS' : 'Live Chat & GPS'}
                 </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                <div className="text-[11px] text-slate-300 truncate mt-0.5">
                   {lang === 'bn' ? 'স্লিপ ছবি ও লোকেশন' : 'Slip & location'}
                 </div>
               </div>
-              <MessageSquare className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                <MessageSquare className="w-4 h-4" />
+              </div>
             </button>
 
             <button
               type="button"
               onClick={() => onOpenRegister('USER')}
-              className="p-3.5 rounded-xl bg-slate-50 hover:bg-emerald-50/70 dark:bg-[#0d1322] dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-800 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer"
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer backdrop-blur-xs"
             >
               <div className="min-w-0">
-                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                <div className="text-xs font-bold text-white truncate">
                   {isLoggedIn
                     ? lang === 'bn'
                       ? 'ডোনার কার্ড আপডেট'
@@ -514,21 +677,41 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                     ? 'ডোনার নিবন্ধন'
                     : 'Join as Donor'}
                 </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                <div className="text-[11px] text-slate-300 truncate mt-0.5">
                   {lang === 'bn' ? 'স্মার্ট আইডি ও সেটিংস' : 'Smart ID & privacy'}
                 </div>
               </div>
-              <UserPlus className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+              <div className="w-8 h-8 rounded-xl bg-rose-500/25 text-rose-200 flex items-center justify-center shrink-0">
+                <UserPlus className="w-4 h-4" />
+              </div>
             </button>
+
+            {onOpenPlayStore && (
+              <button
+                type="button"
+                onClick={onOpenPlayStore}
+                className="col-span-2 min-h-[44px] px-3.5 py-2 rounded-2xl bg-white/12 hover:bg-white/20 border border-white/18 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Download className="w-4 h-4 text-emerald-300 shrink-0" />
+                  <span className="text-xs font-bold text-white truncate">
+                    {lang === 'bn'
+                      ? 'ফোনে অফিশিয়াল BloodSearch অ্যাপ / APK ইনস্টল ও ডাউনলোড'
+                      : 'Install Official BloodSearch Phone App / APK'}
+                  </span>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-200 shrink-0" />
+              </button>
+            )}
           </div>
         </div>
       </section>
 
       {/* 3. Active Emergency Blood Requests Near You */}
-      <section className="space-y-2.5">
+      <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+            <h3 className="text-sm sm:text-base font-extrabold text-[#0b2239] dark:text-white">
               {lang === 'bn' ? 'সক্রিয় জরুরি রক্তের আবেদনসমূহ' : 'Active Emergency Blood Requests'}
             </h3>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -561,12 +744,12 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
 
         <div className="space-y-2.5">
           {activeRequests.length === 0 ? (
-            <div className="p-6 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 text-center space-y-3">
-              <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto">
+            <div className="p-6 rounded-2xl surface-card text-center space-y-3">
+              <div className="w-11 h-11 rounded-2xl bg-rose-50 dark:bg-rose-950/50 text-[#dc2626] dark:text-rose-400 flex items-center justify-center mx-auto">
                 <Droplet className="w-5 h-5" />
               </div>
               <div className="space-y-1">
-                <p className="text-sm font-bold text-slate-900 dark:text-white">
+                <p className="text-sm font-bold text-[#0b2239] dark:text-white">
                   {rareOnlyFilter
                     ? lang === 'bn'
                       ? 'এই মুহূর্তে কোনো নেগেটিভ গ্রুপের সক্রিয় আবেদন নেই'
@@ -586,7 +769,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setRareOnlyFilter(false)}
-                    className="min-h-[42px] px-4 py-2 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] px-4 py-2 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
                   >
                     {lang === 'bn' ? 'সকল গ্রুপ দেখুন' : 'Show All Groups'}
                   </button>
@@ -594,7 +777,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => onOpenSOSWizard()}
-                  className="min-h-[42px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="min-h-[44px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
                   <Megaphone className="w-3.5 h-3.5 shrink-0" />
                   <span>
@@ -619,10 +802,10 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               return (
                 <div
                   key={req.id}
-                  className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-rose-300 dark:hover:border-rose-800 transition-colors"
+                  className="surface-card rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-rose-300 dark:hover:border-rose-700 transition-colors"
                 >
                   <div className="flex items-start gap-3 min-w-0 flex-1">
-                    <div className="w-12 h-12 rounded-xl btn-crimson flex flex-col items-center justify-center font-black text-base shrink-0">
+                    <div className="w-12 h-12 rounded-2xl btn-crimson flex flex-col items-center justify-center font-black text-base shrink-0">
                       <span>{req.bloodGroup}</span>
                     </div>
                     <div className="min-w-0 flex-1">
@@ -700,80 +883,71 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
         </div>
       </section>
 
-      {/* 4. Two-Column Live Hospital/Donor Radar + 90d/14d Recovery Tracker */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Live Radar Map Card */}
-        <section className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)] flex flex-col justify-between space-y-3">
+      {/* 4. Two-Column Live Hospital/Donor Street Map + 90d/14d Readiness & Recovery Tracker */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+        {/* Live Interactive Street Map Preview Card */}
+        <section className="surface-card rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0 flex-1">
-              <div className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
-                <Compass className="w-5 h-5" />
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#dc2626] to-[#0b2239] text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Compass className="w-4.5 h-4.5" />
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                <h3 className="font-bold text-sm text-[#0b2239] dark:text-white truncate">
                   {lang === 'bn' ? 'লাইভ হাসপাতাল ও ডোনার ম্যাপ' : 'Live Hospital & Donor Map'}
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                   {isGpsActive
                     ? lang === 'bn'
-                      ? 'GPS সক্রিয় · সরকারি ব্লাড ব্যাংক ও প্রকৃত ডোনার'
-                      : 'GPS Active · Verified centers & real donors'
+                      ? 'GPS সক্রিয় · সরকারি ব্লাড ব্যাংক ও প্রস্তুত ডোনার'
+                      : 'GPS Active · Verified centers & ready donors'
                     : lang === 'bn'
-                    ? 'সরকারি ব্লাড ব্যাংক ও সক্রিয় ডোনার লোকেশন'
-                    : 'Verified blood banks & active locations'}
+                    ? 'ঢাকা ও ৬৪ জেলা · সরকারি ব্লাড ব্যাংক ও প্রস্তুত ডোনার'
+                    : 'Dhaka & 64 Districts · Verified centers & ready donors'}
                 </p>
               </div>
             </div>
 
             <button
               type="button"
-              onClick={() => onNavigateTab('map')}
-              className="min-h-[40px] px-3.5 py-1.5 btn-obsidian font-semibold text-xs rounded-xl cursor-pointer whitespace-nowrap shrink-0"
+              onClick={() => {
+                if (onFocusMapLocation) {
+                  onFocusMapLocation(activeSelectedPin?.id);
+                } else {
+                  onNavigateTab('map');
+                }
+              }}
+              className="min-h-[38px] px-3.5 py-1.5 btn-obsidian font-semibold text-xs rounded-xl cursor-pointer whitespace-nowrap shrink-0"
             >
               {lang === 'bn' ? 'পূর্ণ ম্যাপ →' : 'Open Map →'}
             </button>
           </div>
 
-          <div className="relative w-full h-48 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-950">
-            <div className="absolute inset-0 bg-[radial-gradient(#e11d48_1px,transparent_1px)] [background-size:20px_20px] opacity-20" />
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full border border-slate-700/60 pointer-events-none" />
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-56 h-56 rounded-full border border-slate-800/70 pointer-events-none" />
+          <div className="relative w-full h-48 sm:h-52 rounded-xl overflow-hidden border border-slate-200/90 dark:border-slate-800 bg-slate-100 dark:bg-slate-900">
+            <div ref={miniMapContainerRef} className="w-full h-full z-0" />
 
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none z-10">
-              <span className="w-3 h-3 rounded-full bg-sky-400 ring-4 ring-sky-400/25" />
-              <span className="text-[9px] font-bold text-sky-200 bg-slate-900/90 px-1.5 py-0.5 rounded mt-1 font-mono">
-                {lang === 'bn' ? 'আপনি' : 'You'}
-              </span>
+            <div className="absolute top-2.5 left-2.5 z-[400] flex items-center gap-1 pointer-events-auto">
+              <button
+                type="button"
+                onClick={() => miniMapInstanceRef.current?.zoomIn()}
+                className="w-7 h-7 rounded-lg bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 font-bold text-sm flex items-center justify-center shadow-xs cursor-pointer"
+                title="Zoom In"
+                aria-label="Zoom In"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                onClick={() => miniMapInstanceRef.current?.zoomOut()}
+                className="w-7 h-7 rounded-lg bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 font-bold text-sm flex items-center justify-center shadow-xs cursor-pointer"
+                title="Zoom Out"
+                aria-label="Zoom Out"
+              >
+                −
+              </button>
             </div>
 
-            {liveMiniPins.map((pin) => {
-              const isSelected = activeSelectedPin?.id === pin.id;
-              return (
-                <button
-                  key={pin.id}
-                  type="button"
-                  onClick={() => setSelectedPin(pin)}
-                  style={{ left: `${pin.x}%`, top: `${pin.y}%` }}
-                  className="absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer z-20"
-                >
-                  <span
-                    className={`px-2 h-7 rounded-lg flex items-center justify-center font-bold text-[10px] shadow-md transition-transform ${
-                      isSelected
-                        ? 'bg-rose-600 text-white ring-2 ring-white scale-110 z-30'
-                        : pin.type === 'SOS'
-                        ? 'bg-red-600 text-white'
-                        : pin.type === 'DONOR'
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-slate-800 text-slate-100 border border-slate-600'
-                    }`}
-                  >
-                    {pin.label}
-                  </span>
-                </button>
-              );
-            })}
-
-            <div className="absolute top-2.5 right-2.5 z-10 px-2 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-slate-200 text-[10px] font-semibold font-mono tabular-nums">
+            <div className="absolute top-2.5 right-2.5 z-[400] px-2 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-slate-100 text-[10px] font-semibold font-mono tabular-nums pointer-events-none">
               {liveMiniPins.length} {lang === 'bn' ? 'লোকেশন' : 'pins'}
             </div>
           </div>
@@ -796,12 +970,12 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   <h4 className="font-bold text-xs text-slate-900 dark:text-white leading-tight truncate">
                     {activeSelectedPin.name}
                   </h4>
-                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate tabular-nums">
                     <MapPin className="w-3 h-3 text-rose-500 shrink-0" />
                     <span className="truncate">{activeSelectedPin.district}</span>
                     <span>·</span>
                     <span className="font-semibold text-slate-700 dark:text-slate-300 shrink-0">
-                      {activeSelectedPin.distance}
+                      {activeSelectedPin.statusLabel}
                     </span>
                   </div>
                 </div>
@@ -821,7 +995,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                           }
                         }
                       }}
-                      className="min-h-[38px] px-2.5 py-1.5 btn-surface font-bold text-xs rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      className="hidden sm:flex min-h-[36px] px-2 py-1 btn-surface font-bold text-[11px] rounded-lg items-center gap-1 cursor-pointer whitespace-nowrap"
                       title={activeSelectedPin.phone}
                     >
                       {copiedPinPhone ? (
@@ -833,18 +1007,35 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                     </button>
                     <a
                       href={`tel:${activeSelectedPin.phone}`}
-                      className="min-h-[38px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="min-h-[36px] px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
                     >
                       <Phone className="w-3.5 h-3.5 shrink-0" />
                       <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
                     </a>
                   </>
                 ) : null}
+
+                <a
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${activeSelectedPin.lat},${activeSelectedPin.lng}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[36px] w-9 bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 rounded-lg flex items-center justify-center cursor-pointer"
+                  title={lang === 'bn' ? 'Google Maps ডিরেকশন' : 'Google Maps Directions'}
+                >
+                  <Navigation className="w-3.5 h-3.5" />
+                </a>
+
                 <button
                   type="button"
-                  onClick={() => onNavigateTab('map')}
-                  className="min-h-[38px] w-9 bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-700 flex items-center justify-center cursor-pointer"
-                  title="Open in Full Map"
+                  onClick={() => {
+                    if (onFocusMapLocation) {
+                      onFocusMapLocation(activeSelectedPin.id);
+                    } else {
+                      onNavigateTab('map');
+                    }
+                  }}
+                  className="min-h-[36px] w-9 bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-700 flex items-center justify-center cursor-pointer"
+                  title={lang === 'bn' ? 'পূর্ণ ম্যাপে দেখুন' : 'Focus in Full Map'}
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                 </button>
@@ -853,8 +1044,8 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
           )}
         </section>
 
-        {/* 90-Day Whole Blood & 14-Day Platelet Recovery Tracker */}
-        <section className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)] flex flex-col justify-between space-y-3">
+        {/* 90-Day Whole Blood & 14-Day Platelet Readiness & Recovery Tracker */}
+        <section className="surface-card rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-3">
           <div className="space-y-3">
             <div className="flex flex-wrap items-start justify-between gap-2.5">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -915,27 +1106,127 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               </div>
             </div>
 
-            {/* Countdown Bar & Digits */}
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-slate-600 dark:text-slate-400">
-                  {lang === 'bn' ? 'রিকভারি অগ্রগতি' : 'Recovery Progress'}
-                </span>
-                <div className="font-mono font-bold text-slate-900 dark:text-white tabular-nums">
-                  {String(recovery.remainingDays).padStart(2, '0')}d :{' '}
-                  {String(recovery.remainingHours).padStart(2, '0')}h :{' '}
-                  {String(recovery.remainingMinutes).padStart(2, '0')}m
+            {/* Readiness Status OR Active Countdown Progress */}
+            {recovery.isEligible ? (
+              <div className="space-y-2.5">
+                <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200">
+                      {recovery.daysSinceLast !== null
+                        ? lang === 'bn'
+                          ? 'রিকভারি বিরতি ১০০% সম্পন্ন'
+                          : '100% Recovery Interval Complete'
+                        : lang === 'bn'
+                        ? 'বর্তমান স্ট্যাটাস: রক্তদানে প্রস্তুত'
+                        : 'Current Status: Ready to Donate'}
+                    </span>
+                    <span className="font-mono font-bold text-[11px] text-emerald-700 dark:text-emerald-400 tabular-nums">
+                      {recoveryMode === 'PLATELET'
+                        ? lang === 'bn'
+                          ? '১৪ দিনের চক্র'
+                          : '14-Day Cycle'
+                        : lang === 'bn'
+                        ? '৯০ দিনের চক্র'
+                        : '90-Day Cycle'}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-emerald-200/70 dark:bg-emerald-950 overflow-hidden">
+                    <div className="h-full w-full bg-emerald-500" />
+                  </div>
                 </div>
+
+                {/* 3-Column Clinical Readiness Standards (Eliminates empty whitespace & guides new donors) */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                      {lang === 'bn' ? 'নিরাপদ বিরতি' : 'Min. Interval'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                      {recovery.intervalDays} {lang === 'bn' ? 'দিন' : 'Days'}
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                      {lang === 'bn' ? 'বয়স ও ওজন' : 'Age & Weight'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                      {lang === 'bn' ? '১৮–৬০ · ৫০+কেজি' : '18–60y · ≥50kg'}
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                      {lang === 'bn' ? 'হিমোগ্লোবিন' : 'Hemoglobin'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                      ≥12.5 g/dL
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {recovery.daysSinceLast !== null
+                    ? lang === 'bn'
+                      ? `সর্বশেষ রক্তদানের পর ${recovery.daysSinceLast} দিন অতিবাহিত হয়েছে। রক্ত দেওয়ার আগে ৬+ ঘণ্টা ঘুম ও হালকা খাবার নিশ্চিত করুন।`
+                      : `${recovery.daysSinceLast} days since your last donation. Ensure 6+ hrs sleep and a meal before donating.`
+                    : lang === 'bn'
+                    ? 'সম্প্রতি রক্তদান করে থাকলে নিচের "রক্তদান লগ করুন" বাটনে তারিখ সংরক্ষণ করুন — পরবর্তী নিরাপদ তারিখ স্বয়ংক্রিয়ভাবে হিসাব হবে।'
+                    : 'Donated recently? Tap "Log Donation" below to track your automatic 90-day or 14-day recovery schedule.'}
+                </p>
               </div>
-              <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                <div
-                  style={{ width: `${recovery.progressPercent}%` }}
-                  className={`h-full transition-all ${
-                    recovery.isEligible ? 'bg-emerald-500' : 'bg-amber-500'
-                  }`}
-                />
+            ) : (
+              <div className="space-y-2.5">
+                <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200/80 dark:border-amber-900/60 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-amber-900 dark:text-amber-200">
+                      {lang === 'bn' ? 'রিকভারি কাউন্টডাউন' : 'Recovery Countdown'}
+                    </span>
+                    <div className="font-mono font-bold text-slate-900 dark:text-white tabular-nums">
+                      {String(recovery.remainingDays).padStart(2, '0')}d :{' '}
+                      {String(recovery.remainingHours).padStart(2, '0')}h :{' '}
+                      {String(recovery.remainingMinutes).padStart(2, '0')}m
+                    </div>
+                  </div>
+                  <progress
+                    value={recovery.progressPercent}
+                    max={100}
+                    className="w-full h-2 rounded-full overflow-hidden [&::-webkit-progress-bar]:bg-amber-200/70 dark:[&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:bg-amber-500 [&::-moz-progress-bar]:bg-amber-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                      {lang === 'bn' ? 'সম্পন্ন দিন' : 'Completed'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                      {recovery.daysSinceLast ?? 0}/{recovery.intervalDays}d
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                      {lang === 'bn' ? 'অগ্রগতি' : 'Recovered'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums mt-0.5">
+                      {recovery.progressPercent}%
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                      {lang === 'bn' ? 'পরবর্তী তারিখ' : 'Next Date'}
+                    </div>
+                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate mt-0.5 tabular-nums">
+                      {recovery.nextEligibleDateLabel}
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {lang === 'bn'
+                    ? 'রিকভারি চলাকালীন আয়রনসমৃদ্ধ খাবার ও পর্যাপ্ত পানি পান করুন। জরুরি আবেদনে আপনি পরিবার বা পরিচিত ডোনার রেফার করতে পারেন।'
+                    : 'Focus on hydration and iron-rich meals during recovery. You can still share SOS posts to help patients.'}
+                </p>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -1130,58 +1421,52 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
         </section>
       </div>
 
-      {/* 5. Essential Services & Care Tools Grid */}
+      {/* 5. Focused Blood-Only Quick Help (3 Core Blood Essentials Only) */}
       <section className="space-y-3">
         <div>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+          <h3 className="text-sm sm:text-base font-extrabold text-[#0b2239] dark:text-white">
             {lang === 'bn'
-              ? 'জরুরি ডিরেক্টরি, থ্যালাসেমিয়া ও রোগী সহায়তা সেবা'
-              : 'Emergency Directories & Patient Support Tools'}
+              ? 'জরুরি ব্লাড ব্যাংক ও সরাসরি সহায়তা'
+              : 'Essential Blood Bank & Matching Help'}
           </h3>
           <p className="text-[11px] text-slate-500 dark:text-slate-400">
             {lang === 'bn'
-              ? 'ব্লাড ব্যাংক হটলাইন, ফ্রি পোস্টার জেনারেটর এবং ইমার্জেন্সি মেডিকেল টুলস'
-              : 'Verified blood bank hotlines, poster generator & medical tools'}
+              ? 'শুধু রক্তদাতা ও রোগীর জন্য প্রয়োজনীয় ৩টি সরাসরি সেবা'
+              : 'Direct blood bank hotlines, live donor map & blood group compatibility'}
           </p>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
             {
-              label: lang === 'bn' ? 'ব্লাড ব্যাংক ও ৯৯৯' : 'Blood Banks & 999',
-              sub: lang === 'bn' ? '৩৪+ ভেরিফাইড হটলাইন' : '34+ Hotlines',
+              label: lang === 'bn' ? '২৪/৭ ব্লাড ব্যাংক ও ৯৯৯ হটলাইন' : '24/7 Blood Banks & 999',
+              sub:
+                lang === 'bn'
+                  ? 'সরকারি ও ভেরিফাইড ব্লাড ব্যাংকের সরাসরি নম্বর'
+                  : 'Verified government & hospital blood bank numbers',
               icon: Building2,
+              tone: 'bg-gradient-to-br from-[#dc2626] to-[#991b1b] text-white',
               onClick: onOpenDirectory,
             },
             {
-              label: lang === 'bn' ? 'থ্যালাসেমিয়া পুল' : 'Thalassemia Pool',
-              sub: lang === 'bn' ? 'নিয়মিত রক্ত শিডিউল' : 'Recurring Care',
-              icon: HeartHandshake,
-              onClick: onOpenThalassemia,
-            },
-            {
-              label: lang === 'bn' ? 'পোস্টার তৈরি' : 'SOS Poster',
-              sub: lang === 'bn' ? 'FB ও WhatsApp কার্ড' : 'Shareable Card',
-              icon: Sparkles,
-              onClick: onOpenPoster,
-            },
-            {
-              label: lang === 'bn' ? 'হাসপাতাল ম্যাপ' : 'Hospital Map',
-              sub: lang === 'bn' ? 'নিকটস্থ কেন্দ্র' : 'Nearby Centers',
+              label: lang === 'bn' ? 'লাইভ হাসপাতাল ও ডোনার ম্যাপ' : 'Live Hospital & Donor Map',
+              sub:
+                lang === 'bn'
+                  ? 'জিপিএস ও এলাকার নাম দিয়ে নিকটস্থ রক্তদাতা খুঁজুন'
+                  : 'Find closest donors & hospitals by GPS or neighborhood',
               icon: Hospital,
+              tone: 'bg-gradient-to-br from-[#0b2239] to-[#1e3a5f] text-white',
               onClick: () => onNavigateTab('map'),
             },
             {
-              label: lang === 'bn' ? 'সম্মাননা ও সনদ' : 'Badges & Cert',
-              sub: lang === 'bn' ? '.PNG সনদ ডাউনলোড' : 'Donor Honor',
-              icon: Award,
-              onClick: () => onNavigateTab('badges'),
-            },
-            {
-              label: lang === 'bn' ? 'অ্যাপ ও APK গাইড' : 'Install & APK',
-              sub: lang === 'bn' ? 'PWA ও Android' : 'Mobile Setup',
-              icon: Smartphone,
-              onClick: onOpenPlayStore,
+              label: lang === 'bn' ? 'রক্তের গ্রুপ ম্যাচিং চার্ট' : 'Blood Group Compatibility',
+              sub:
+                lang === 'bn'
+                  ? 'কোন গ্রুপের মানুষ কাকে রক্ত দিতে ও নিতে পারবেন'
+                  : 'Check who can safely donate to or receive from your group',
+              icon: Droplet,
+              tone: 'bg-gradient-to-br from-[#059669] to-[#047857] text-white',
+              onClick: () => onNavigateTab('compatibility'),
             },
           ].map((tool, idx) => {
             const Icon = tool.icon;
@@ -1190,121 +1475,24 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 key={idx}
                 type="button"
                 onClick={tool.onClick}
-                className="p-3.5 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 hover:border-rose-300 dark:hover:border-rose-700 transition-colors flex flex-col items-start text-left cursor-pointer min-h-[96px] justify-between shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+                className="min-h-[72px] p-4 rounded-2xl surface-card hover:border-rose-300 dark:hover:border-rose-700 transition-colors flex items-center gap-3.5 text-left cursor-pointer"
               >
-                <div className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center">
-                  <Icon className="w-4 h-4" />
+                <div className={`w-11 h-11 rounded-2xl ${tool.tone} flex items-center justify-center shrink-0 shadow-xs`}>
+                  <Icon className="w-5 h-5" />
                 </div>
-                <div className="mt-2 w-full">
-                  <div className="text-xs font-bold text-slate-900 dark:text-white leading-snug truncate">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs sm:text-sm font-bold text-[#0b2239] dark:text-white leading-snug truncate">
                     {tool.label}
                   </div>
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
                     {tool.sub}
                   </div>
                 </div>
+                <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
               </button>
             );
           })}
         </div>
-
-        {/* Emergency Care Suite 6-Grid (Clean Icons, Zero Clutter) */}
-        {onOpenCareSuite && (
-          <div className="p-4 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 space-y-3 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
-                  {lang === 'bn'
-                    ? 'ইমার্জেন্সি পেশেন্ট কেয়ার ও মেডিকেল টুলকিট'
-                    : 'Emergency Patient Care Toolkit'}
-                </h4>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {lang === 'bn'
-                    ? 'মাতৃত্ব স্ট্যান্ডবাই, ডেঙ্গু প্লাটিলেট, অ্যাম্বুলেন্স ভাড়া হিসাব ও লক-স্ক্রিন মেডিকেল কার্ড'
-                    : 'Maternity backup, dengue platelet log, ambulance fare & emergency medical ID'}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {(
-                [
-                  {
-                    tab: 'maternity' as CareSuiteTab,
-                    icon: HeartHandshake,
-                    titleBn: 'মাতৃত্ব ও ডেলিভারি স্ট্যান্ডবাই',
-                    subBn: 'সিজার/ডেলিভারি ব্যাকআপ ডোনার ও Rh- সতর্কতা',
-                    titleEn: 'Maternity Standby',
-                    subEn: 'Delivery backup donors & Rh- alert',
-                  },
-                  {
-                    tab: 'dengue' as CareSuiteTab,
-                    icon: Activity,
-                    titleBn: 'ডেঙ্গু প্লাটিলেট ও CBC ট্র্যাকার',
-                    subBn: 'প্লাটিলেট কাউন্ট, HCT% ও SDP SOS',
-                    titleEn: 'Dengue Platelet Tracker',
-                    subEn: 'CBC log, danger alert & SDP SOS',
-                  },
-                  {
-                    tab: 'ambulance' as CareSuiteTab,
-                    icon: Truck,
-                    titleBn: 'অ্যাম্বুলেন্স ভাড়া ও সরকারি টেস্ট ফি',
-                    subBn: 'ন্যায্য ভাড়া হিসাব ও ব্লাড স্ক্রিনিং রেট',
-                    titleEn: 'Ambulance & Fee Chart',
-                    subEn: 'Fair fare calculator & govt blood rates',
-                  },
-                  {
-                    tab: 'ice_wallpaper' as CareSuiteTab,
-                    icon: Smartphone,
-                    titleBn: 'লক-স্ক্রিন মেডিকেল কার্ড (.PNG)',
-                    subBn: 'জরুরি রক্তের গ্রুপ ও অভিভাবকের নম্বর',
-                    titleEn: 'Lock-Screen Medical ID',
-                    subEn: 'Download emergency .PNG wallpaper',
-                  },
-                  {
-                    tab: 'diet' as CareSuiteTab,
-                    icon: Utensils,
-                    titleBn: '৭ দিনের আয়রন ডায়েট ও রমজান গাইড',
-                    subBn: 'রক্তদান পরবর্তী দেশি খাবার ও রোজা নির্দেশিকা',
-                    titleEn: 'Iron Diet & Ramadan Guide',
-                    subEn: '7-day recovery meal & fasting guide',
-                  },
-                  {
-                    tab: 'gratitude' as CareSuiteTab,
-                    icon: FileCheck2,
-                    titleBn: 'কৃতজ্ঞতা ওয়াল ও স্মার্ট আইডি যাচাই',
-                    subBn: 'রোগীর পরিবারের বার্তা ও ডোনার কার্ড চেকার',
-                    titleEn: 'Gratitude & ID Verifier',
-                    subEn: 'Patient thank-you wall & ID verifier',
-                  },
-                ] as const
-              ).map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={item.tab}
-                    type="button"
-                    onClick={() => onOpenCareSuite(item.tab)}
-                    className="min-h-[58px] p-3 rounded-xl bg-slate-50/90 dark:bg-[#0d1322] hover:bg-rose-50/70 dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-800 hover:border-rose-300 dark:hover:border-rose-800 transition-colors text-left flex items-center gap-3 cursor-pointer"
-                  >
-                    <div className="w-9 h-9 rounded-lg bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
-                      <Icon className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-bold text-slate-900 dark:text-white leading-snug truncate">
-                        {lang === 'bn' ? item.titleBn : item.titleEn}
-                      </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                        {lang === 'bn' ? item.subBn : item.subEn}
-                      </div>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </section>
     </div>
   );

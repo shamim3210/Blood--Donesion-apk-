@@ -83,10 +83,12 @@ service cloud.firestore {
     function isSafeText(txt) {
       return txt is string
         && !txt.matches('(?is).*<\\s*script.*')
+        && !txt.matches('(?is).*<\\s*(iframe|svg|object|embed|img|meta|link|style|form|base)\\b.*')
+        && !txt.matches('(?is).*<[^>]*\\bon[a-z]+\\s*=.*')
         && !txt.matches('(?is).*javascript\\s*:.*')
         && !txt.matches('(?is).*vbscript\\s*:.*')
         && !txt.matches('(?is).*data\\s*:\\s*text/html.*')
-        && !txt.matches('(?is).*on(error|load|click)\\s*=.*');
+        && !txt.matches('(?is).*on(error|load|click|mouseover|focus|toggle|begin)\\s*=.*');
     }
 
     // Ensures avatar and attachment fields can only hold empty string, HTTPS URLs, or image data URIs
@@ -96,7 +98,8 @@ service cloud.firestore {
         && (
           uri.size() == 0 ||
           uri.matches('(?s)^https://.*') ||
-          uri.matches('(?s)^data:image/.*')
+          uri.matches('(?s)^data:image/.*') ||
+          uri.matches('^/[a-zA-Z0-9_/\\-.]+\\.(png|jpg|jpeg|webp|svg)$')
         );
     }
 
@@ -551,6 +554,42 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidLiveDonorTrip(data) {
+      return data.keys().hasAll([
+          'requestId', 'seekerUid', 'donorUid', 'donorName', 'bloodGroup',
+          'responderPhone', 'hospitalName', 'district', 'lat', 'lng',
+          'hospitalLat', 'hospitalLng', 'distanceKm', 'etaMinutes',
+          'areaLabel', 'tripStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'requestId', 'seekerUid', 'donorUid', 'donorName', 'bloodGroup',
+          'responderPhone', 'hospitalName', 'district', 'lat', 'lng',
+          'hospitalLat', 'hospitalLng', 'distanceKm', 'etaMinutes',
+          'areaLabel', 'tripStatus', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.requestId) && data.requestId.size() <= 80
+        && isValidId(data.seekerUid)
+        && isValidId(data.donorUid)
+        && data.donorName is string && data.donorName.size() >= 2 && data.donorName.size() <= 80 && isSafeText(data.donorName)
+        && isValidBloodGroup(data.bloodGroup)
+        && data.responderPhone is string && data.responderPhone.size() <= 24 && (
+          data.responderPhone.size() == 0 ||
+          (data.responderPhone.size() >= 6 && data.responderPhone.matches('^[0-9+\\-\\s()]{6,24}$'))
+        )
+        && data.hospitalName is string && data.hospitalName.size() >= 2 && data.hospitalName.size() <= 120 && isSafeText(data.hospitalName)
+        && data.district is string && data.district.size() >= 2 && data.district.size() <= 40 && isSafeText(data.district)
+        && data.lat is number && data.lat >= 20.0 && data.lat <= 27.0
+        && data.lng is number && data.lng >= 87.5 && data.lng <= 93.0
+        && data.hospitalLat is number && data.hospitalLat >= 20.0 && data.hospitalLat <= 27.0
+        && data.hospitalLng is number && data.hospitalLng >= 87.5 && data.hospitalLng <= 93.0
+        && data.distanceKm is number && data.distanceKm >= 0 && data.distanceKm <= 1000
+        && data.etaMinutes is number && data.etaMinutes >= 1 && data.etaMinutes <= 1440
+        && data.areaLabel is string && data.areaLabel.size() >= 2 && data.areaLabel.size() <= 80 && isSafeText(data.areaLabel)
+        && data.tripStatus is string && data.tripStatus.size() <= 16 && data.tripStatus in ['ON_THE_WAY', 'ARRIVED', 'COMPLETED', 'CANCELLED']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // =========================================================================
     // COLLECTION 1: /users/{userId} — STRICT PII ISOLATION & OWNER ANTI-HIJACK
     // =========================================================================
@@ -576,7 +615,12 @@ service cloud.firestore {
         && isVerifiedUser()
         && isValidId(userId)
         && incoming().uid == existing().uid
-        && incoming().createdAt == existing().createdAt
+        && (
+          !('createdAt' in existing()) ||
+          !(existing().createdAt is timestamp) ||
+          incoming().createdAt == existing().createdAt ||
+          incoming().createdAt == request.time
+        )
         && incoming().updatedAt == request.time
         && (
           !('availabilityConfirmedAt' in incoming()) ||
@@ -598,15 +642,11 @@ service cloud.firestore {
           ) ||
           (
             isOwner(userId)
-            && incoming().email == existing().email
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'name', 'phone', 'whatsappPhone', 'facebookUrl', 'bloodGroup',
-              'division', 'district', 'upazila', 'photoUrl', 'age', 'gender',
-              'weightKg', 'availableToDonate', 'availabilityStatus',
-              'availabilityConfirmedAt', 'shareDirectContact', 'contactVisibility',
-              'allowCall', 'allowWhatsApp', 'allowSms', 'emergencyAlertsOptIn',
-              'alertsPaused', 'totalDonations', 'panelType', 'idCardNumber', 'updatedAt'
-            ])
+            && (
+              !('email' in existing()) ||
+              existing().email.size() < 3 ||
+              incoming().email == existing().email
+            )
             && (
               incoming().panelType == existing().panelType ||
               isBootstrappedSuperAdmin() ||
@@ -700,29 +740,39 @@ service cloud.firestore {
 
       allow create: if isVerifiedUser()
         && isValidId(donorId)
-        && isOwner(donorId)
         && isValidDonorCard(incoming())
-        && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && (!('availabilityConfirmedAt' in incoming()) || incoming().availabilityConfirmedAt == request.time)
-        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
         && (
-          incoming().panelType == 'USER' ||
-          isAdmin() ||
-          existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
-        )
-        && (
-          incoming().verifiedBadge == false ||
-          isAdmin() ||
-          existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+          isBootstrappedSuperAdmin() ||
+          (
+            isOwner(donorId)
+            && incoming().ownerUid == request.auth.uid
+            && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+            && (
+              incoming().panelType == 'USER' ||
+              isAdmin() ||
+              existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+            )
+            && (
+              incoming().verifiedBadge == false ||
+              isAdmin() ||
+              existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+            )
+          )
         );
 
       allow update: if isValidDonorCard(incoming())
         && isVerifiedUser()
         && isValidId(donorId)
         && incoming().ownerUid == existing().ownerUid
-        && incoming().createdAt == existing().createdAt
+        && (
+          !('createdAt' in existing()) ||
+          !(existing().createdAt is timestamp) ||
+          incoming().createdAt == existing().createdAt ||
+          incoming().createdAt == request.time
+        )
         && incoming().updatedAt == request.time
         && (
           !('availabilityConfirmedAt' in incoming()) ||
@@ -741,26 +791,13 @@ service cloud.firestore {
           ) ||
           (
             existing().ownerUid == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'name', 'bloodGroup', 'division', 'district', 'upazila',
-              'maskedPhone', 'available', 'availabilityStatus', 'availabilityConfirmedAt',
-              'shareDirectContact', 'contactVisibility', 'allowCall', 'allowWhatsApp',
-              'allowSms', 'emergencyAlertsOptIn', 'alertsPaused',
-              'lastDonatedDate', 'totalDonations',
-              'age', 'gender', 'weightKg', 'hospitalAffiliation', 'avatar',
-              'verifiedBadge', 'panelType', 'idCardNumber', 'isPublic', 'updatedAt'
-            ])
             && (
               (
                 incoming().verifiedBadge == existing().verifiedBadge
                 && incoming().panelType == existing().panelType
               ) || (
-                incoming().panelType == 'ADMIN'
-                && incoming().verifiedBadge == true
-                && (
-                  isBootstrappedSuperAdmin() ||
-                  existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
-                )
+                isAdmin() ||
+                existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
               )
             )
           )
@@ -796,18 +833,28 @@ service cloud.firestore {
 
       allow create: if isVerifiedUser()
         && isValidId(donorId)
-        && isOwner(donorId)
         && isValidDonorDirectContact(incoming())
-        && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && hasRegisteredUserProfile();
+        && (
+          isBootstrappedSuperAdmin() ||
+          (
+            isOwner(donorId)
+            && incoming().ownerUid == request.auth.uid
+            && hasRegisteredUserProfile()
+          )
+        );
 
       allow update: if isValidDonorDirectContact(incoming())
         && isVerifiedUser()
         && isValidId(donorId)
         && incoming().ownerUid == existing().ownerUid
-        && incoming().createdAt == existing().createdAt
+        && (
+          !('createdAt' in existing()) ||
+          !(existing().createdAt is timestamp) ||
+          incoming().createdAt == existing().createdAt ||
+          incoming().createdAt == request.time
+        )
         && incoming().updatedAt == request.time
         && (
           isBootstrappedSuperAdmin() ||
@@ -939,18 +986,26 @@ service cloud.firestore {
       allow create: if isVerifiedUser()
         && isValidId(alertId)
         && isValidRequestAlert(incoming())
-        && incoming().authorUid == request.auth.uid
         && incoming().authorUid != incoming().donorUid
         && alertId == incoming().requestId + '__' + incoming().donorUid
-        && incoming().deliveryState == 'DISPATCHED'
-        && incoming().responseNote == ''
-        && incoming().responderPhone == ''
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && exists(/databases/$(database)/documents/requests/$(incoming().requestId))
-        && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.authorUid == request.auth.uid
         && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.status == 'ACTIVE'
-        && exists(/databases/$(database)/documents/donors/$(incoming().donorUid));
+        && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.authorUid == incoming().authorUid
+        && (
+          (
+            incoming().authorUid == request.auth.uid
+            && incoming().deliveryState == 'DISPATCHED'
+            && incoming().responseNote == ''
+            && incoming().responderPhone == ''
+            && exists(/databases/$(database)/documents/donors/$(incoming().donorUid))
+          ) ||
+          (
+            incoming().donorUid == request.auth.uid
+            && incoming().deliveryState == 'RESPONDED_ACCEPT'
+          )
+        );
 
       allow update: if isValidRequestAlert(incoming())
         && isVerifiedUser()
@@ -1003,11 +1058,10 @@ service cloud.firestore {
       allow create: if isVerifiedUser()
         && isValidId(requestId)
         && isValidBloodRequest(incoming())
-        && incoming().authorUid == request.auth.uid
+        && (incoming().authorUid == request.auth.uid || isBootstrappedSuperAdmin())
         && incoming().status == 'ACTIVE'
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && hasRegisteredUserProfile();
+        && incoming().updatedAt == request.time;
 
       allow update: if isValidBloodRequest(incoming())
         && isVerifiedUser()
@@ -1041,7 +1095,6 @@ service cloud.firestore {
                 && incoming().diff(existing()).affectedKeys().hasOnly([
                   'unitsCollected', 'respondedCount', 'lifecycleState', 'status', 'updatedAt'
                 ])
-                && exists(/databases/$(database)/documents/users/$(request.auth.uid))
               )
             )
           )
@@ -1076,12 +1129,15 @@ service cloud.firestore {
         && isValidId(requestId)
         && isValidRequestDirectContact(incoming())
         && incoming().requestId == requestId
-        && incoming().authorUid == request.auth.uid
+        && (incoming().authorUid == request.auth.uid || isBootstrappedSuperAdmin())
         && incoming().status == 'ACTIVE'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && exists(/databases/$(database)/documents/requests/$(requestId))
-        && get(/databases/$(database)/documents/requests/$(requestId)).data.authorUid == request.auth.uid;
+        && (
+          get(/databases/$(database)/documents/requests/$(requestId)).data.authorUid == request.auth.uid ||
+          isBootstrappedSuperAdmin()
+        );
 
       allow update: if isValidRequestDirectContact(incoming())
         && isVerifiedUser()
@@ -1124,7 +1180,6 @@ service cloud.firestore {
         && responseId == incoming().requestId + '__' + request.auth.uid
         && incoming().isPublic == true
         && incoming().createdAt == request.time
-        && hasRegisteredUserProfile()
         && exists(/databases/$(database)/documents/requests/$(incoming().requestId))
         && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.status == 'ACTIVE'
         && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.authorUid == incoming().authorUid;
@@ -1134,6 +1189,90 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(responseId) && (
         existing().responderUid == request.auth.uid ||
         existing().authorUid == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // COLLECTION 4D: /liveDonorTrips/{tripId} — PAIR-ISOLATED LIVE DONOR TRACKING
+    // Deterministic tripId == requestId + '__' + donorUid prevents spoofing & stalking!
+    // =========================================================================
+    match /liveDonorTrips/{tripId} {
+      allow get: if isSignedIn() && isValidId(tripId) && (
+        (
+          resource == null
+          && tripId.split('__').size() == 2
+          && (
+            tripId.split('__')[1] == request.auth.uid ||
+            (
+              exists(/databases/$(database)/documents/requests/$(tripId.split('__')[0]))
+              && get(/databases/$(database)/documents/requests/$(tripId.split('__')[0])).data.authorUid == request.auth.uid
+            )
+          )
+        ) ||
+        (
+          resource != null
+          && (
+            existing().donorUid == request.auth.uid ||
+            existing().seekerUid == request.auth.uid
+          )
+        ) ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.donorUid == request.auth.uid ||
+        resource.data.seekerUid == request.auth.uid
+      );
+
+      allow create: if isVerifiedUser()
+        && isValidId(tripId)
+        && isValidLiveDonorTrip(incoming())
+        && incoming().donorUid == request.auth.uid
+        && incoming().seekerUid != request.auth.uid
+        && tripId == incoming().requestId + '__' + request.auth.uid
+        && incoming().tripStatus == 'ON_THE_WAY'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/requests/$(incoming().requestId))
+        && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.status in ['ACTIVE', 'FULFILLED']
+        && get(/databases/$(database)/documents/requests/$(incoming().requestId)).data.authorUid == incoming().seekerUid;
+
+      allow update: if isValidLiveDonorTrip(incoming())
+        && isVerifiedUser()
+        && isValidId(tripId)
+        && incoming().requestId == existing().requestId
+        && incoming().seekerUid == existing().seekerUid
+        && incoming().donorUid == existing().donorUid
+        && incoming().bloodGroup == existing().bloodGroup
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            !(existing().tripStatus in ['COMPLETED', 'CANCELLED']) && (
+              (
+                existing().donorUid == request.auth.uid
+                && incoming().tripStatus in ['ON_THE_WAY', 'ARRIVED', 'COMPLETED', 'CANCELLED']
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'donorName', 'responderPhone', 'lat', 'lng',
+                  'distanceKm', 'etaMinutes', 'areaLabel', 'tripStatus', 'updatedAt'
+                ])
+              ) ||
+              (
+                existing().seekerUid == request.auth.uid
+                && incoming().tripStatus in ['COMPLETED', 'CANCELLED']
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'tripStatus', 'updatedAt'
+                ])
+              )
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(tripId) && (
+        existing().donorUid == request.auth.uid ||
+        existing().seekerUid == request.auth.uid ||
         isAdmin()
       );
     }
@@ -1181,8 +1320,7 @@ service cloud.firestore {
         && isValidCommunityMessage(incoming())
         && incoming().senderUid == request.auth.uid
         && incoming().isPublic == true
-        && incoming().createdAt == request.time
-        && hasRegisteredUserProfile();
+        && incoming().createdAt == request.time;
 
       allow update: if false;
 
@@ -1222,16 +1360,22 @@ service cloud.firestore {
       allow create: if isVerifiedUser()
         && isValidId(chatId)
         && isValidDirectChatRoom(incoming())
-        && incoming().participantOneUid != incoming().participantTwoUid
+        && incoming().participantOneUid < incoming().participantTwoUid
         && chatId == incoming().participantOneUid + '__' + incoming().participantTwoUid
         && (
-          incoming().participantOneUid == request.auth.uid ||
-          incoming().participantTwoUid == request.auth.uid
+          (
+            incoming().participantOneUid == request.auth.uid
+            && incoming().participantTwoWhatsapp == ''
+            && incoming().participantTwoFb == ''
+          ) || (
+            incoming().participantTwoUid == request.auth.uid
+            && incoming().participantOneWhatsapp == ''
+            && incoming().participantOneFb == ''
+          )
         )
         && incoming().lastSenderUid == request.auth.uid
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && hasRegisteredUserProfile();
+        && incoming().updatedAt == request.time;
 
       allow update: if isValidDirectChatRoom(incoming())
         && isVerifiedUser()

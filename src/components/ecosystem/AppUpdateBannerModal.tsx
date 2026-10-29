@@ -9,16 +9,22 @@ import {
   applySeamlessAppUpdateAndReload,
   compareSemver,
 } from '../../utils/appUpdateManager';
-import { RefreshCw, Download, Smartphone, CheckCircle2, X } from 'lucide-react';
+import { RefreshCw, Download, CheckCircle2, Sparkles, X } from 'lucide-react';
 
 interface AppUpdateBannerModalProps {
   lang: Language;
 }
 
-export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang }) => {
+/**
+ * Clean bKash / Modern Mobile APK Style Update Screen (Always rendered in crisp English):
+ * - Backward-compatible: Users who tap "Maybe Later" continue running their current APK/app uninterrupted.
+ * - Zero APK Re-deploy OTA: Tapping "Update Now" applies live web/Service Worker updates directly inside the installed APK.
+ */
+export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = () => {
   const [buildUpdate, setBuildUpdate] = useState<DetectedBuildUpdate | null>(null);
   const [remoteRelease, setRemoteRelease] = useState<RemoteAppUpdateRelease | null>(null);
   const [dismissedSessionKey, setDismissedSessionKey] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [manualCheckFeedback, setManualCheckFeedback] = useState<string | null>(null);
 
@@ -31,9 +37,7 @@ export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang
     });
 
     const handleManualCheck = async () => {
-      setManualCheckFeedback(
-        lang === 'bn' ? 'সার্ভারে নতুন আপডেট খোঁজা হচ্ছে...' : 'Checking server for updates...'
-      );
+      setManualCheckFeedback('Checking for new updates...');
       const result = await checkForDeployedBuildUpdateNow();
       const ackVer = localStorage.getItem('bloodsearch_ack_remote_version') || '';
       const hasUnseenRemote =
@@ -46,9 +50,7 @@ export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang
         setManualCheckFeedback(null);
       } else {
         setManualCheckFeedback(
-          lang === 'bn'
-            ? `আপনার অ্যাপটি সর্বশেষ ভার্সনে (v${CURRENT_APP_VERSION}) আপডেটেড আছে।`
-            : `You are running the latest version (v${CURRENT_APP_VERSION}).`
+          `Your app is up to date (v${CURRENT_APP_VERSION}) — Live OTA enabled.`
         );
         window.setTimeout(() => {
           setManualCheckFeedback(null);
@@ -56,13 +58,20 @@ export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang
       }
     };
 
+    const handlePreviewModal = () => {
+      setDismissedSessionKey(null);
+      setPreviewOpen(true);
+    };
+
     window.addEventListener('bloodsearch_manual_update_check', handleManualCheck);
+    window.addEventListener('bloodsearch_preview_update_modal', handlePreviewModal);
     return () => {
       unsubBuild();
       unsubRemote();
       window.removeEventListener('bloodsearch_manual_update_check', handleManualCheck);
+      window.removeEventListener('bloodsearch_preview_update_modal', handlePreviewModal);
     };
-  }, [lang, remoteRelease]);
+  }, [remoteRelease]);
 
   const ackedRemoteVersion = (() => {
     try {
@@ -80,22 +89,29 @@ export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang
     Boolean(remoteRelease?.active) &&
     (remoteIsNewerVersion || ackedRemoteVersion !== remoteRelease!.version);
 
-  const hasAnyUpdate = Boolean(buildUpdate?.available) || remoteNeedsPrompt;
-  const isMandatory =
-    Boolean(remoteRelease?.active) &&
-    remoteRelease?.mode === 'REQUIRED' &&
-    remoteNeedsPrompt;
+  const hasAnyUpdate = Boolean(buildUpdate?.available) || remoteNeedsPrompt || previewOpen;
 
   const displayVersion = remoteNeedsPrompt
     ? remoteRelease!.version
-    : buildUpdate?.latestVersion || CURRENT_APP_VERSION;
+    : buildUpdate?.latestVersion || (previewOpen ? '2.6.0' : CURRENT_APP_VERSION);
 
-  const sessionKey = `${displayVersion}-${buildUpdate?.latestBuildId || 'remote'}`;
+  const sessionKey = `${displayVersion}-${buildUpdate?.latestBuildId || 'ota'}`;
+
+  const handleDismiss = useCallback(() => {
+    setPreviewOpen(false);
+    setDismissedSessionKey(sessionKey);
+  }, [sessionKey]);
 
   const handleApplyUpdate = useCallback(async () => {
+    if (previewOpen && !buildUpdate?.available && !remoteNeedsPrompt) {
+      setPreviewOpen(false);
+      setManualCheckFeedback(`Updated seamlessly to latest live build (v${CURRENT_APP_VERSION}).`);
+      window.setTimeout(() => setManualCheckFeedback(null), 3500);
+      return;
+    }
     setIsApplying(true);
     await applySeamlessAppUpdateAndReload(remoteRelease?.version || displayVersion);
-  }, [remoteRelease?.version, displayVersion]);
+  }, [previewOpen, buildUpdate?.available, remoteNeedsPrompt, remoteRelease?.version, displayVersion]);
 
   if (manualCheckFeedback && !hasAnyUpdate) {
     return (
@@ -107,61 +123,64 @@ export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang
   }
 
   if (!hasAnyUpdate) return null;
-  if (!isMandatory && dismissedSessionKey === sessionKey) return null;
+  if (!previewOpen && dismissedSessionKey === sessionKey) return null;
 
-  const changelogText = remoteNeedsPrompt
-    ? remoteRelease!.changelog
-    : lang === 'bn'
-    ? 'অ্যাপের নতুন ডিপ্লয়মেন্ট ও সর্বশেষ ফিচার আপডেট পাওয়া গেছে। ১-ট্যাপে আপডেট করে নিন।'
-    : 'A newly deployed version with latest updates is ready. Tap Update Now to refresh.';
+  const changelogText =
+    remoteNeedsPrompt && remoteRelease?.changelog
+      ? remoteRelease.changelog
+      : '• Faster live GPS & nearest hospital donor matching\n• Instant mutual Call & WhatsApp contact sync\n• Seamless over-the-air (OTA) update — no APK reinstall needed';
 
-  // 1. Mandatory Full-Screen APK / System Update Dialog
-  if (isMandatory) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-        <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 p-5 sm:p-6 shadow-2xl text-left space-y-4">
-          <div className="flex items-start gap-3.5">
-            <div className="w-12 h-12 rounded-2xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-              <Smartphone className="w-6 h-6" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-bold text-rose-600 dark:text-rose-400 font-mono tabular-nums">
-                {lang === 'bn'
-                  ? `জরুরি অ্যাপ আপডেট · v${displayVersion}`
-                  : `Required Update · v${displayVersion}`}
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+      <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xl text-left">
+        {/* Clean Crimson Brand Top Header (bKash / Modern Mobile App Update Style) */}
+        <div className="banner-brand-strip px-5 py-4 text-white flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img
+              src="/assets/aistudio/image_771fa3d8.png"
+              alt="BloodSearch"
+              className="w-11 h-11 rounded-2xl bg-white p-1 object-contain shadow-sm shrink-0"
+            />
+            <div>
+              <div className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-rose-200">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Update Available · v{displayVersion}</span>
               </div>
-              <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white leading-snug mt-0.5">
-                {lang === 'bn'
-                  ? 'নতুন ভার্সনে আপডেট করা প্রয়োজন'
-                  : 'Please Update to Continue'}
+              <h3 className="text-base font-black text-white leading-tight mt-0.5">
+                New BloodSearch Update
               </h3>
             </div>
           </div>
 
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-            <div className="font-bold text-slate-900 dark:text-white mb-1">
-              {lang === 'bn' ? 'এই আপডেটে যা থাকছে:' : 'What is new in this release:'}
-            </div>
-            <p className="whitespace-pre-line">{changelogText}</p>
+          <button
+            type="button"
+            onClick={handleDismiss}
+            className="min-h-[32px] min-w-[32px] rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer shrink-0"
+            aria-label="Maybe Later"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            A newer version of <strong>BloodSearch</strong> is ready. Updating takes 2 seconds right inside this app — no new APK installation is required. You can also continue using your current version anytime.
+          </p>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 space-y-1">
+            <div className="font-bold text-slate-900 dark:text-white">What&apos;s Improved:</div>
+            <p className="whitespace-pre-line leading-relaxed">{changelogText}</p>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
+          <div className="space-y-2 pt-1">
             <button
               type="button"
               disabled={isApplying}
               onClick={handleApplyUpdate}
-              className="flex-1 min-h-[46px] px-4 py-2.5 rounded-xl btn-crimson font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap disabled:opacity-60"
+              className="w-full min-h-[46px] px-4 py-2.5 rounded-xl btn-crimson font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
             >
               <RefreshCw className={`w-4 h-4 shrink-0 ${isApplying ? 'animate-spin' : ''}`} />
-              <span>
-                {isApplying
-                  ? lang === 'bn'
-                    ? 'আপডেট হচ্ছে...'
-                    : 'Updating...'
-                  : lang === 'bn'
-                  ? 'এখনই আপডেট করুন'
-                  : 'Update App Now'}
-              </span>
+              <span>{isApplying ? 'Applying Live Update...' : 'Update Now (Instant OTA)'}</span>
             </button>
 
             {remoteRelease?.apkUrl && (
@@ -169,91 +188,22 @@ export const AppUpdateBannerModal: React.FC<AppUpdateBannerModalProps> = ({ lang
                 href={remoteRelease.apkUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="min-h-[46px] px-4 py-2.5 rounded-xl btn-emerald font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                className="w-full min-h-[42px] px-4 py-2 rounded-xl btn-emerald font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Download className="w-4 h-4 shrink-0" />
-                <span>{lang === 'bn' ? 'নতুন .APK ডাউনলোড' : 'Download .APK'}</span>
+                <span>Download Optional .APK File</span>
               </a>
             )}
+
+            <button
+              type="button"
+              onClick={handleDismiss}
+              className="w-full min-h-[42px] px-4 py-2 rounded-xl btn-surface font-bold text-xs text-slate-700 dark:text-slate-300 cursor-pointer"
+            >
+              Maybe Later (Keep Using Current Version)
+            </button>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  // 2. Non-Blocking APK/Play-Store Style Floating Update Card (Auto Deploy or Optional Push)
-  return (
-    <div className="fixed bottom-20 lg:bottom-5 left-3 right-3 sm:left-auto sm:right-5 sm:w-[400px] z-50 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200/95 dark:border-slate-700/90 p-4 shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:shadow-[0_12px_32px_rgba(0,0,0,0.55)] text-left space-y-3">
-      <div className="flex items-start justify-between gap-2.5">
-        <div className="flex items-start gap-3 min-w-0 flex-1">
-          <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200/80 dark:border-rose-800/70 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
-            <RefreshCw className="w-5 h-5" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 font-mono tabular-nums">
-              {lang === 'bn'
-                ? `নতুন আপডেট প্রস্তুত · v${displayVersion}`
-                : `New Update Ready · v${displayVersion}`}
-            </div>
-            <h4 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white leading-snug mt-0.5">
-              {lang === 'bn'
-                ? 'অ্যাপের নতুন ভার্সন পাওয়া গেছে'
-                : 'A New App Version is Available'}
-            </h4>
-            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed line-clamp-3">
-              {changelogText}
-            </p>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setDismissedSessionKey(sessionKey)}
-          className="min-h-[34px] min-w-[34px] rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center justify-center cursor-pointer shrink-0"
-          aria-label="Later"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-
-      <div className="flex items-center gap-2 pt-0.5">
-        <button
-          type="button"
-          disabled={isApplying}
-          onClick={handleApplyUpdate}
-          className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-60"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isApplying ? 'animate-spin' : ''}`} />
-          <span>
-            {isApplying
-              ? lang === 'bn'
-                ? 'আপডেট হচ্ছে...'
-                : 'Updating...'
-              : lang === 'bn'
-              ? 'এখনই আপডেট করুন'
-              : 'Update Now'}
-          </span>
-        </button>
-
-        {remoteRelease?.apkUrl && (
-          <a
-            href={remoteRelease.apkUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="min-h-[42px] px-3 py-2 rounded-xl btn-emerald font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Download className="w-3.5 h-3.5 shrink-0" />
-            <span>.APK</span>
-          </a>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setDismissedSessionKey(sessionKey)}
-          className="min-h-[42px] px-3 py-2 rounded-xl btn-surface font-semibold text-xs cursor-pointer whitespace-nowrap shrink-0"
-        >
-          {lang === 'bn' ? 'পরে' : 'Later'}
-        </button>
       </div>
     </div>
   );

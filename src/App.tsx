@@ -7,6 +7,8 @@ import {
   AuditLogEntry,
   BloodGroup,
   RequestAlertItem,
+  LiveDonorTrip,
+  LiveDonorTripStatus,
 } from './types';
 import {
   INITIAL_DONORS,
@@ -57,12 +59,25 @@ import {
   subscribeActiveAnnouncements,
   isBootstrappedAdminUser,
   ownerPurgeFakeCloudRecordsOnlyInFirestore,
-  adminSetGlobalRealOnlyModeInFirestore,
+  seedVerifiedStarterNetworkInFirestore,
+  upsertLiveDonorTripInFirestore,
+  updateLiveDonorTripStatusInFirestore,
+  subscribeLiveTripsForSeeker,
+  subscribeLiveTripsForDonor,
   maskPhoneNumber,
   DEFAULT_AVATAR_DATA_URI,
   OwnerAnnouncementItem,
   User as FirebaseUser,
 } from './firebase';
+import {
+  resolveBangladeshCoordinates,
+  watchRealDeviceGPS,
+  requestRealDeviceGPSWithStatus,
+  fetchUberStyleRoute,
+  reverseGeocodeBangladeshCoords,
+  calculateHaversineDistance,
+  Coordinates,
+} from './utils/geolocation';
 import { useBrandConfig } from './config/brandConfig';
 import type { CareSuiteTab } from './components/ecosystem/EmergencyCareSuiteModal';
 
@@ -253,6 +268,34 @@ export default function App() {
   const [selectedDonorForPhone, setSelectedDonorForPhone] = useState<Donor | null>(null);
   const [activeDonorForChat, setActiveDonorForChat] = useState<Donor | null>(null);
   const [pendingRespondRequest, setPendingRespondRequest] = useState<BloodRequest | null>(null);
+  const [focusedMapLocationId, setFocusedMapLocationId] = useState<string | null>(null);
+  const [focusedLiveTripId, setFocusedLiveTripId] = useState<string | null>(null);
+  const [localLiveTrips, setLocalLiveTrips] = useState<LiveDonorTrip[]>(() => {
+    try {
+      const saved = localStorage.getItem('bloodsearch_live_donor_trips');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [cloudSeekerTrips, setCloudSeekerTrips] = useState<LiveDonorTrip[]>([]);
+  const [cloudDonorTrips, setCloudDonorTrips] = useState<LiveDonorTrip[]>([]);
+
+  const liveDonorTrips = useMemo<LiveDonorTrip[]>(() => {
+    const byId = new Map<string, LiveDonorTrip>();
+    for (const t of localLiveTrips) {
+      if (t && t.id) byId.set(t.id, t);
+    }
+    for (const t of cloudDonorTrips) {
+      if (t && t.id) byId.set(t.id, t);
+    }
+    for (const t of cloudSeekerTrips) {
+      if (t && t.id) byId.set(t.id, t);
+    }
+    return Array.from(byId.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+  }, [localLiveTrips, cloudDonorTrips, cloudSeekerTrips]);
   const [searchPreset, setSearchPreset] = useState<{
     bloodGroup: BloodGroup | 'ALL';
     district: string;
@@ -261,6 +304,7 @@ export default function App() {
   const [sosPreset, setSosPreset] = useState<{
     bloodGroup?: BloodGroup;
     district?: string;
+    hospitalName?: string;
   }>({});
   const [isPhoneModalOpen, setIsPhoneModalOpen] = useState<boolean>(false);
   const [isSOSWizardOpen, setIsSOSWizardOpen] = useState<boolean>(false);
@@ -279,7 +323,7 @@ export default function App() {
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<string[]>([]);
 
   const openSOSWithContext = useCallback(
-    (ctx?: { bloodGroup?: BloodGroup; district?: string }) => {
+    (ctx?: { bloodGroup?: BloodGroup; district?: string; hospitalName?: string }) => {
       setSosPreset(ctx || {});
       setIsSOSWizardOpen(true);
     },
@@ -298,16 +342,97 @@ export default function App() {
     [handleSelectTab]
   );
 
+  const handleFocusMapLocation = useCallback(
+    (locationId?: string) => {
+      setFocusedMapLocationId(locationId || null);
+      handleSelectTab('map');
+    },
+    [handleSelectTab]
+  );
+
   const openRegisterWithRole = useCallback((role: 'USER' | 'ADMIN' = 'USER') => {
     setRegisterInitialRole(role);
     setIsRegisterModalOpen(true);
   }, []);
 
   const [liveFirebaseUser, setLiveFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [currentSavedUser, setCurrentSavedUser] = useState<Record<string, any> | null>(() => {
+    try {
+      const raw = localStorage.getItem('bloodsearch_current_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
   const [incomingDonorAlerts, setIncomingDonorAlerts] = useState<RequestAlertItem[]>([]);
   const [unsuccessfulDonorIds, setUnsuccessfulDonorIds] = useState<string[]>([]);
   const [confirmedDonorId, setConfirmedDonorId] = useState<string | null>(null);
   const markedViewedAlertIdsRef = React.useRef<Set<string>>(new Set());
+
+  // Sync local profile edits (Name, Blood Group, Custom Area/Neighborhood, Photo) across Header & Donor Cards immediately
+  useEffect(() => {
+    const syncSavedUser = () => {
+      try {
+        const raw = localStorage.getItem('bloodsearch_current_user');
+        const parsed = raw ? JSON.parse(raw) : null;
+        setCurrentSavedUser(parsed);
+        if (parsed && parsed.id && parsed.name && parsed.bloodGroup) {
+          setDonors((prev) => {
+            const existing = prev.find((d) => d.id === parsed.id);
+            const updatedCard: Donor = {
+              ...(existing || {
+                rating: 5.0,
+                reviewsCount: 0,
+                isCloudRecord: true,
+              }),
+              id: parsed.id,
+              name: parsed.name,
+              bloodGroup: parsed.bloodGroup,
+              division: parsed.division || existing?.division || 'dhaka',
+              district: parsed.district || existing?.district || 'dhaka',
+              upazila: parsed.upazila || existing?.upazila || 'Dhaka',
+              phone: parsed.shareDirectContact
+                ? parsed.phone
+                : maskPhoneNumber(parsed.phone || ''),
+              whatsappPhone: parsed.shareDirectContact
+                ? parsed.whatsappPhone || parsed.phone
+                : undefined,
+              available: parsed.availableToDonate !== false,
+              availabilityStatus: parsed.availabilityStatus || 'AVAILABLE',
+              availabilityConfirmedAtMs:
+                parsed.availabilityConfirmedAtMs || existing?.availabilityConfirmedAtMs || Date.now(),
+              shareDirectContact: Boolean(parsed.shareDirectContact),
+              contactVisibility: parsed.contactVisibility || 'REQUEST_ONLY',
+              allowCall: parsed.allowCall !== false,
+              allowWhatsApp: parsed.allowWhatsApp !== false,
+              allowSms: parsed.allowSms !== false,
+              emergencyAlertsOptIn: parsed.emergencyAlertsOptIn !== false,
+              alertsPaused: parsed.alertsPaused === true,
+              lastDonatedDate: parsed.lastDonationDate || existing?.lastDonatedDate || '',
+              totalDonations: parsed.totalDonations ?? existing?.totalDonations ?? 0,
+              verifiedBadge: parsed.role === 'ADMIN' || Boolean(existing?.verifiedBadge),
+              age: parsed.age || existing?.age || 25,
+              gender: parsed.gender || existing?.gender || 'MALE',
+              weightKg: parsed.weightKg || existing?.weightKg || 62,
+              hospitalAffiliation:
+                parsed.role === 'ADMIN'
+                  ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
+                  : existing?.hospitalAffiliation || 'স্বেচ্ছাসেবী রক্তদাতা',
+              avatar: parsed.photoUrl || existing?.avatar || DEFAULT_AVATAR_DATA_URI,
+            };
+            const others = prev.filter((d) => !isSeedDonorId(d.id) && d.id !== parsed.id);
+            return evictSeedsProgressively([updatedCard, ...others], INITIAL_DONORS);
+          });
+        }
+      } catch {}
+    };
+    window.addEventListener('bloodsearch_user_changed', syncSavedUser);
+    window.addEventListener('storage', syncSavedUser);
+    return () => {
+      window.removeEventListener('bloodsearch_user_changed', syncSavedUser);
+      window.removeEventListener('storage', syncSavedUser);
+    };
+  }, []);
 
   // Live SOS Sound & Real-Time Matching Radar
   const [sosSoundEnabled, setSosSoundEnabled] = useState<boolean>(() => {
@@ -371,6 +496,8 @@ export default function App() {
 
     let unsubProfile: (() => void) | null = null;
     let unsubDonorAlerts: (() => void) | null = null;
+    let unsubSeekerTrips: (() => void) | null = null;
+    let unsubDonorTrips: (() => void) | null = null;
 
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
       setLiveFirebaseUser(u);
@@ -382,6 +509,14 @@ export default function App() {
         unsubDonorAlerts();
         unsubDonorAlerts = null;
       }
+      if (unsubSeekerTrips) {
+        unsubSeekerTrips();
+        unsubSeekerTrips = null;
+      }
+      if (unsubDonorTrips) {
+        unsubDonorTrips();
+        unsubDonorTrips = null;
+      }
       if (u) {
         try {
           const syncedProfile = await ensureUserAutoSyncedInFirestore(u);
@@ -389,10 +524,11 @@ export default function App() {
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(syncedProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
 
-            // Immediately reflect newly signed-in real user in local donors state while Cloud snapshot syncs
+            // Immediately upsert signed-in real user in local donors state while Cloud snapshot syncs
             setDonors((prev) => {
-              if (prev.some((d) => d.id === syncedProfile.id)) return prev;
+              const existing = prev.find((d) => d.id === syncedProfile.id);
               const autoDonorCard: Donor = {
+                ...(existing || {}),
                 id: syncedProfile.id,
                 name: syncedProfile.name,
                 bloodGroup: syncedProfile.bloodGroup,
@@ -418,9 +554,9 @@ export default function App() {
                 isCloudRecord: true,
                 lastDonatedDate: syncedProfile.lastDonationDate || '',
                 totalDonations: syncedProfile.totalDonations || 0,
-                verifiedBadge: syncedProfile.role === 'ADMIN',
-                rating: 5.0,
-                reviewsCount: 0,
+                verifiedBadge: syncedProfile.role === 'ADMIN' || Boolean(existing?.verifiedBadge),
+                rating: existing?.rating ?? 5.0,
+                reviewsCount: existing?.reviewsCount ?? 0,
                 age: syncedProfile.age || 25,
                 gender: syncedProfile.gender || 'MALE',
                 weightKg: syncedProfile.weightKg || 62,
@@ -430,20 +566,22 @@ export default function App() {
                     : 'স্বেচ্ছাসেবী রক্তদাতা',
                 avatar: syncedProfile.photoUrl || DEFAULT_AVATAR_DATA_URI,
               };
-              return [autoDonorCard, ...prev];
+              const others = prev.filter((d) => d.id !== syncedProfile.id);
+              return [autoDonorCard, ...others];
             });
           }
 
-          // Automatic one-time Cloud Fake/Seed Data Cleanup when Super Owner is signed in
+          // One-time cleanup of legacy fake IDs + live Cloud Firestore sync of 7 verified starter donors & 2 active requests
           if (isBootstrappedAdminUser(u)) {
-            const purgeKey = 'bloodsearch_fake_cloud_purged_v3';
-            if (localStorage.getItem(purgeKey) !== 'done') {
-              Promise.all([
-                ownerPurgeFakeCloudRecordsOnlyInFirestore(),
-                adminSetGlobalRealOnlyModeInFirestore(true),
-              ])
+            const seedKey = 'bloodsearch_verified_cloud_seeded_v4';
+            if (localStorage.getItem(seedKey) !== 'done') {
+              ownerPurgeFakeCloudRecordsOnlyInFirestore()
+                .catch(() => 0)
+                .then(() =>
+                  seedVerifiedStarterNetworkInFirestore(INITIAL_DONORS, INITIAL_REQUESTS)
+                )
                 .then(() => {
-                  localStorage.setItem(purgeKey, 'done');
+                  localStorage.setItem(seedKey, 'done');
                 })
                 .catch(() => {});
             }
@@ -475,9 +613,13 @@ export default function App() {
               }
             }
           });
+          unsubSeekerTrips = subscribeLiveTripsForSeeker(u.uid, setCloudSeekerTrips);
+          unsubDonorTrips = subscribeLiveTripsForDonor(u.uid, setCloudDonorTrips);
         } catch {}
       } else {
         setIncomingDonorAlerts([]);
+        setCloudSeekerTrips([]);
+        setCloudDonorTrips([]);
       }
     });
 
@@ -579,6 +721,8 @@ export default function App() {
       unsubAuth();
       if (unsubProfile) unsubProfile();
       if (unsubDonorAlerts) unsubDonorAlerts();
+      if (unsubSeekerTrips) unsubSeekerTrips();
+      if (unsubDonorTrips) unsubDonorTrips();
       if (unsubDonors) unsubDonors();
       if (unsubRequests) unsubRequests();
       if (unsubAnnouncements) unsubAnnouncements();
@@ -682,6 +826,15 @@ export default function App() {
     }, 450);
     return () => window.clearTimeout(timer);
   }, [auditLogs]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem('bloodsearch_live_donor_trips', JSON.stringify(localLiveTrips));
+      } catch {}
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [localLiveTrips]);
 
   // Audit Logger helper
   const addAuditLog = useCallback((action: any, targetDetails: string) => {
@@ -788,7 +941,13 @@ export default function App() {
       responderPhone: string,
       group: BloodGroup,
       note?: string
-    ): Promise<{ ok: boolean; reason?: string }> => {
+    ): Promise<{
+      ok: boolean;
+      reason?: string;
+      seekerContactName?: string;
+      seekerContactPhone?: string;
+      authorUid?: string;
+    }> => {
       const res = await submitVolunteerResponseInFirestore({
         requestId,
         responderName,
@@ -801,9 +960,18 @@ export default function App() {
         return res;
       }
 
+      let localSeekerName = res.seekerContactName;
+      let localSeekerPhone = res.seekerContactPhone;
+
       setRequests((prev) =>
         prev.map((r) => {
           if (r.id === requestId) {
+            if (!localSeekerPhone && !isPhoneMaskedOrInvalid(r.contactPhone)) {
+              localSeekerPhone = r.contactPhone;
+            }
+            if (!localSeekerName && r.contactName) {
+              localSeekerName = r.contactName;
+            }
             const uid = auth.currentUser?.uid;
             if (uid && r.responders.some((resp) => resp.responderUid === uid)) {
               return r;
@@ -837,13 +1005,19 @@ export default function App() {
         'RESPOND_SOS',
         `Volunteer ${responderName} (${group}) responded to request ${requestId}`
       );
-      return { ok: true };
+      return {
+        ok: true,
+        seekerContactName: localSeekerName,
+        seekerContactPhone: localSeekerPhone,
+        authorUid: res.authorUid,
+      };
     },
-    [addAuditLog]
+    [addAuditLog, requests]
   );
 
   const handleDeleteRequest = useCallback(async (reqId: string): Promise<boolean> => {
     setRequests((prev) => prev.filter((r) => r.id !== reqId));
+    setLocalLiveTrips((prev) => prev.filter((t) => t.requestId !== reqId));
     try {
       await adminDeleteRequestInFirestore(reqId);
       return true;
@@ -851,6 +1025,236 @@ export default function App() {
       return false;
     }
   }, []);
+
+  const handleStartLiveDonorTrip = useCallback(
+    async (
+      req: BloodRequest,
+      responderName: string,
+      responderPhone: string,
+      group: BloodGroup
+    ): Promise<LiveDonorTrip> => {
+      const safeReqId = req.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+      const myUid = auth.currentUser?.uid || currentSavedUser?.id || 'local_donor';
+      const tripId = `${safeReqId}__${myUid}`;
+
+      const hospitalCoords = resolveBangladeshCoordinates({
+        district: req.district,
+        upazila: req.upazila,
+        division: req.division || 'dhaka',
+        hospital: req.hospitalName,
+      });
+
+      const savedDistrict = String(currentSavedUser?.district || req.district || 'dhaka');
+      const savedUpazila = String(currentSavedUser?.upazila || '');
+      const savedDivision = String(currentSavedUser?.division || req.division || 'dhaka');
+
+      const gpsRes = await requestRealDeviceGPSWithStatus();
+      const inBd =
+        gpsRes.isRealGps &&
+        gpsRes.coords.latitude >= 20.0 &&
+        gpsRes.coords.latitude <= 27.0 &&
+        gpsRes.coords.longitude >= 87.5 &&
+        gpsRes.coords.longitude <= 93.0;
+
+      let donorCoords: Coordinates = inBd
+        ? gpsRes.coords
+        : resolveBangladeshCoordinates({
+            district: savedDistrict,
+            upazila: savedUpazila,
+            division: savedDivision,
+          });
+
+      if (!inBd && calculateHaversineDistance(donorCoords, hospitalCoords) < 0.12) {
+        donorCoords = {
+          latitude: Math.min(26.9, donorCoords.latitude + 0.0085),
+          longitude: Math.min(92.9, donorCoords.longitude + 0.0065),
+        };
+      }
+
+      const [route, geo] = await Promise.all([
+        fetchUberStyleRoute(donorCoords, hospitalCoords),
+        reverseGeocodeBangladeshCoords(donorCoords, lang),
+      ]);
+
+      const nowMs = Date.now();
+      const localTrip: LiveDonorTrip = {
+        id: tripId,
+        requestId: safeReqId,
+        seekerUid: req.authorUid || 'local_seeker',
+        donorUid: myUid,
+        donorName: responderName.trim() || 'Voluntary Donor',
+        bloodGroup: group,
+        responderPhone: responderPhone.trim(),
+        hospitalName: req.hospitalName,
+        district: req.district,
+        lat: Number(donorCoords.latitude.toFixed(5)),
+        lng: Number(donorCoords.longitude.toFixed(5)),
+        hospitalLat: Number(hospitalCoords.latitude.toFixed(5)),
+        hospitalLng: Number(hospitalCoords.longitude.toFixed(5)),
+        distanceKm: Number(Math.max(0.2, route.roadDistanceKm).toFixed(1)),
+        etaMinutes: Math.max(2, Math.round(route.etaMinutes)),
+        areaLabel: geo.areaText || savedUpazila || req.district,
+        tripStatus: 'ON_THE_WAY',
+        createdAtMs: nowMs,
+        updatedAtMs: nowMs,
+      };
+
+      setLocalLiveTrips((prev) => [
+        localTrip,
+        ...prev.filter((t) => t.id !== tripId),
+      ]);
+
+      upsertLiveDonorTripInFirestore({
+        requestId: safeReqId,
+        donorName: localTrip.donorName,
+        bloodGroup: localTrip.bloodGroup,
+        responderPhone: localTrip.responderPhone,
+        hospitalName: localTrip.hospitalName,
+        district: localTrip.district,
+        lat: localTrip.lat,
+        lng: localTrip.lng,
+        hospitalLat: localTrip.hospitalLat,
+        hospitalLng: localTrip.hospitalLng,
+        distanceKm: localTrip.distanceKm,
+        etaMinutes: localTrip.etaMinutes,
+        areaLabel: localTrip.areaLabel,
+        tripStatus: 'ON_THE_WAY',
+      }).catch(() => {});
+
+      return localTrip;
+    },
+    [currentSavedUser, lang]
+  );
+
+  const handleUpdateLiveDonorTripStatus = useCallback(
+    async (tripId: string, nextStatus: LiveDonorTripStatus) => {
+      const nowMs = Date.now();
+      setLocalLiveTrips((prev) =>
+        prev.map((t) =>
+          t.id === tripId
+            ? {
+                ...t,
+                tripStatus: nextStatus,
+                distanceKm: nextStatus === 'ARRIVED' ? 0.1 : t.distanceKm,
+                etaMinutes: nextStatus === 'ARRIVED' ? 1 : t.etaMinutes,
+                updatedAtMs: nowMs,
+              }
+            : t
+        )
+      );
+      await updateLiveDonorTripStatusInFirestore(tripId, nextStatus).catch(() => false);
+    },
+    []
+  );
+
+  const handleTrackLiveTripOnMap = useCallback(
+    (tripId: string) => {
+      setFocusedLiveTripId(tripId);
+      handleSelectTab('map');
+    },
+    [handleSelectTab]
+  );
+
+  // Continuous Uber/Pathao Live GPS Streaming while current user is ON_THE_WAY to donate
+  const myActiveOutgoingTrip = useMemo(() => {
+    const myUid = liveFirebaseUser?.uid || currentSavedUser?.id || 'local_donor';
+    return (
+      liveDonorTrips.find(
+        (t) => t.donorUid === myUid && t.tripStatus === 'ON_THE_WAY'
+      ) || null
+    );
+  }, [liveDonorTrips, liveFirebaseUser?.uid, currentSavedUser?.id]);
+
+  const lastTripSyncRef = React.useRef<{ ts: number; lat: number; lng: number }>({
+    ts: 0,
+    lat: 0,
+    lng: 0,
+  });
+
+  useEffect(() => {
+    if (!myActiveOutgoingTrip) return;
+
+    const stopWatch = watchRealDeviceGPS((coords) => {
+      if (
+        coords.latitude < 20.0 ||
+        coords.latitude > 27.0 ||
+        coords.longitude < 87.5 ||
+        coords.longitude > 93.0
+      ) {
+        return;
+      }
+
+      const now = Date.now();
+      const prev = lastTripSyncRef.current;
+      const movedKm =
+        prev.ts > 0
+          ? calculateHaversineDistance(
+              { latitude: prev.lat, longitude: prev.lng },
+              coords
+            )
+          : 999;
+
+      if (now - prev.ts < 8000 || movedKm < 0.03) return;
+      lastTripSyncRef.current = {
+        ts: now,
+        lat: coords.latitude,
+        lng: coords.longitude,
+      };
+
+      const hospCoords: Coordinates = {
+        latitude: myActiveOutgoingTrip.hospitalLat,
+        longitude: myActiveOutgoingTrip.hospitalLng,
+      };
+
+      Promise.all([
+        fetchUberStyleRoute(coords, hospCoords),
+        reverseGeocodeBangladeshCoords(coords, lang),
+      ])
+        .then(([route, geo]) => {
+          const nextLat = Number(coords.latitude.toFixed(5));
+          const nextLng = Number(coords.longitude.toFixed(5));
+          const nextDist = Number(Math.max(0.1, route.roadDistanceKm).toFixed(1));
+          const nextEta = Math.max(1, Math.round(route.etaMinutes));
+          const nextArea = geo.areaText || myActiveOutgoingTrip.areaLabel;
+
+          setLocalLiveTrips((list) =>
+            list.map((item) =>
+              item.id === myActiveOutgoingTrip.id && item.tripStatus === 'ON_THE_WAY'
+                ? {
+                    ...item,
+                    lat: nextLat,
+                    lng: nextLng,
+                    distanceKm: nextDist,
+                    etaMinutes: nextEta,
+                    areaLabel: nextArea,
+                    updatedAtMs: Date.now(),
+                  }
+                : item
+            )
+          );
+
+          upsertLiveDonorTripInFirestore({
+            requestId: myActiveOutgoingTrip.requestId,
+            donorName: myActiveOutgoingTrip.donorName,
+            bloodGroup: myActiveOutgoingTrip.bloodGroup,
+            responderPhone: myActiveOutgoingTrip.responderPhone,
+            hospitalName: myActiveOutgoingTrip.hospitalName,
+            district: myActiveOutgoingTrip.district,
+            lat: nextLat,
+            lng: nextLng,
+            hospitalLat: myActiveOutgoingTrip.hospitalLat,
+            hospitalLng: myActiveOutgoingTrip.hospitalLng,
+            distanceKm: nextDist,
+            etaMinutes: nextEta,
+            areaLabel: nextArea,
+            tripStatus: 'ON_THE_WAY',
+          }).catch(() => {});
+        })
+        .catch(() => {});
+    });
+
+    return () => stopWatch();
+  }, [myActiveOutgoingTrip?.id, myActiveOutgoingTrip?.tripStatus, lang]);
 
   const handleStartChatWithRequester = useCallback(
     (req: BloodRequest) => {
@@ -946,15 +1350,21 @@ export default function App() {
   );
 
   const liveUserLabel = liveFirebaseUser
-    ? liveFirebaseUser.email?.split('@')[0] ||
+    ? (currentSavedUser?.id === liveFirebaseUser.uid && currentSavedUser?.name
+        ? String(currentSavedUser.name).trim()
+        : '') ||
+      liveFirebaseUser.displayName?.trim() ||
+      liveFirebaseUser.email?.split('@')[0] ||
       liveFirebaseUser.phoneNumber ||
       (lang === 'bn' ? 'অ্যাকাউন্ট' : 'Account')
-    : null;
+    : currentSavedUser?.name
+      ? String(currentSavedUser.name).trim()
+      : null;
 
   return (
     <div
-      className={`min-h-dvh w-full max-w-[100vw] overflow-x-clip flex flex-col transition-colors duration-200 ${
-        darkMode ? 'dark bg-[#090d16] text-[#f8fafc]' : 'bg-[#f8fafc] text-[#0f172a]'
+      className={`min-h-dvh w-full max-w-[100vw] overflow-x-clip flex flex-col transition-colors duration-200 bg-app-canvas ${
+        darkMode ? 'dark text-[#f8fafc]' : 'text-[#0f172a]'
       }`}
     >
       {/* 1. Unified Responsive Native Header */}
@@ -1039,12 +1449,14 @@ export default function App() {
                   onClick={async () => {
                     let myName = liveUserLabel || 'Donor';
                     let myPhone = '';
+                    let myGroup: BloodGroup = alertItem.bloodGroup;
                     try {
                       const raw = localStorage.getItem('bloodsearch_current_user');
                       if (raw) {
                         const p = JSON.parse(raw);
                         if (p?.name) myName = p.name;
                         if (p?.phone) myPhone = p.phone;
+                        if (p?.bloodGroup) myGroup = p.bloodGroup;
                       }
                     } catch {}
                     await respondToRequestAlertInFirestore({
@@ -1054,19 +1466,25 @@ export default function App() {
                       responderPhone: myPhone,
                       responseNote: 'Available to donate',
                     });
+                    const matchedReq = requests.find((r) => r.id === alertItem.requestId);
+                    if (matchedReq) {
+                      handleStartLiveDonorTrip(matchedReq, myName, myPhone, myGroup).catch(
+                        () => {}
+                      );
+                    }
                     setIncomingDonorAlerts((prev) =>
                       prev.filter((x) => x.id !== alertItem.id)
                     );
                     setAppShareToast(
                       lang === 'bn'
-                        ? '✓ আপনার সাড়া ও কলব্যাক নম্বর রোগীর স্বজনের কাছে পাঠানো হয়েছে।'
-                        : '✓ Your response and callback number have been shared with the seeker.'
+                        ? '✓ আপনার সাড়া ও লাইভ রুট ট্র্যাকিং রোগীর স্বজনের কাছে চালু হয়েছে।'
+                        : '✓ Your response and live on-the-way tracking have been shared with the seeker.'
                     );
                     window.setTimeout(() => setAppShareToast(null), 3500);
                   }}
                   className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white text-rose-700 font-bold text-xs cursor-pointer whitespace-nowrap"
                 >
-                  {lang === 'bn' ? 'আমি রক্ত দিতে প্রস্তুত' : 'I Can Donate'}
+                  {lang === 'bn' ? 'আমি রক্ত দিতে আসছি' : 'I Can Donate'}
                 </button>
                 <button
                   type="button"
@@ -1183,6 +1601,7 @@ export default function App() {
               onSelectRequest={handleQuickShareRequest}
               onQuickDonate={handleQuickDonateFromHome}
               onNavigateTab={handleSelectTab}
+              onFocusMapLocation={handleFocusMapLocation}
               onQuickSearchByGroup={handleQuickSearchByGroup}
               onOpenDirectory={() => setIsDirectoryModalOpen(true)}
               onOpenPoster={() => setIsPosterModalOpen(true)}
@@ -1218,9 +1637,13 @@ export default function App() {
             <RequestsFeed
               requests={requests}
               donors={donors}
+              liveTrips={liveDonorTrips}
               lang={lang}
               onOpenSOSModal={() => openSOSWithContext()}
               onRespondToRequest={handleRespondToRequest}
+              onStartLiveTrip={handleStartLiveDonorTrip}
+              onUpdateLiveTripStatus={handleUpdateLiveDonorTripStatus}
+              onTrackTripOnMap={handleTrackLiveTripOnMap}
               onDeleteRequest={handleDeleteRequest}
               onOpenAuthModal={() => setIsAuthModalOpen(true)}
               onStartChatWithRequester={handleStartChatWithRequester}
@@ -1268,7 +1691,14 @@ export default function App() {
                   lang={lang}
                   donors={donors}
                   requests={requests}
-                  onOpenSOSWizard={() => setIsSOSWizardOpen(true)}
+                  liveTrips={liveDonorTrips}
+                  focusedTripId={focusedLiveTripId}
+                  onClearFocusedTrip={() => setFocusedLiveTripId(null)}
+                  onUpdateLiveTripStatus={handleUpdateLiveDonorTripStatus}
+                  initialFocusId={focusedMapLocationId}
+                  onClearInitialFocus={() => setFocusedMapLocationId(null)}
+                  onRevealPhone={handleRevealPhone}
+                  onOpenSOSWizard={(ctx) => openSOSWithContext(ctx)}
                   onStartChatWithDonor={(donorName, bloodGroup, phone) => {
                     const matched = donors.find((d) => d.name === donorName) || {
                       id: `d-${Date.now()}`,
@@ -1277,7 +1707,7 @@ export default function App() {
                       division: 'dhaka',
                       district: 'dhaka',
                       upazila: 'dhanmondi',
-                      phone: phone || '+88017XXXXXXXX',
+                      phone: phone && !isPhoneMaskedOrInvalid(phone) ? phone : '017****00',
                       available: true,
                       lastDonatedDate: '',
                       totalDonations: 0,
@@ -1357,6 +1787,7 @@ export default function App() {
           donors={donors}
           initialBloodGroup={sosPreset.bloodGroup}
           initialDistrict={sosPreset.district}
+          initialHospitalName={sosPreset.hospitalName}
           onSubmitSOS={handleSubmitSOS}
           onLogAudit={addAuditLog}
           onRevealPhone={handleRevealPhone}

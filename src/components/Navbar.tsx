@@ -307,16 +307,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* User Auth Profile Trigger */}
           <button
             onClick={onOpenAuthModal}
-            className="flex items-center gap-2 p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700/80 transition-colors cursor-pointer"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700/80 transition-colors cursor-pointer"
             title="User Profile & Security"
           >
-            <img
-              src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=64&q=80"
-              alt="Avatar"
-              className="w-6 h-6 rounded-lg object-cover ring-1 ring-rose-500/40"
-            />
-            <span className="hidden sm:inline text-xs font-bold text-slate-700 dark:text-slate-300">
-              Alex J.
+            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              {lang === 'bn' ? 'অ্যাকাউন্ট' : 'Account'}
             </span>
           </button>
 

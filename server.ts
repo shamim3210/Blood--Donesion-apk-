@@ -74,6 +74,30 @@ export function sha256Short(input: string): string {
   return crypto.createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
 
+function isSafeHttpsWebhookUrl(rawUrl: string | undefined): boolean {
+  if (!rawUrl) return false;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host.endsWith('.local') ||
+      host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.startsWith('169.254.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
+      host === '[::1]'
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getNotificationCapabilities() {
   const vapidKey = (process.env.VITE_FIREBASE_VAPID_KEY || '').trim();
   const fcmServerKey = (process.env.FCM_SERVER_KEY || '').trim();
@@ -87,7 +111,7 @@ export function getNotificationCapabilities() {
 
   const webhookReady =
     smsProviderRaw === 'WEBHOOK_BD' &&
-    Boolean(process.env.SMS_WEBHOOK_URL?.trim()) &&
+    isSafeHttpsWebhookUrl(process.env.SMS_WEBHOOK_URL) &&
     Boolean(process.env.SMS_WEBHOOK_API_KEY?.trim());
 
   const smsConfigured = twilioReady || webhookReady;
@@ -114,6 +138,7 @@ export function createEmergencyApiApp(options?: {
   app.use((_req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
   });
@@ -203,16 +228,18 @@ export function createEmergencyApiApp(options?: {
       };
     }
 
+    // Restrict strictly to valid Bangladesh mobile numbers (+8801[3-9]XXXXXXXX or 01[3-9]XXXXXXXX)
+    // to block international premium-rate SMS toll fraud
     const cleanPhones = phones
       .map((p) => String(p || '').replace(/[^\d+]/g, ''))
-      .filter((p) => p.length >= 10 && p.length <= 16)
+      .filter((p) => /^(\+?8801[3-9]\d{8}|01[3-9]\d{8})$/.test(p))
       .slice(0, 15);
 
     if (cleanPhones.length === 0) {
       return {
         status: 'NOT_CONFIGURED',
         sentCount: 0,
-        fallbackMessage: 'No opted-in SMS numbers provided in this batch.',
+        fallbackMessage: 'No valid opted-in Bangladesh (+8801...) SMS numbers provided in this batch.',
       };
     }
 
@@ -260,6 +287,13 @@ export function createEmergencyApiApp(options?: {
 
       if (caps.smsProvider === 'WEBHOOK_BD') {
         const url = process.env.SMS_WEBHOOK_URL!.trim();
+        if (!isSafeHttpsWebhookUrl(url)) {
+          return {
+            status: 'PROVIDER_ERROR',
+            sentCount: 0,
+            fallbackMessage: 'SMS webhook URL must be an external HTTPS endpoint.',
+          };
+        }
         const apiKey = process.env.SMS_WEBHOOK_API_KEY!.trim();
         const r = await fetch(url, {
           method: 'POST',
@@ -411,7 +445,17 @@ export function createEmergencyApiApp(options?: {
     });
 
     const caps = getNotificationCapabilities();
-    const smsText = `[BloodSearch Emergency] ${bloodGroup} blood needed (${urgency}) at ${hospitalName}, ${district}. Open BloodSearch to respond or confirm availability.`;
+    const safeSmsHospital = hospitalName
+      .replace(/https?:\/\/\S+|www\.\S+/gi, '')
+      .replace(/[\r\n<>]/g, ' ')
+      .trim()
+      .slice(0, 90);
+    const safeSmsDistrict = district
+      .replace(/https?:\/\/\S+|www\.\S+/gi, '')
+      .replace(/[\r\n<>]/g, ' ')
+      .trim()
+      .slice(0, 40);
+    const smsText = `[BloodSearch Emergency] ${bloodGroup} blood needed (${urgency}) at ${safeSmsHospital}, ${safeSmsDistrict}. Open BloodSearch to respond or confirm availability.`;
     const smsResult = await dispatchLegitimateSmsIfConfigured(optedInSmsPhones, smsText);
 
     const pushStatus = caps.fcmServerConfigured
@@ -554,8 +598,19 @@ export function createEmergencyApiApp(options?: {
 
   app.post('/api/emergency/stop', async (req: Request, res: Response) => {
     const caller = await verifyBearerToken(req);
-    if (!caller) {
-      res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: 'Authentication required.' });
+    if (!caller || !caller.emailVerified) {
+      res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: 'Verified authentication required.' });
+      return;
+    }
+
+    const stopRate = checkRateLimit(`stop:uid:${caller.uid}`, 12, 10 * 60 * 1000);
+    if (!stopRate.allowed) {
+      res.status(429).json({
+        ok: false,
+        code: 'RATE_LIMITED',
+        retryAfterSec: stopRate.retryAfterSec,
+        message: 'Too many stop requests in a short window.',
+      });
       return;
     }
 
@@ -565,7 +620,7 @@ export function createEmergencyApiApp(options?: {
     const finalStatus: 'FULFILLED' | 'CANCELLED' | 'EXPIRED' =
       reason === 'FULFILLED' ? 'FULFILLED' : reason === 'EXPIRED' ? 'EXPIRED' : 'CANCELLED';
 
-    if (!requestId || !/^[a-zA-Z0-9_-]+$/.test(requestId)) {
+    if (!requestId || requestId.length > 100 || !/^[a-zA-Z0-9_-]+$/.test(requestId)) {
       res.status(400).json({ ok: false, code: 'INVALID_REQUEST_ID', message: 'Invalid requestId.' });
       return;
     }
@@ -635,14 +690,21 @@ export function createEmergencyApiApp(options?: {
 
   app.get('/api/audit/summary', async (req: Request, res: Response) => {
     const caller = await verifyBearerToken(req);
-    if (!caller) {
+    if (!caller || !caller.emailVerified) {
       res.status(401).json({ ok: false, code: 'UNAUTHORIZED' });
       return;
     }
+    const superAdminEmailHash = sha256Short('shamimrakib015@gmail.com');
+    const isSuperOwner = caller.emailHash === superAdminEmailHash;
+    const callerUidHash = sha256Short(caller.uid);
+    const visibleEvents = isSuperOwner
+      ? auditTrail
+      : auditTrail.filter((ev) => ev.actorUidHash === callerUidHash);
+
     res.json({
       ok: true,
-      totalEvents: auditTrail.length,
-      recentEvents: auditTrail.slice(0, 25),
+      totalEvents: visibleEvents.length,
+      recentEvents: visibleEvents.slice(0, 25),
     });
   });
 

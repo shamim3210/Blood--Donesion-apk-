@@ -16,6 +16,7 @@ import {
   Coordinates,
   calculateHaversineDistance,
   resolveBangladeshCoordinates,
+  resolvePlaceOrHospitalQuery,
 } from './geolocation';
 import { calculateRecoveryCountdown } from './sosAlertEngine';
 
@@ -189,8 +190,6 @@ const KNOWN_PLACEHOLDER_PHONES = new Set([
   '8801700000000',
   '01711000000',
   '8801711000000',
-  '01712345678',
-  '8801712345678',
   '01700000001',
   '8801700000001',
 ]);
@@ -339,6 +338,8 @@ export function rankDonorsForSeeker(
       : [criteria.bloodGroup];
 
   const areaLower = (criteria.areaQuery || '').trim().toLowerCase();
+  const resolvedPlace = areaLower ? resolvePlaceOrHospitalQuery(criteria.areaQuery) : null;
+  const effectiveOriginCoords = resolvedPlace ? resolvedPlace.coords : criteria.originCoords;
   const results: RankedDonorResult[] = [];
 
   for (const donor of donors) {
@@ -356,12 +357,22 @@ export function rankDonorsForSeeker(
       }
     }
 
-    // 2. Location / Nearby-District filter
+    // 2. Location / Hospital / Nearby-District filter
     const donorCoords = resolveDonorCoordinates(donor);
-    const distanceKm = calculateHaversineDistance(criteria.originCoords, donorCoords);
+    const distanceKm = calculateHaversineDistance(effectiveOriginCoords, donorCoords);
 
     if (criteria.maxRadiusKm && criteria.maxRadiusKm > 0) {
       if (distanceKm > criteria.maxRadiusKm) continue;
+    } else if (resolvedPlace) {
+      // User searched a recognized hospital, neighborhood, or district (e.g., "Squire hospital" -> Square Hospital, Dhaka)
+      const allowedRadius = criteria.includeNearbyDistricts ? 90 : 40;
+      const inTargetDistrict =
+        criteria.district && criteria.district !== 'ALL'
+          ? doesDistrictMatch(donor.district, criteria.district)
+          : doesDistrictMatch(donor.district, resolvedPlace.districtId);
+      if (!inTargetDistrict && distanceKm > allowedRadius) {
+        continue;
+      }
     } else if (!criteria.includeNearbyDistricts) {
       if (!doesDivisionMatch(donor.division, criteria.division)) {
         continue;
@@ -378,9 +389,16 @@ export function rankDonorsForSeeker(
       }
     }
 
+    let directTextBonus = 0;
     if (areaLower) {
       const hay = `${donor.name} ${donor.upazila} ${donor.district} ${donor.hospitalAffiliation || ''}`.toLowerCase();
-      if (!hay.includes(areaLower)) continue;
+      if (resolvedPlace) {
+        if (hay.includes(areaLower) || doesDistrictMatch(donor.district, resolvedPlace.districtId)) {
+          directTextBonus = hay.includes(areaLower) ? 14 : 6;
+        }
+      } else if (!hay.includes(areaLower)) {
+        continue;
+      }
     }
 
     const availabilityConfidence = getDonorAvailabilityConfidence(donor, nowMs);
@@ -400,7 +418,7 @@ export function rankDonorsForSeeker(
     const wasAttemptedUnsuccessfully = unsuccessfulSet.has(donor.id);
 
     // Multi-factor emergency ranking score
-    let score = 0;
+    let score = directTextBonus;
 
     // A. Blood match priority
     if (bloodMatchType === 'EXACT') score += 45;

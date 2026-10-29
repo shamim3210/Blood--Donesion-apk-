@@ -177,6 +177,30 @@ export interface ContactConsentRequestItem {
   updatedAtMs: number;
 }
 
+export type LiveDonorTripStatus = 'ON_THE_WAY' | 'ARRIVED' | 'COMPLETED' | 'CANCELLED';
+
+export interface LiveDonorTrip {
+  id: string;
+  requestId: string;
+  seekerUid: string;
+  donorUid: string;
+  donorName: string;
+  bloodGroup: BloodGroup;
+  responderPhone: string;
+  hospitalName: string;
+  district: string;
+  lat: number;
+  lng: number;
+  hospitalLat: number;
+  hospitalLng: number;
+  distanceKm: number;
+  etaMinutes: number;
+  areaLabel: string;
+  tripStatus: LiveDonorTripStatus;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
 export interface AuditLogEntry {
   id: string;
   action:

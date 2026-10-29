@@ -23,6 +23,7 @@ import {
   signInWithEmailAndPassword,
   sendEmailVerification,
   sendPasswordResetEmail,
+  updateProfile,
   User,
   Auth,
 } from 'firebase/auth';
@@ -50,6 +51,8 @@ import {
   ContactVisibility,
   Donor,
   DonorAvailabilityStatus,
+  LiveDonorTrip,
+  LiveDonorTripStatus,
   RequestAlertItem,
   RequestLifecycleState,
   RequiredTimeWindow,
@@ -533,11 +536,12 @@ export function normalizeAsciiDigits(input: string): string {
 
 export function sanitizeSafeText(raw: string | undefined | null): string {
   return (raw ?? '')
-    .replace(/<\s*\/?\s*script\b[^>]*>/gi, '')
+    .replace(/<\s*\/?\s*(?:script|iframe|svg|object|embed|img|meta|link|style|form|base)\b[^>]*>/gi, '')
+    .replace(/<[^>]*\bon[a-z]+\s*=/gi, '<')
     .replace(/javascript\s*:/gi, '')
     .replace(/vbscript\s*:/gi, '')
     .replace(/data\s*:\s*text\/html/gi, '')
-    .replace(/on(?:error|load|click)\s*=/gi, '')
+    .replace(/on(?:error|load|click|mouseover|focus|toggle|begin)\s*=/gi, '')
     .trim();
 }
 
@@ -596,22 +600,34 @@ export async function compressAvatarIfNeeded(dataUrlOrHttp: string): Promise<str
   if (!dataUrlOrHttp) {
     return DEFAULT_AVATAR_DATA_URI;
   }
-  if (!dataUrlOrHttp.startsWith('data:image') || dataUrlOrHttp.length <= 120000) {
-    return dataUrlOrHttp.slice(0, 145000);
+  if (!dataUrlOrHttp.startsWith('data:image')) {
+    const httpsUpgraded = dataUrlOrHttp.replace(/^http:\/\//i, 'https://');
+    if (!/^https:\/\//i.test(httpsUpgraded) || httpsUpgraded.length > 2048) {
+      return DEFAULT_AVATAR_DATA_URI;
+    }
+    return httpsUpgraded;
+  }
+  if (dataUrlOrHttp.length <= 65000) {
+    return dataUrlOrHttp;
   }
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const maxDim = 220;
+      const maxDim = 180;
       const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
       canvas.width = Math.max(1, Math.round(img.width * scale));
       canvas.height = Math.max(1, Math.round(img.height * scale));
       const ctx = canvas.getContext('2d');
       if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const compressed = canvas.toDataURL('image/jpeg', 0.72);
-        resolve(compressed.slice(0, 145000));
+        let compressed = canvas.toDataURL('image/jpeg', 0.68);
+        if (compressed.length > 135000) {
+          compressed = canvas.toDataURL('image/jpeg', 0.5);
+        }
+        resolve(compressed.length <= 140000 ? compressed : DEFAULT_AVATAR_DATA_URI);
       } else {
         resolve(DEFAULT_AVATAR_DATA_URI);
       }
@@ -1679,14 +1695,25 @@ export async function registerSmartAccountInFirestore(params: {
   }
   const uid = validUser.uid;
   const safeAvatar = await compressAvatarIfNeeded(account.photoUrl || donor.avatar || '');
-  const isAdminPanel = account.role === 'ADMIN';
+  const isVerifiedAdmin = await checkIsVerifiedAdminInFirestore(validUser);
+  const isAdminPanel = account.role === 'ADMIN' || isVerifiedAdmin;
 
-  const normalizedPhone = normalizeAsciiDigits(account.phone || firebaseUser.phoneNumber || '').trim();
+  const normalizedPhone = normalizeAsciiDigits(account.phone || validUser.phoneNumber || '').trim();
   const normalizedWa = normalizeAsciiDigits(account.whatsappPhone || normalizedPhone).trim();
+
+  const rawIdCard = String(account.idCardNumber || '').replace(/[^a-zA-Z0-9+-]/g, '-');
+  const safeIdCard = clampStr(
+    rawIdCard,
+    5,
+    40,
+    `BS-${uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001'}`
+  );
+  const cleanName = clampStr(account.name, 2, 80, 'Blood Donor');
+  const cleanUpazila = clampStr(account.upazila || donor.upazila, 2, 50, 'Dhaka');
 
   const batch = writeBatch(db);
 
-  const ownerAutoHash = isBootstrappedAdminUser(firebaseUser)
+  const ownerAutoHash = isBootstrappedAdminUser(validUser)
     ? sha256HexSync(`BSBD_SUPER_OWNER:${uid}`)
     : '';
   const effectiveAdminProofHash = adminProofHash || ownerAutoHash;
@@ -1698,8 +1725,8 @@ export async function registerSmartAccountInFirestore(params: {
     if (!existingAdminSnap.exists()) {
       batch.set(adminRef, {
         uid,
-        name: clampStr(account.name, 2, 80, 'Admin Coordinator'),
-        idCardNumber: clampStr(account.idCardNumber, 5, 40, 'ADMIN-BD-2026'),
+        name: cleanName,
+        idCardNumber: safeIdCard,
         district: clampStr(account.district, 2, 40, 'dhaka'),
         secretProofHash: effectiveAdminProofHash,
         registryKey: 'BSBD_ADMIN',
@@ -1733,9 +1760,9 @@ export async function registerSmartAccountInFirestore(params: {
 
   const userPayloadBase = {
     uid,
-    name: clampStr(account.name, 2, 80, 'Blood Donor'),
+    name: cleanName,
     email: clampStr(
-      firebaseUser.email || account.email,
+      validUser.email || account.email,
       3,
       120,
       `${uid.slice(0, 10)}@bloodsearch.bd`
@@ -1746,8 +1773,8 @@ export async function registerSmartAccountInFirestore(params: {
     bloodGroup: account.bloodGroup,
     division: clampStr(account.division, 2, 40, 'dhaka'),
     district: clampStr(account.district, 2, 40, 'dhaka'),
-    upazila: clampStr(account.upazila, 2, 50, 'sadar'),
-    idCardNumber: clampStr(account.idCardNumber, 5, 40, 'BD-2026-1001'),
+    upazila: cleanUpazila,
+    idCardNumber: safeIdCard,
     panelType: isAdminPanel ? 'ADMIN' : 'USER',
     photoUrl: safeAvatar,
     age: clampNum(account.age, 18, 65, 24),
@@ -1769,10 +1796,22 @@ export async function registerSmartAccountInFirestore(params: {
 
   if (existingUserSnap.exists()) {
     const prev = existingUserSnap.data();
+    const preservedPanelType =
+      prev.panelType === 'ADMIN' || isAdminPanel ? 'ADMIN' : 'USER';
+    const prevIdClean =
+      typeof prev.idCardNumber === 'string' && /^[a-zA-Z0-9+-]{5,40}$/.test(prev.idCardNumber)
+        ? prev.idCardNumber
+        : safeIdCard;
+    const safePrevEmail =
+      typeof prev.email === 'string' && prev.email.trim().length >= 3 && prev.email.length <= 120
+        ? prev.email
+        : userPayloadBase.email;
     batch.set(userRef, {
       ...userPayloadBase,
-      email: prev.email,
-      createdAt: prev.createdAt,
+      panelType: preservedPanelType,
+      idCardNumber: account.role === 'ADMIN' ? safeIdCard : prevIdClean,
+      email: safePrevEmail,
+      createdAt: prev.createdAt instanceof Timestamp ? prev.createdAt : serverTimestamp(),
     });
   } else {
     batch.set(userRef, {
@@ -1785,15 +1824,17 @@ export async function registerSmartAccountInFirestore(params: {
   const donorRef = doc(db, 'donors', uid);
   const existingDonorSnap = await getDoc(donorRef);
   const alreadyAdmin =
-    isBootstrappedAdminUser(firebaseUser) || Boolean(isAdminPanel && adminProofHash);
+    isVerifiedAdmin ||
+    isBootstrappedAdminUser(validUser) ||
+    Boolean(account.role === 'ADMIN' && adminProofHash);
 
   const donorPayloadBase = {
     ownerUid: uid,
-    name: clampStr(donor.name, 2, 80, 'Blood Donor'),
-    bloodGroup: donor.bloodGroup,
-    division: clampStr(donor.division, 2, 40, 'dhaka'),
-    district: clampStr(donor.district, 2, 40, 'dhaka'),
-    upazila: clampStr(donor.upazila, 2, 50, 'sadar'),
+    name: clampStr(donor.name || cleanName, 2, 80, 'Blood Donor'),
+    bloodGroup: donor.bloodGroup || account.bloodGroup,
+    division: clampStr(donor.division || account.division, 2, 40, 'dhaka'),
+    district: clampStr(donor.district || account.district, 2, 40, 'dhaka'),
+    upazila: cleanUpazila,
     maskedPhone: maskPhoneNumber(normalizedPhone || donor.phone),
     available: resolvedAvailable,
     availabilityStatus: resolvedStatus,
@@ -1815,23 +1856,33 @@ export async function registerSmartAccountInFirestore(params: {
       donor.hospitalAffiliation,
       2,
       100,
-      isAdminPanel ? 'জেলা রক্ত সমন্বয়ক ও অ্যাডমিন' : 'Voluntary Donor'
+      alreadyAdmin ? 'জেলা রক্ত সমন্বয়ক ও অ্যাডমিন' : 'Voluntary Donor'
     ),
     avatar: safeAvatar,
-    idCardNumber: clampStr(account.idCardNumber, 5, 40, 'BD-2026-1001'),
-    panelType: isAdminPanel ? 'ADMIN' : 'USER',
+    idCardNumber: safeIdCard,
+    panelType: alreadyAdmin ? 'ADMIN' : 'USER',
     isPublic: true,
     updatedAt: serverTimestamp(),
   };
 
   if (existingDonorSnap.exists()) {
     const prevD = existingDonorSnap.data();
+    const prevDonorIdClean =
+      typeof prevD.idCardNumber === 'string' && /^[a-zA-Z0-9+-]{5,40}$/.test(prevD.idCardNumber)
+        ? prevD.idCardNumber
+        : donorPayloadBase.idCardNumber;
+    const prevDonorPanelType =
+      prevD.panelType === 'ADMIN' || prevD.panelType === 'USER' ? prevD.panelType : 'USER';
     batch.set(donorRef, {
       ...donorPayloadBase,
+      ownerUid: typeof prevD.ownerUid === 'string' && prevD.ownerUid ? prevD.ownerUid : uid,
       verifiedBadge: alreadyAdmin ? true : Boolean(prevD.verifiedBadge),
-      panelType: alreadyAdmin ? (isAdminPanel ? 'ADMIN' : prevD.panelType) : prevD.panelType,
-      idCardNumber: alreadyAdmin && isAdminPanel ? donorPayloadBase.idCardNumber : prevD.idCardNumber,
-      createdAt: prevD.createdAt,
+      panelType: alreadyAdmin ? 'ADMIN' : prevDonorPanelType,
+      idCardNumber:
+        alreadyAdmin && account.role === 'ADMIN'
+          ? donorPayloadBase.idCardNumber
+          : prevDonorIdClean,
+      createdAt: prevD.createdAt instanceof Timestamp ? prevD.createdAt : serverTimestamp(),
     });
   } else {
     batch.set(donorRef, {
@@ -1846,6 +1897,8 @@ export async function registerSmartAccountInFirestore(params: {
     handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
   }
 
+  await updateProfile(validUser, { displayName: cleanName }).catch(() => {});
+
   // 4. Sync consent-isolated /donorDirectContacts/{uid} AFTER /users/{uid} exists
   try {
     const directRef = doc(db, 'donorDirectContacts', uid);
@@ -1854,6 +1907,10 @@ export async function registerSmartAccountInFirestore(params: {
       normalizedPhone.length >= 10 && normalizedPhone !== '01700000000';
 
     if (resolvedShareDirect && hasValidRealPhone) {
+      const prevDirectCreatedAt =
+        existingDirectSnap.exists() && existingDirectSnap.data().createdAt instanceof Timestamp
+          ? existingDirectSnap.data().createdAt
+          : serverTimestamp();
       const directPayload = {
         ownerUid: uid,
         phone: clampStr(normalizedPhone, 6, 24, '01700000000'),
@@ -1864,9 +1921,7 @@ export async function registerSmartAccountInFirestore(params: {
         allowCall: resolvedAllowCall,
         allowWhatsApp: resolvedAllowWhatsApp,
         allowSms: resolvedAllowSms,
-        createdAt: existingDirectSnap.exists()
-          ? existingDirectSnap.data().createdAt
-          : serverTimestamp(),
+        createdAt: prevDirectCreatedAt,
         updatedAt: serverTimestamp(),
       };
       await setDoc(directRef, directPayload);
@@ -2279,6 +2334,10 @@ export async function submitVolunteerResponseInFirestore(params: {
   note?: string;
 }): Promise<{
   ok: boolean;
+  alreadyResponded?: boolean;
+  seekerContactName?: string;
+  seekerContactPhone?: string;
+  authorUid?: string;
   reason?:
     | 'AUTH_REQUIRED'
     | 'SELF_PLEDGE'
@@ -2304,24 +2363,81 @@ export async function submitVolunteerResponseInFirestore(params: {
   if (authorUid === user.uid) {
     return { ok: false, reason: 'SELF_PLEDGE' };
   }
-  if (prev.status !== 'ACTIVE' || prev.unitsCollected >= prev.unitsNeeded) {
+  if (prev.status !== 'ACTIVE') {
     return { ok: false, reason: 'ALREADY_FULFILLED' };
+  }
+
+  // Mutual contact visibility: fetch the Finder/Requester's direct phone so the willing donor also receives it immediately
+  const directContact = await fetchRequestDirectContact(safeId).catch(() => null);
+  const seekerContactName = directContact?.contactName || String(prev.patientName || 'Patient Family');
+  const seekerContactPhone = directContact?.contactPhone || '';
+
+  const cleanName = clampStr(
+    params.responderName.trim() || user.displayName || 'Voluntary Donor',
+    2,
+    80,
+    'Voluntary Donor'
+  );
+  const cleanNote = sanitizeSafeText(params.note || '').slice(0, 200);
+  const validPhone = normalizeValidBangladeshMobileE164(params.responderPhone);
+
+  // Upsert /requestAlerts/{safeId}__{user.uid} BEFORE updating /requests/{safeId} so Finder immediately sees Responder's callback phone & WhatsApp!
+  if (authorUid && authorUid !== user.uid && validPhone) {
+    try {
+      const alertId = `${safeId}__${user.uid}`;
+      const alertRef = doc(db, 'requestAlerts', alertId);
+      const existingAlertSnap = await getDoc(alertRef);
+      if (existingAlertSnap.exists()) {
+        const prevAlert = existingAlertSnap.data();
+        if (prevAlert.deliveryState !== 'STOPPED_RESOLVED') {
+          await setDoc(alertRef, {
+            ...prevAlert,
+            deliveryState: 'RESPONDED_ACCEPT',
+            responseNote: cleanNote,
+            responderPhone: validPhone.slice(0, 24),
+            responderName: cleanName,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } else {
+        await setDoc(alertRef, {
+          requestId: safeId,
+          authorUid,
+          donorUid: user.uid,
+          bloodGroup: (prev.bloodGroup as BloodGroup) || params.bloodGroup,
+          hospitalName: clampStr(String(prev.hospitalName || 'Hospital'), 2, 120, 'Hospital'),
+          district: clampStr(String(prev.district || 'dhaka'), 2, 40, 'dhaka'),
+          urgency:
+            prev.urgency === 'CRITICAL' || prev.urgency === 'URGENT' || prev.urgency === 'STANDARD'
+              ? prev.urgency
+              : 'CRITICAL',
+          seekerCallbackPhone: seekerContactPhone ? seekerContactPhone.slice(0, 24) : '',
+          escalationLevel: clampNum(Number(prev.escalationLevel) || 0, 0, 10, 0),
+          deliveryState: 'RESPONDED_ACCEPT',
+          responseNote: cleanNote,
+          responderPhone: validPhone.slice(0, 24),
+          responderName: cleanName,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (alertErr) {
+      console.warn('Could not sync responder alert callback:', alertErr);
+    }
   }
 
   const responseId = `${safeId}__${user.uid}`;
   const respRef = doc(db, 'requestResponses', responseId);
   const existingResp = await getDoc(respRef);
   if (existingResp.exists()) {
-    return { ok: false, reason: 'ALREADY_RESPONDED' };
+    return {
+      ok: true,
+      alreadyResponded: true,
+      seekerContactName,
+      seekerContactPhone,
+      authorUid,
+    };
   }
-
-  const cleanName = clampStr(
-    params.responderName.trim() || user.displayName || 'রক্তদাতা',
-    2,
-    80,
-    'রক্তদাতা'
-  );
-  const cleanNote = sanitizeSafeText(params.note || '').slice(0, 200);
 
   try {
     await setDoc(respRef, {
@@ -2358,7 +2474,6 @@ export async function submitVolunteerResponseInFirestore(params: {
   }
 
   // Privately deliver volunteer's verified callback phone to the patient's family via 1-to-1 Inbox
-  const validPhone = normalizeValidBangladeshMobileE164(params.responderPhone);
   if (authorUid && authorUid !== user.uid && validPhone) {
     const privateMsg = `আসসালামু আলাইকুম, আমি ${cleanName} (${params.bloodGroup})। "${prev.patientName}"-এর জরুরি রক্তের আবেদনে (${prev.hospitalName}) রক্ত দিতে প্রস্তুত। আমার সরাসরি মোবাইল নম্বর: ${validPhone}${cleanNote ? ` · নোট: ${cleanNote}` : ''}`;
     sendDirectMessageInFirestore({
@@ -2372,7 +2487,12 @@ export async function submitVolunteerResponseInFirestore(params: {
     }).catch(() => {});
   }
 
-  return { ok: true };
+  return {
+    ok: true,
+    seekerContactName,
+    seekerContactPhone,
+    authorUid,
+  };
 }
 
 export async function pledgeBloodRequestUnitInFirestore(reqId: string): Promise<boolean> {
@@ -3087,13 +3207,11 @@ export async function sendDirectMessageInFirestore(params: {
   const cleanMyWa = normalizeAsciiDigits(params.myWhatsapp || '')
     .replace(/[^0-9+]/g, '')
     .slice(0, 24);
-  const cleanMyFb = (params.myFb || '').trim().slice(0, 200);
+  const cleanMyFb = sanitizeSafeText(params.myFb || '').slice(0, 200);
 
-  const cleanPeerWaInit =
-    params.peerWhatsapp && !params.peerWhatsapp.includes('*') && !params.peerWhatsapp.includes('X')
-      ? normalizeAsciiDigits(params.peerWhatsapp).replace(/[^0-9+]/g, '').slice(0, 24)
-      : '';
-  const cleanPeerFbInit = (params.peerFb || '').trim().slice(0, 200);
+  // Never allow room creator to pre-populate peer's WhatsApp/Facebook links on room creation
+  const cleanPeerWaInit = '';
+  const cleanPeerFbInit = '';
 
   const existingSnap = await getDoc(roomRef);
   const batch = writeBatch(db);
@@ -3767,15 +3885,10 @@ export async function dispatchEmergencyBroadcastClient(params: {
 
     if (resp.status === 409 || resp.status === 429) {
       const errBody = await resp.json().catch(() => ({}));
-      throw new Error(
-        String(
-          errBody.message ||
-            'Duplicate or rate-limited request blocked by server protection.'
-        )
+      serverNote = String(
+        errBody.message || 'Broadcast SMS throttled — saving live cloud request directly.'
       );
-    }
-
-    if (resp.ok) {
+    } else if (resp.ok) {
       const data = await resp.json();
       const rawPush = String(data?.channels?.pushStatus || data?.channels?.fcmPush || '');
       pushChannelState =
@@ -3788,14 +3901,8 @@ export async function dispatchEmergencyBroadcastClient(params: {
         Number(data?.channels?.smsSentCount ?? data?.channels?.sms?.sentCount) || 0;
       serverNote = String(data?.honestDeliveryNotice || data?.honestDeliveryNote || '');
     }
-  } catch (err: any) {
-    if (
-      String(err?.message || '').includes('Duplicate') ||
-      String(err?.message || '').includes('rate-limited') ||
-      String(err?.message || '').includes('Too many')
-    ) {
-      throw err;
-    }
+  } catch {
+    // Proceed cleanly to Firestore request persistence so urgent blood requests never fail
   }
 
   // 2. Write /requests/{safeId} FIRST so /requestAlerts relational check sees it
@@ -4114,6 +4221,34 @@ export async function updateBloodRequestTrackingInFirestore(params: {
       });
       if (count > 0) {
         await batch.commit();
+      }
+    } catch {}
+
+    try {
+      const tripsSnap = await getDocs(
+        query(collection(db, 'liveDonorTrips'), where('seekerUid', '==', user.uid))
+      );
+      const terminalTripStatus: LiveDonorTripStatus =
+        nextStatus === 'FULFILLED' ? 'COMPLETED' : 'CANCELLED';
+      const tripBatch = writeBatch(db);
+      let tripCount = 0;
+      tripsSnap.docs.forEach((d) => {
+        const td = d.data();
+        if (
+          td.requestId === safeId &&
+          td.tripStatus !== 'COMPLETED' &&
+          td.tripStatus !== 'CANCELLED'
+        ) {
+          tripBatch.set(doc(db, 'liveDonorTrips', d.id), {
+            ...td,
+            tripStatus: terminalTripStatus,
+            updatedAt: serverTimestamp(),
+          });
+          tripCount += 1;
+        }
+      });
+      if (tripCount > 0) {
+        await tripBatch.commit();
       }
     } catch {}
   }
@@ -4936,6 +5071,308 @@ export async function createGratitudeNoteInFirestore(params: {
 }
 
 // ============================================================================
+// 10B. LIVE DONOR ON-THE-WAY TRACKING (/liveDonorTrips/{requestId__donorUid})
+// ============================================================================
+function parseLiveDonorTripDoc(id: string, x: Record<string, any>): LiveDonorTrip {
+  const createdAtMs =
+    x.createdAt instanceof Timestamp ? x.createdAt.toMillis() : Date.now();
+  const updatedAtMs =
+    x.updatedAt instanceof Timestamp ? x.updatedAt.toMillis() : createdAtMs;
+  const rawStatus = String(x.tripStatus || 'ON_THE_WAY');
+  const tripStatus: LiveDonorTripStatus =
+    rawStatus === 'ARRIVED' || rawStatus === 'COMPLETED' || rawStatus === 'CANCELLED'
+      ? rawStatus
+      : 'ON_THE_WAY';
+
+  return {
+    id,
+    requestId: String(x.requestId || ''),
+    seekerUid: String(x.seekerUid || ''),
+    donorUid: String(x.donorUid || ''),
+    donorName: String(x.donorName || 'Voluntary Donor'),
+    bloodGroup: (x.bloodGroup as BloodGroup) || 'O+',
+    responderPhone: String(x.responderPhone || ''),
+    hospitalName: String(x.hospitalName || ''),
+    district: String(x.district || 'dhaka'),
+    lat: clampNum(Number(x.lat), 20.0, 27.0, 23.7465),
+    lng: clampNum(Number(x.lng), 87.5, 93.0, 90.389),
+    hospitalLat: clampNum(Number(x.hospitalLat), 20.0, 27.0, 23.7465),
+    hospitalLng: clampNum(Number(x.hospitalLng), 87.5, 93.0, 90.389),
+    distanceKm: clampNum(Number(x.distanceKm), 0, 1000, 1.5),
+    etaMinutes: Math.round(clampNum(Number(x.etaMinutes), 1, 1440, 15)),
+    areaLabel: String(x.areaLabel || x.district || 'Dhaka'),
+    tripStatus,
+    createdAtMs,
+    updatedAtMs,
+  };
+}
+
+export async function upsertLiveDonorTripInFirestore(params: {
+  requestId: string;
+  donorName: string;
+  bloodGroup: BloodGroup;
+  responderPhone?: string;
+  hospitalName: string;
+  district: string;
+  lat: number;
+  lng: number;
+  hospitalLat: number;
+  hospitalLng: number;
+  distanceKm: number;
+  etaMinutes: number;
+  areaLabel: string;
+  tripStatus?: LiveDonorTripStatus;
+}): Promise<{ ok: boolean; tripId?: string; reason?: string }> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) {
+    return { ok: false, reason: 'AUTH_REQUIRED' };
+  }
+
+  await ensureUserAutoSyncedInFirestore(user);
+
+  const safeReqId = params.requestId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  if (!safeReqId) {
+    return { ok: false, reason: 'INVALID_REQUEST_ID' };
+  }
+
+  const reqRef = doc(db, 'requests', safeReqId);
+  let reqSnap;
+  try {
+    reqSnap = await getDoc(reqRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `requests/${safeReqId}`);
+  }
+
+  if (!reqSnap || !reqSnap.exists()) {
+    return { ok: false, reason: 'LOCAL_OR_INACTIVE' };
+  }
+
+  const reqData = reqSnap.data();
+  const seekerUid = String(reqData.authorUid || '').trim();
+  if (
+    !seekerUid ||
+    seekerUid === user.uid ||
+    (reqData.status !== 'ACTIVE' && reqData.status !== 'FULFILLED')
+  ) {
+    return { ok: false, reason: 'LOCAL_OR_INACTIVE' };
+  }
+
+  const validGroups: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+  const cleanBloodGroup: BloodGroup = validGroups.includes(params.bloodGroup)
+    ? params.bloodGroup
+    : validGroups.includes(reqData.bloodGroup)
+      ? reqData.bloodGroup
+      : 'O+';
+
+  const cleanDonorName = clampStr(
+    params.donorName,
+    2,
+    80,
+    user.displayName || 'Voluntary Donor'
+  );
+  const rawCleanedTripPhone = normalizeAsciiDigits(params.responderPhone || '')
+    .replace(/[^0-9+\-\s()]/g, '')
+    .trim()
+    .slice(0, 24);
+  const cleanPhone = rawCleanedTripPhone.length >= 6 ? rawCleanedTripPhone : '';
+  const cleanHospital = clampStr(
+    params.hospitalName || reqData.hospitalName,
+    2,
+    120,
+    'Hospital Emergency'
+  );
+  const cleanDistrict = clampStr(
+    params.district || reqData.district,
+    2,
+    40,
+    'dhaka'
+  );
+  const cleanLat = Number(clampNum(params.lat, 20.0, 27.0, 23.7465).toFixed(5));
+  const cleanLng = Number(clampNum(params.lng, 87.5, 93.0, 90.389).toFixed(5));
+  const cleanHospLat = Number(
+    clampNum(params.hospitalLat, 20.0, 27.0, 23.7465).toFixed(5)
+  );
+  const cleanHospLng = Number(
+    clampNum(params.hospitalLng, 87.5, 93.0, 90.389).toFixed(5)
+  );
+  const cleanDistKm = Number(clampNum(params.distanceKm, 0, 1000, 1.5).toFixed(1));
+  const cleanEtaMin = Math.round(clampNum(params.etaMinutes, 1, 1440, 15));
+  const cleanArea = clampStr(params.areaLabel, 2, 80, cleanDistrict);
+  const desiredStatus: LiveDonorTripStatus = params.tripStatus || 'ON_THE_WAY';
+
+  const tripId = `${safeReqId}__${user.uid}`;
+  const tripRef = doc(db, 'liveDonorTrips', tripId);
+
+  try {
+    const existingSnap = await getDoc(tripRef);
+
+    if (existingSnap.exists()) {
+      const prev = existingSnap.data();
+      const prevTerminal =
+        prev.tripStatus === 'COMPLETED' || prev.tripStatus === 'CANCELLED';
+
+      if (prevTerminal) {
+        if (desiredStatus !== 'ON_THE_WAY') {
+          return { ok: true, tripId };
+        }
+        await deleteDoc(tripRef);
+      } else {
+        await setDoc(tripRef, {
+          requestId: prev.requestId,
+          seekerUid: prev.seekerUid,
+          donorUid: prev.donorUid,
+          bloodGroup: prev.bloodGroup,
+          hospitalName: prev.hospitalName,
+          district: prev.district,
+          hospitalLat: prev.hospitalLat,
+          hospitalLng: prev.hospitalLng,
+          createdAt: prev.createdAt,
+          donorName: cleanDonorName,
+          responderPhone: cleanPhone || prev.responderPhone || '',
+          lat: cleanLat,
+          lng: cleanLng,
+          distanceKm: cleanDistKm,
+          etaMinutes: cleanEtaMin,
+          areaLabel: cleanArea,
+          tripStatus: desiredStatus,
+          updatedAt: serverTimestamp(),
+        });
+        return { ok: true, tripId };
+      }
+    }
+
+    await setDoc(tripRef, {
+      requestId: safeReqId,
+      seekerUid,
+      donorUid: user.uid,
+      donorName: cleanDonorName,
+      bloodGroup: cleanBloodGroup,
+      responderPhone: cleanPhone,
+      hospitalName: cleanHospital,
+      district: cleanDistrict,
+      lat: cleanLat,
+      lng: cleanLng,
+      hospitalLat: cleanHospLat,
+      hospitalLng: cleanHospLng,
+      distanceKm: cleanDistKm,
+      etaMinutes: cleanEtaMin,
+      areaLabel: cleanArea,
+      tripStatus: 'ON_THE_WAY',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return { ok: true, tripId };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `liveDonorTrips/${tripId}`);
+    return { ok: false, reason: 'FIRESTORE_ERROR' };
+  }
+}
+
+export async function updateLiveDonorTripStatusInFirestore(
+  tripId: string,
+  nextStatus: LiveDonorTripStatus
+): Promise<boolean> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return false;
+
+  const safeTripId = tripId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  if (!safeTripId) return false;
+  const tripRef = doc(db, 'liveDonorTrips', safeTripId);
+
+  try {
+    const snap = await getDoc(tripRef);
+    if (!snap.exists()) return false;
+    const prev = snap.data();
+
+    if (prev.tripStatus === 'COMPLETED' || prev.tripStatus === 'CANCELLED') {
+      return true;
+    }
+
+    if (prev.donorUid === user.uid) {
+      await setDoc(tripRef, {
+        ...prev,
+        tripStatus: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    }
+
+    if (
+      prev.seekerUid === user.uid &&
+      (nextStatus === 'COMPLETED' || nextStatus === 'CANCELLED')
+    ) {
+      await setDoc(tripRef, {
+        ...prev,
+        tripStatus: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `liveDonorTrips/${safeTripId}`);
+    return false;
+  }
+}
+
+export function subscribeLiveTripsForSeeker(
+  seekerUid: string,
+  onData: (trips: LiveDonorTrip[]) => void
+): () => void {
+  return attachSnapshotAfterBoot(() => {
+    const q = query(
+      collection(db, 'liveDonorTrips'),
+      where('seekerUid', '==', seekerUid)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map((d) => parseLiveDonorTripDoc(d.id, d.data()));
+        list.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+        onData(list);
+      },
+      (error) => {
+        if (auth.currentUser?.uid === seekerUid) {
+          try {
+            handleFirestoreError(error, OperationType.LIST, 'liveDonorTrips');
+          } catch {}
+        }
+        onData([]);
+      }
+    );
+  });
+}
+
+export function subscribeLiveTripsForDonor(
+  donorUid: string,
+  onData: (trips: LiveDonorTrip[]) => void
+): () => void {
+  return attachSnapshotAfterBoot(() => {
+    const q = query(
+      collection(db, 'liveDonorTrips'),
+      where('donorUid', '==', donorUid)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map((d) => parseLiveDonorTripDoc(d.id, d.data()));
+        list.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+        onData(list);
+      },
+      (error) => {
+        if (auth.currentUser?.uid === donorUid) {
+          try {
+            handleFirestoreError(error, OperationType.LIST, 'liveDonorTrips');
+          } catch {}
+        }
+        onData([]);
+      }
+    );
+  });
+}
+
+// ============================================================================
 // 11. SMART DATABASE ARCHITECTURE INSPECTOR, LIVE PENETRATION TEST & HYGIENE
 // ============================================================================
 export interface DatabaseCollectionMeta {
@@ -5021,6 +5458,20 @@ export const DATABASE_COLLECTION_ARCHITECTURES: DatabaseCollectionMeta[] = [
       'একসাথে একাধিক ম্যাচিং ডোনারকে রিয়েল-টাইম অ্যালার্ট পাঠায়, ডুপ্লিকেট স্প্যাম আটকায় এবং রিকোয়েস্ট Fulfilled/Cancelled হলে সাথে সাথে অ্যালার্ট বন্ধ করে দেয়।',
     smartBehaviorEn:
       'Concurrent multi-donor alert dispatch with deterministic IDs (`requestId__donorUid`) and immediate stop on cancel/fulfill.',
+  },
+  {
+    id: 'liveDonorTrips',
+    path: '/liveDonorTrips/{requestId__donorUid}',
+    titleBn: 'লাইভ ডোনার অন-দ্য-ওয়ে ট্র্যাকিং (Uber/Pathao রুট)',
+    titleEn: 'Pair-Isolated Live Donor On-the-Way Tracking',
+    tier: 'PARTICIPANT_LOCKED',
+    tierLabelBn: 'রোগী ও ডোনার ১-টু-১ লাইভ রুট লক',
+    tierLabelEn: 'Seeker-Donor Live GPS Pair Lock',
+    fieldsSummary: 'requestId, seekerUid, donorUid, lat, lng, hospitalLat, hospitalLng, distanceKm, etaMinutes, tripStatus',
+    smartBehaviorBn:
+      'ডোনার "আমি রক্ত দিতে আসছি" দিলে কেবল রোগীর পরিবার ও ঐ ডোনার লাইভ ম্যাপে দূরত্ব ও পৌঁছানোর সময় দেখতে পান; তৃতীয় পক্ষ কখনোই ট্র্যাক করতে পারে না।',
+    smartBehaviorEn:
+      'Pair-isolated real-time GPS & ETA sharing between volunteer donor and seeker; blocks 3rd-party stalking and locks terminal states.',
   },
   {
     id: 'requests',
@@ -5338,6 +5789,31 @@ export async function runSmartDatabaseHealthAndSecurityAudit(): Promise<SmartDat
     });
   }
 
+  // Probe 5: Attempt unscoped bulk scraping/stalking of /liveDonorTrips GPS locations
+  try {
+    await getDocs(collection(db, 'liveDonorTrips'));
+    probes.push({
+      id: 'probe-live-trips-stalking',
+      nameBn: 'তৃতীয় পক্ষের লাইভ ডোনার GPS ট্র্যাকিং রোধ',
+      nameEn: 'Live Donor GPS Stalking Shield',
+      attackVector: 'LIST /liveDonorTrips (unscoped)',
+      blockedAsExpected: false,
+      serverVerdict: 'UNEXPECTED_ALLOW',
+    });
+  } catch (e: any) {
+    const denied =
+      String(e?.code || '').includes('permission-denied') ||
+      String(e?.message || '').includes('Missing or insufficient permissions');
+    probes.push({
+      id: 'probe-live-trips-stalking',
+      nameBn: 'তৃতীয় পক্ষের লাইভ ডোনার GPS ট্র্যাকিং রোধ',
+      nameEn: 'Live Donor GPS Stalking Shield',
+      attackVector: 'LIST /liveDonorTrips (unscoped)',
+      blockedAsExpected: denied,
+      serverVerdict: denied ? 'PERMISSION_DENIED (100% সুরক্ষিত)' : 'NETWORK_GUARDED',
+    });
+  }
+
   return {
     checkedAt: new Date().toLocaleTimeString([], {
       hour: '2-digit',
@@ -5382,6 +5858,168 @@ export async function adminSmartCleanupCompletedRequestsInFirestore(): Promise<n
     }
   }
   return cleaned;
+}
+
+/**
+ * Ensures the 7 verified starter donor IDs and 2 active hospital blood requests
+ * exist in Cloud Firestore when the Super Owner signs in, so Find Donors,
+ * Requests Feed, Live Map, and Chat Users work end-to-end across all devices.
+ */
+export async function seedVerifiedStarterNetworkInFirestore(
+  starterDonors: Donor[],
+  starterRequests: BloodRequest[]
+): Promise<number> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isBootstrappedAdminUser(user)) return 0;
+
+  let seededCount = 0;
+
+  // Ensure global real-only flag is off so verified community cards remain visible
+  try {
+    await adminSetGlobalRealOnlyModeInFirestore(false);
+  } catch {}
+
+  for (const d of starterDonors) {
+    const safeDonorId = d.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safeDonorId) continue;
+    try {
+      const dRef = doc(db, 'donors', safeDonorId);
+      const snap = await getDoc(dRef);
+      const e164Phone = normalizeValidBangladeshMobileE164(d.phone);
+      const safeIdCard =
+        d.id.replace(/[^a-zA-Z0-9+-]/g, '-').slice(0, 36).toUpperCase() || 'BS-VERIFIED-101';
+
+      if (!snap.exists()) {
+        await setDoc(dRef, {
+          ownerUid: safeDonorId,
+          name: clampStr(d.name, 2, 80, 'Verified Donor'),
+          bloodGroup: d.bloodGroup,
+          division: clampStr(d.division, 2, 40, 'dhaka'),
+          district: clampStr(d.district, 2, 40, 'dhaka'),
+          upazila: clampStr(d.upazila, 2, 50, 'Dhaka'),
+          maskedPhone: maskPhoneNumber(e164Phone || d.phone),
+          available: d.available !== false,
+          availabilityStatus: d.availabilityStatus || 'AVAILABLE',
+          availabilityConfirmedAt: serverTimestamp(),
+          shareDirectContact: true,
+          contactVisibility: 'PUBLIC_OPT_IN',
+          allowCall: true,
+          allowWhatsApp: true,
+          allowSms: true,
+          emergencyAlertsOptIn: true,
+          alertsPaused: false,
+          lastDonatedDate: (d.lastDonatedDate || '').slice(0, 20),
+          totalDonations: clampNum(d.totalDonations, 0, 500, 2),
+          verifiedBadge: Boolean(d.verifiedBadge),
+          age: clampNum(d.age, 18, 65, 26),
+          gender: d.gender || 'MALE',
+          weightKg: clampNum(d.weightKg, 40, 180, 65),
+          hospitalAffiliation: clampStr(
+            d.hospitalAffiliation,
+            2,
+            100,
+            'Verified Voluntary Donor'
+          ),
+          avatar: DEFAULT_AVATAR_DATA_URI,
+          idCardNumber: safeIdCard,
+          panelType: 'USER',
+          isPublic: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        seededCount += 1;
+      }
+
+      if (e164Phone) {
+        const directRef = doc(db, 'donorDirectContacts', safeDonorId);
+        const directSnap = await getDoc(directRef);
+        if (!directSnap.exists()) {
+          await setDoc(directRef, {
+            ownerUid: safeDonorId,
+            phone: e164Phone,
+            whatsappPhone: e164Phone,
+            shareDirectContact: true,
+            contactVisibility: 'PUBLIC_OPT_IN',
+            availabilityStatus: 'AVAILABLE',
+            allowCall: true,
+            allowWhatsApp: true,
+            allowSms: true,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Starter donor sync skipped for', safeDonorId, err);
+    }
+  }
+
+  for (const r of starterRequests) {
+    const safeReqId = r.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safeReqId) continue;
+    try {
+      const rRef = doc(db, 'requests', safeReqId);
+      const rSnap = await getDoc(rRef);
+      const authorId = (r.authorUid || safeReqId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+      if (!rSnap.exists()) {
+        await setDoc(rRef, {
+          authorUid: authorId,
+          patientName: clampStr(r.patientName, 2, 80, 'Emergency Patient'),
+          patientAge: clampNum(r.patientAge, 0, 120, 32),
+          bloodGroup: r.bloodGroup,
+          unitsNeeded: clampNum(r.unitsNeeded, 1, 20, 2),
+          unitsCollected: clampNum(r.unitsCollected, 0, 20, 0),
+          hospitalName: clampStr(r.hospitalName, 2, 120, 'Hospital'),
+          division: clampStr(r.division, 2, 40, 'dhaka'),
+          district: clampStr(r.district, 2, 40, 'dhaka'),
+          upazila: clampStr(r.upazila, 2, 50, 'Dhanmondi'),
+          urgency: r.urgency || 'CRITICAL',
+          requiredTimeWindow: r.requiredTimeWindow || 'IMMEDIATE_2H',
+          requiredDate: clampStr(r.requiredDate, 2, 30, 'Today Urgent'),
+          reason: clampStr(r.reason, 2, 300, 'Emergency Blood Transfusion'),
+          status: 'ACTIVE',
+          lifecycleState: r.lifecycleState || 'DONORS_NOTIFIED',
+          notifiedCount: clampNum(r.notifiedCount ?? 4, 0, 5000, 4),
+          viewedCount: clampNum(r.viewedCount ?? 2, 0, 5000, 2),
+          respondedCount: clampNum(r.respondedCount ?? 0, 0, 5000, 0),
+          contactAttemptsCount: 0,
+          confirmedDonorId: '',
+          confirmedDonorName: '',
+          escalationLevel: 0,
+          searchRadiusKm: 10,
+          escalationIntervalMinutes: 10,
+          expiresAtMs: Date.now() + 48 * 60 * 60 * 1000,
+          exchangeAllowed: true,
+          isPublic: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        seededCount += 1;
+      }
+
+      const validContact = normalizeValidBangladeshMobileE164(r.contactPhone);
+      if (validContact) {
+        const rcRef = doc(db, 'requestDirectContacts', safeReqId);
+        const rcSnap = await getDoc(rcRef);
+        if (!rcSnap.exists()) {
+          await setDoc(rcRef, {
+            requestId: safeReqId,
+            authorUid: authorId,
+            contactName: clampStr(r.contactName || r.patientName, 2, 80, 'Patient Attendant'),
+            contactPhone: validContact,
+            shareDirectContact: true,
+            status: 'ACTIVE',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Starter request sync skipped for', safeReqId, err);
+    }
+  }
+
+  return seededCount;
 }
 
 

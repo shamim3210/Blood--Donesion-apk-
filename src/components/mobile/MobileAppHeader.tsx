@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ActiveTab, Language } from '../../types';
 import { BrandLogo } from '../BrandLogo';
 import { useBrandConfig } from '../../config/brandConfig';
+import { usePWAInstall } from '../../hooks/usePWAInstall';
 import {
   auth,
   onAuthStateChanged,
@@ -90,6 +91,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
   onToggleSosSound,
 }) => {
   const brand = useBrandConfig();
+  const { isInstallable, isInstalled, promptInstall } = usePWAInstall();
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Zero-Trust Cloud Admin Visibility State
@@ -260,10 +262,11 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
   ];
 
   return (
-    <header className="sticky top-0 z-40 w-full bg-white/95 dark:bg-[#0b1120]/95 backdrop-blur-md border-b border-slate-200/90 dark:border-slate-800/90 transition-colors">
-      <div className="max-w-6xl mx-auto h-16 px-3.5 sm:px-6 flex items-center justify-between gap-3">
-        {/* Left Zone: Brand Logo (Desktop & Home) or Back Button (Mobile Sub-Views) */}
-        <div className="flex items-center gap-2.5 min-w-0">
+    <header className="sticky top-0 z-40 w-full bg-white/92 dark:bg-[#091120]/92 backdrop-blur-md border-b border-slate-200/90 dark:border-slate-800/90 shadow-[0_2px_14px_-4px_rgba(11,34,57,0.06)] transition-colors">
+      <div className="h-[3px] w-full bg-gradient-to-r from-[#dc2626] via-[#e11d48] to-[#0b2239]" />
+      <div className="max-w-6xl mx-auto h-16 px-3.5 sm:px-6 flex items-center justify-between gap-4 lg:gap-8">
+        {/* Zone 1: Clean 1-Line Brand Wordmark (Desktop & Home) or Back Button (Mobile Sub-Views) */}
+        <div className="flex items-center gap-2.5 min-w-0 shrink-0">
           {showMobileBackButton ? (
             <>
               <button
@@ -273,11 +276,11 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   else setActiveTab('home');
                 }}
                 aria-label="Go Back"
-                className="lg:hidden min-h-[42px] min-w-[42px] rounded-xl btn-surface flex items-center justify-center cursor-pointer shrink-0"
+                className="lg:hidden min-h-[44px] min-w-[44px] rounded-xl btn-surface flex items-center justify-center cursor-pointer shrink-0"
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
-              <h1 className="lg:hidden font-bold text-base text-slate-900 dark:text-white truncate">
+              <h1 className="lg:hidden font-bold text-base text-[#0b2239] dark:text-white truncate">
                 {getScreenTitle()}
               </h1>
               <div
@@ -288,7 +291,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                 }}
                 className="hidden lg:block cursor-pointer select-none"
               >
-                <BrandLogo variant="lockup" size="sm" />
+                <BrandLogo variant="lockup" size="sm" hideSubtitle />
               </div>
             </>
           ) : (
@@ -297,16 +300,16 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
               className="cursor-pointer select-none min-w-0"
               title={brand.brandName}
             >
-              <BrandLogo variant="lockup" size="sm" />
+              <BrandLogo variant="lockup" size="sm" hideSubtitle />
             </div>
           )}
         </div>
 
-        {/* Center Zone: Clean Desktop Navigation (Single-Line, Zero Clutter) */}
+        {/* Zone 2: Clean Single-Line Text Navigation Links */}
         {!isDeckMode && (
           <nav
             aria-label="Desktop Navigation"
-            className="hidden lg:flex items-center gap-1 bg-slate-100/90 dark:bg-slate-900/90 p-1 rounded-2xl border border-slate-200/80 dark:border-slate-800"
+            className="hidden lg:flex items-center gap-6"
           >
             {desktopNavItems.map((item) => {
               const isActive =
@@ -317,16 +320,16 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  className={`relative min-h-[42px] py-2 text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
                     isActive
-                      ? 'bg-white dark:bg-slate-800 text-rose-600 dark:text-rose-400 shadow-xs border border-slate-200/70 dark:border-slate-700/80'
-                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                      ? 'text-[#dc2626] dark:text-rose-400 after:content-[""] after:absolute after:left-0 after:right-0 after:bottom-0.5 after:h-0.5 after:rounded-full after:bg-[#dc2626] dark:after:bg-rose-400'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-[#0b2239] dark:hover:text-white'
                   }`}
                 >
                   <span>{lang === 'bn' ? item.labelBn : item.labelEn}</span>
                   {item.badge !== undefined && item.badge > 0 && (
-                    <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold tabular-nums flex items-center justify-center">
-                      {item.badge > 9 ? '9+' : item.badge}
+                    <span className="text-[11px] font-mono font-extrabold tabular-nums text-[#dc2626] dark:text-rose-400">
+                      ({item.badge > 9 ? '9+' : item.badge})
                     </span>
                   )}
                 </button>
@@ -336,13 +339,13 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
               <button
                 type="button"
                 onClick={() => setActiveTab('admin')}
-                className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                className={`relative min-h-[42px] py-2 text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
                   activeTab === 'admin'
-                    ? 'btn-obsidian'
-                    : 'text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    ? 'text-[#dc2626] dark:text-rose-400 after:content-[""] after:absolute after:left-0 after:right-0 after:bottom-0.5 after:h-0.5 after:rounded-full after:bg-[#dc2626]'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-[#0b2239] dark:hover:text-white'
                 }`}
               >
-                <Shield className="w-3.5 h-3.5 text-rose-500" />
+                <Shield className="w-3.5 h-3.5 text-[#dc2626]" />
                 <span>{lang === 'bn' ? 'অ্যাডমিন' : 'Admin'}</span>
               </button>
             )}
@@ -551,6 +554,29 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   {lang === 'bn' ? 'ফ্যামিলি রক্ত সুরক্ষা সার্কেল' : 'Family Safety Circle'}
                 </span>
               </button>
+
+              {!isInstalled && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (isInstallable) {
+                      await promptInstall();
+                      setMenuOpen(false);
+                      return;
+                    }
+                    if (onOpenPlayStoreModal) {
+                      onOpenPlayStoreModal();
+                    }
+                    setMenuOpen(false);
+                  }}
+                  className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-obsidian text-xs font-bold cursor-pointer whitespace-nowrap"
+                >
+                  <Download className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="truncate">
+                    {lang === 'bn' ? 'ফোনে অ্যাপ / APK ইনস্টল' : 'Install App / APK'}
+                  </span>
+                </button>
+              )}
 
               {isAdminUnlocked && (
                 <button

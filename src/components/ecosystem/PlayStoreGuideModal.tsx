@@ -549,30 +549,40 @@ export const PlayStoreGuideModal: React.FC<PlayStoreGuideModalProps> = ({
           {activeTab === 'apk' && (
             <>
               {/* Official Custom App Icon & Home Screen Preview */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="p-4 rounded-2xl hero-brand-surface text-white flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="flex items-center gap-3.5 min-w-0">
                   <BrandLogo variant="card" className="w-20 h-20 shrink-0" />
                   <div className="min-w-0 space-y-1">
-                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
+                    <div className="text-xs sm:text-sm font-black text-white">
                       {lang === 'bn'
-                        ? 'অফিসিয়াল BloodSearch অ্যাপ লোগো সক্রিয় (Android / iOS / APK)'
-                        : 'Official BloodSearch App Icon Active (Android / iOS / APK)'}
+                        ? 'অফিসিয়াল BloodSearch APK ও অ্যাপ লোগো সক্রিয়'
+                        : 'Official BloodSearch APK & App Icon Active'}
                     </div>
-                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    <p className="text-[11px] text-slate-200 leading-relaxed">
                       {lang === 'bn'
-                        ? 'ফোনের হোম স্ক্রিন ও APK ফাইলে স্বয়ংক্রিয়ভাবে আপনার নতুন "Blood Search · FIND BLOOD. SAVE LIFE." লোগোটি বসবে।'
-                        : 'Your custom "Blood Search · FIND BLOOD. SAVE LIFE." icon is pre-configured for Android Adaptive Maskable, iOS & Play Store.'}
+                        ? 'ফোনের হোম স্ক্রিন, iOS, ও Android .apk ফাইলে স্বয়ংক্রিয়ভাবে আপনার "BloodSearch · FIND BLOOD. SAVE LIFE." লোগোটি সেট করা হয়েছে।'
+                        : 'Your official "BloodSearch · FIND BLOOD. SAVE LIFE." artwork is active across Android Adaptive Maskable, iOS & APK packages.'}
                     </p>
                   </div>
                 </div>
-                <a
-                  href="/pwa-512x512.png"
-                  download="BloodSearch_Official_Logo_512x512.png"
-                  className="min-h-[40px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-xs inline-flex items-center gap-1.5 shrink-0 shadow-xs"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>{lang === 'bn' ? 'HD লোগো ডাউনলোড' : 'Download 512px PNG'}</span>
-                </a>
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <a
+                    href="/assets/aistudio/image_771fa3d8.png"
+                    download="BloodSearch_Official_HD_Logo.png"
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 text-[#0b2239] font-bold text-xs inline-flex items-center gap-1.5 shrink-0 shadow-xs whitespace-nowrap"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[#dc2626]" />
+                    <span>{lang === 'bn' ? 'অরিজিনাল HD লোগো' : 'Original HD Logo'}</span>
+                  </a>
+                  <a
+                    href="/pwa-512x512.png"
+                    download="BloodSearch_APK_Icon_512x512.png"
+                    className="min-h-[40px] px-3 py-2 rounded-xl btn-crimson font-bold text-xs inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>512px APK</span>
+                  </a>
+                </div>
               </div>
 
               {/* Method 1: Instant 1-Click Phone Install */}

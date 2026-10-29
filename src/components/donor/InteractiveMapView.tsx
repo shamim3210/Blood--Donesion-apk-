@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import L from 'leaflet';
-import { BloodGroup, Language, Donor, BloodRequest } from '../../types';
+import {
+  BloodGroup,
+  Language,
+  Donor,
+  BloodRequest,
+  LiveDonorTrip,
+  LiveDonorTripStatus,
+} from '../../types';
+import { auth } from '../../firebase';
 import {
   isSeedDonorId,
   isSeedRequestId,
@@ -8,15 +16,30 @@ import {
 } from '../../data/mockDonors';
 import { DIVISIONS } from '../../data/bangladeshGeo';
 import {
-  requestRealDeviceGPS,
+  requestRealDeviceGPSWithStatus,
   requestFreshHighAccuracyGPS,
+  watchRealDeviceGPS,
   calculateHaversineDistance,
   formatDistance,
+  formatTravelEta,
   resolveBangladeshCoordinates,
+  findNearestDistrictFromCoords,
+  reverseGeocodeBangladeshCoords,
+  POPULAR_BD_HOSPITALS,
+  searchBangladeshPlacesLive,
+  getInstantLocalPlaceSuggestions,
+  fetchUberStyleRoute,
+  LivePlaceSuggestion,
+  UberStyleRouteResult,
   DIVISION_COORDINATES,
   Coordinates,
   DEFAULT_BANGLADESH_COORDS,
 } from '../../utils/geolocation';
+import {
+  isPhoneMaskedOrInvalid,
+  buildDirectCallHref,
+} from '../../utils/donorMatcher';
+import { copyTextReliable } from '../../utils/sosAlertEngine';
 import {
   MapPin,
   Hospital,
@@ -28,34 +51,59 @@ import {
   MessageCircle,
   ZoomIn,
   ZoomOut,
-  RotateCcw,
   List,
   Map as MapIcon,
   LocateFixed,
   Layers,
+  Globe2,
+  Copy,
+  Check,
+  Lock,
+  Crosshair,
+  Clock,
+  Heart,
+  CheckCircle,
+  XCircle,
+  X,
 } from 'lucide-react';
 
 interface InteractiveMapViewProps {
   lang: Language;
   donors?: Donor[];
   requests?: BloodRequest[];
-  onOpenSOSWizard: () => void;
+  liveTrips?: LiveDonorTrip[];
+  focusedTripId?: string | null;
+  onClearFocusedTrip?: () => void;
+  onUpdateLiveTripStatus?: (tripId: string, status: LiveDonorTripStatus) => Promise<void> | void;
+  initialFocusId?: string | null;
+  onClearInitialFocus?: () => void;
+  onRevealPhone?: (donor: Donor) => void;
+  onOpenSOSWizard: (context?: {
+    bloodGroup?: BloodGroup;
+    district?: string;
+    hospitalName?: string;
+  }) => void;
   onStartChatWithDonor?: (donorName: string, bloodGroup: BloodGroup, phone?: string) => void;
 }
 
-interface MapLocation {
+export interface MapLocation {
   id: string;
   name: string;
+  shortLabel: string;
   type: 'DONOR' | 'SOS' | 'HOSPITAL';
   bloodGroup: BloodGroup;
   donorName?: string;
+  sourceDonor?: Donor;
   division: string;
   district: string;
+  districtId: string;
   phone: string;
+  canDirectCall: boolean;
   units?: number;
   available: boolean;
   lat: number;
   lng: number;
+  aliases?: string[];
 }
 
 interface ComputedMapLocation extends MapLocation {
@@ -63,166 +111,52 @@ interface ComputedMapLocation extends MapLocation {
   computedDistance: string;
 }
 
-type TileLayerStyle = 'osm' | 'voyager' | 'dark';
+type TileLayerStyle = 'osm' | 'hot' | 'dark';
 
 const TILE_LAYER_CONFIGS: Record<
   TileLayerStyle,
-  { url: string; attribution: string; labelBn: string; labelEn: string }
+  { url: string; fallbackUrl: string; attribution: string; labelBn: string; labelEn: string }
 > = {
   osm: {
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap',
-    labelBn: 'স্ট্রিট ম্যাপ',
-    labelEn: 'Street',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    fallbackUrl: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
+    labelBn: 'ওপেনস্ট্রিট ম্যাপ',
+    labelEn: 'OpenStreetMap',
   },
-  voyager: {
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; OpenStreetMap &copy; CARTO',
-    labelBn: 'ক্লিন লাইট',
-    labelEn: 'Clean',
+  hot: {
+    url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    fallbackUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap &copy; HOT',
+    labelBn: 'হাসপাতাল ভিউ',
+    labelEn: 'Medical Street',
   },
   dark: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; OpenStreetMap &copy; CARTO',
-    labelBn: 'ডার্ক রাডার',
-    labelEn: 'Dark',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    fallbackUrl: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
+    labelBn: 'ডার্ক ম্যাপ',
+    labelEn: 'Dark Map',
   },
 };
 
-// Verified Government Medical College Hospitals (All 8 Divisions) + Initial Seed Pins
-const BASE_LOCATIONS: MapLocation[] = [
-  // Verified Hospitals across all 8 Divisions of Bangladesh
-  {
-    id: 'hosp-dmch',
-    name: 'ঢাকা মেডিকেল কলেজ হাসপাতাল (DMCH ব্লাড ব্যাংক)',
-    type: 'HOSPITAL',
-    bloodGroup: 'O+',
-    units: 6,
-    division: 'dhaka',
-    district: 'শাহবাগ, ঢাকা',
-    phone: '+880255165088',
-    available: true,
-    lat: 23.7260,
-    lng: 90.3976,
-  },
-  {
-    id: 'hosp-bsmmu',
-    name: 'বঙ্গবন্ধু শেখ মুজিব মেডিকেল বিশ্ববিদ্যালয় (BSMMU / পিজি)',
-    type: 'HOSPITAL',
-    bloodGroup: 'A+',
-    units: 4,
-    division: 'dhaka',
-    district: 'শাহবাগ, ঢাকা',
-    phone: '+880255165760',
-    available: true,
-    lat: 23.7389,
-    lng: 90.3958,
-  },
-  {
-    id: 'hosp-kurmitola',
-    name: 'কুর্মিটোলা জেনারেল হাসপাতাল',
-    type: 'HOSPITAL',
-    bloodGroup: 'AB+',
-    units: 3,
-    division: 'dhaka',
-    district: 'ক্যান্টনমেন্ট, ঢাকা',
-    phone: '+880255062388',
-    available: true,
-    lat: 23.8191,
-    lng: 90.4079,
-  },
-  {
-    id: 'hosp-cmch',
-    name: 'চট্টগ্রাম মেডিকেল কলেজ হাসপাতাল (CMCH)',
-    type: 'HOSPITAL',
-    bloodGroup: 'B+',
-    units: 5,
-    division: 'chattogram',
-    district: 'পাঁচলাইশ, চট্টগ্রাম',
-    phone: '+88031619400',
-    available: true,
-    lat: 22.3593,
-    lng: 91.8308,
-  },
-  {
-    id: 'hosp-somch',
-    name: 'সিলেট এম এ জি ওসমানী মেডিকেল কলেজ হাসপাতাল',
-    type: 'HOSPITAL',
-    bloodGroup: 'AB-',
-    units: 2,
-    division: 'sylhet',
-    district: 'কাজলশাহ, সিলেট সদর',
-    phone: '+880821713667',
-    available: true,
-    lat: 24.9006,
-    lng: 91.8546,
-  },
-  {
-    id: 'hosp-rmch',
-    name: 'রাজশাহী মেডিকেল কলেজ হাসপাতাল (RMCH)',
-    type: 'HOSPITAL',
-    bloodGroup: 'B+',
-    units: 5,
-    division: 'rajshahi',
-    district: 'লক্ষ্মীপুর, রাজশাহী',
-    phone: '+880721776001',
-    available: true,
-    lat: 24.3720,
-    lng: 88.5866,
-  },
-  {
-    id: 'hosp-kmch',
-    name: 'খুলনা মেডিকেল কলেজ হাসপাতাল',
-    type: 'HOSPITAL',
-    bloodGroup: 'O+',
-    units: 3,
-    division: 'khulna',
-    district: 'সোনাডাঙ্গা, খুলনা',
-    phone: '+88041760350',
-    available: true,
-    lat: 22.8286,
-    lng: 89.5378,
-  },
-  {
-    id: 'hosp-sbhmch',
-    name: 'শের-ই-বাংলা মেডিকেল কলেজ হাসপাতাল (বরিশাল)',
-    type: 'HOSPITAL',
-    bloodGroup: 'A+',
-    units: 4,
-    division: 'barishal',
-    district: 'বান্দ রোড, বরিশাল সদর',
-    phone: '+8804312173547',
-    available: true,
-    lat: 22.6869,
-    lng: 90.3612,
-  },
-  {
-    id: 'hosp-rpmch',
-    name: 'রংপুর মেডিকেল কলেজ হাসপাতাল',
-    type: 'HOSPITAL',
-    bloodGroup: 'O-',
-    units: 2,
-    division: 'rangpur',
-    district: 'ধাপ, রংপুর সদর',
-    phone: '+88052162288',
-    available: true,
-    lat: 25.7647,
-    lng: 89.2602,
-  },
-  {
-    id: 'hosp-mmch',
-    name: 'ময়মনসিংহ মেডিকেল কলেজ হাসপাতাল (MMCH)',
-    type: 'HOSPITAL',
-    bloodGroup: 'B-',
-    units: 3,
-    division: 'mymensingh',
-    district: 'চরপাড়া, ময়মনসিংহ সদর',
-    phone: '+8809166063',
-    available: true,
-    lat: 24.7429,
-    lng: 90.4094,
-  },
-];
+// Verified Government & Major 24/7 Private Hospital Blood Banks across Bangladesh
+export const VERIFIED_HOSPITAL_LOCATIONS: MapLocation[] = POPULAR_BD_HOSPITALS.map((h) => ({
+  id: h.id,
+  name: `${h.nameBn}`,
+  shortLabel: h.shortLabel,
+  type: 'HOSPITAL',
+  bloodGroup: 'O+',
+  division: h.divisionId,
+  district: h.areaBn,
+  districtId: h.districtId,
+  phone: h.phone,
+  canDirectCall: true,
+  available: true,
+  lat: h.coords.latitude,
+  lng: h.coords.longitude,
+  aliases: [h.nameEn.toLowerCase(), h.areaEn.toLowerCase(), ...h.aliases],
+}));
 
 function escapeHtml(raw: string): string {
   return raw
@@ -234,51 +168,75 @@ function escapeHtml(raw: string): string {
 }
 
 function createPinDivIcon(loc: ComputedMapLocation, isSelected: boolean): L.DivIcon {
-  const safeGroup = escapeHtml(loc.bloodGroup);
+  const safeLabel = escapeHtml(loc.type === 'HOSPITAL' ? loc.shortLabel : loc.bloodGroup);
   const bgClass = isSelected
-    ? 'bg-rose-600 ring-4 ring-white shadow-2xl scale-125'
+    ? 'bg-rose-600 ring-2 ring-white shadow-lg scale-110'
     : loc.type === 'SOS'
-      ? 'bg-red-600 ring-2 ring-red-200 shadow-lg'
+      ? 'bg-red-600 ring-2 ring-white/90 shadow-md'
       : loc.type === 'DONOR'
-        ? 'bg-emerald-600 ring-2 ring-emerald-200 shadow-lg'
-        : 'bg-blue-600 ring-2 ring-blue-200 shadow-lg';
+        ? 'bg-emerald-600 ring-2 ring-white/90 shadow-md'
+        : 'bg-slate-800 ring-2 ring-white/90 shadow-md';
 
-  const pulseHtml =
-    loc.type === 'SOS' || isSelected
-      ? `<span class="absolute -inset-2 rounded-full ${
-          loc.type === 'SOS' ? 'bg-red-500/45' : 'bg-rose-500/35'
-        } animate-ping pointer-events-none"></span>`
-      : '';
-
-  const innerLabel =
-    loc.type === 'HOSPITAL'
-      ? `<span class="text-[11px] font-black tracking-tight">🏥${safeGroup}</span>`
-      : `<span class="text-xs font-black tracking-tight">${safeGroup}</span>`;
+  const textSize = loc.type === 'HOSPITAL' ? 'text-[10px]' : 'text-[11px]';
 
   return L.divIcon({
     className: 'bsbd-leaflet-pin',
-    iconSize: [42, 42],
-    iconAnchor: [21, 21],
+    iconSize: [58, 32],
+    iconAnchor: [29, 16],
     html: `
-      <div class="relative w-10 h-10 flex items-center justify-center select-none">
-        ${pulseHtml}
-        <div class="relative z-10 px-2 h-9 min-w-[36px] rounded-2xl text-white flex items-center justify-center transition-transform ${bgClass}">
-          ${innerLabel}
+      <div class="w-[58px] h-[32px] flex items-center justify-center select-none">
+        <div class="px-2 h-7 min-w-[36px] rounded-lg text-white font-extrabold tracking-tight ${textSize} flex items-center justify-center whitespace-nowrap transition-transform ${bgClass}">
+          ${safeLabel}
         </div>
       </div>
     `,
   });
 }
 
-function createUserGpsIcon(): L.DivIcon {
+function createPatientOriginIcon(isGpsLive: boolean): L.DivIcon {
+  const dotColor = isGpsLive ? 'bg-sky-600 ring-sky-500/30' : 'bg-slate-900 ring-rose-500/30';
   return L.divIcon({
     className: 'bsbd-leaflet-pin',
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
     html: `
-      <div class="relative w-7 h-7 flex items-center justify-center">
-        <span class="absolute inset-0 rounded-full bg-sky-500/45 animate-ping"></span>
-        <span class="relative z-10 w-4 h-4 rounded-full bg-sky-600 border-2 border-white shadow-md"></span>
+      <div class="w-[34px] h-[34px] flex items-center justify-center select-none">
+        <span class="w-5 h-5 rounded-full ${dotColor} border-[3px] border-white shadow-lg ring-4 flex items-center justify-center">
+          <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
+        </span>
+      </div>
+    `,
+  });
+}
+
+function createLiveDonorRiderIcon(bloodGroup: BloodGroup, arrived: boolean): L.DivIcon {
+  const safeBg = escapeHtml(bloodGroup);
+  const tone = arrived ? 'bg-emerald-700 ring-white' : 'bg-emerald-600 ring-white';
+  return L.divIcon({
+    className: 'bsbd-leaflet-pin',
+    iconSize: [74, 36],
+    iconAnchor: [37, 18],
+    html: `
+      <div class="w-[74px] h-[36px] flex items-center justify-center select-none">
+        <div class="px-2.5 h-8 rounded-xl text-white font-black text-[11px] flex items-center gap-1 whitespace-nowrap ring-2 shadow-lg ${tone}">
+          <span>${safeBg}</span>
+          <span>${arrived ? '✓' : '→'}</span>
+        </div>
+      </div>
+    `,
+  });
+}
+
+function createHospitalDestIcon(): L.DivIcon {
+  return L.divIcon({
+    className: 'bsbd-leaflet-pin',
+    iconSize: [68, 34],
+    iconAnchor: [34, 17],
+    html: `
+      <div class="w-[68px] h-[34px] flex items-center justify-center select-none">
+        <div class="px-2.5 h-7 rounded-xl bg-rose-600 text-white font-extrabold text-[10px] flex items-center justify-center whitespace-nowrap ring-2 ring-white shadow-lg">
+          Hospital
+        </div>
       </div>
     `,
   });
@@ -288,44 +246,198 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   lang,
   donors = [],
   requests = [],
+  liveTrips = [],
+  focusedTripId,
+  onClearFocusedTrip,
+  onUpdateLiveTripStatus,
+  initialFocusId,
+  onClearInitialFocus,
+  onRevealPhone,
   onOpenSOSWizard,
   onStartChatWithDonor,
 }) => {
-  const [userCoords, setUserCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
+  // Uber / Pathao-style Origin State (Live GPS OR Custom Pin-Drop / Searched Hospital)
+  const [originCoords, setOriginCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
+  const [originMode, setOriginMode] = useState<'GPS' | 'CUSTOM_PIN'>('GPS');
+  const [originLabel, setOriginLabel] = useState<string>('');
   const [isGpsActive, setIsGpsActive] = useState<boolean>(false);
   const [isLocatingGps, setIsLocatingGps] = useState<boolean>(false);
+  const [pinDropActive, setPinDropActive] = useState<boolean>(false);
+  const [gpsNotice, setGpsNotice] = useState<string | null>(null);
+  const [copiedPhoneId, setCopiedPhoneId] = useState<string | null>(null);
 
-  const [selectedLocId, setSelectedLocId] = useState<string>(BASE_LOCATIONS[0].id);
+  // Place / Pickup Search Autocomplete State
+  const [pickupQuery, setPickupQuery] = useState<string>('');
+  const [pickupSuggestions, setPickupSuggestions] = useState<LivePlaceSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState<boolean>(false);
+
+  // Selected Destination Pin & Live Route State
+  const [selectedLocId, setSelectedLocId] = useState<string>(initialFocusId || '');
+  const [activeRoute, setActiveRoute] = useState<UberStyleRouteResult | null>(null);
+  const [selectedTripId, setSelectedTripId] = useState<string>(focusedTripId || '');
+  const [liveTripRoute, setLiveTripRoute] = useState<UberStyleRouteResult | null>(null);
   const [filterType, setFilterType] = useState<'ALL' | 'DONOR' | 'SOS' | 'HOSPITAL'>('ALL');
   const [selectedBloodGroup, setSelectedBloodGroup] = useState<string>('ALL');
   const [selectedDivision, setSelectedDivision] = useState<string>('ALL');
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
   const [tileStyle, setTileStyle] = useState<TileLayerStyle>('osm');
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
+  const liveTripLayerRef = useRef<L.LayerGroup | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
-  const userMarkerLayerRef = useRef<L.LayerGroup | null>(null);
+  const originMarkerLayerRef = useRef<L.LayerGroup | null>(null);
+  const pinDropActiveRef = useRef<boolean>(false);
+  pinDropActiveRef.current = pinDropActive;
+
+  const activeLiveTrips = useMemo(
+    () =>
+      liveTrips.filter(
+        (t) => t.tripStatus === 'ON_THE_WAY' || t.tripStatus === 'ARRIVED'
+      ),
+    [liveTrips]
+  );
+
+  const activeTrip: LiveDonorTrip | null = useMemo(() => {
+    if (!selectedTripId) return null;
+    return activeLiveTrips.find((t) => t.id === selectedTripId) || null;
+  }, [activeLiveTrips, selectedTripId]);
 
   useEffect(() => {
-    requestRealDeviceGPS().then((coords) => {
-      setUserCoords(coords);
-      const isCustom =
-        Math.abs(coords.latitude - DEFAULT_BANGLADESH_COORDS.latitude) > 0.0005 ||
-        Math.abs(coords.longitude - DEFAULT_BANGLADESH_COORDS.longitude) > 0.0005;
-      if (isCustom) {
-        setIsGpsActive(true);
+    if (focusedTripId) {
+      setSelectedTripId(focusedTripId);
+      setViewMode('map');
+      onClearFocusedTrip?.();
+    }
+  }, [focusedTripId, onClearFocusedTrip]);
+
+  useEffect(() => {
+    if (!selectedTripId && activeLiveTrips.length > 0 && !initialFocusId) {
+      setSelectedTripId(activeLiveTrips[0].id);
+    } else if (
+      selectedTripId &&
+      !activeLiveTrips.some((t) => t.id === selectedTripId)
+    ) {
+      setSelectedTripId('');
+    }
+  }, [activeLiveTrips, selectedTripId, initialFocusId]);
+
+  useEffect(() => {
+    if (!activeTrip) {
+      setLiveTripRoute(null);
+      return;
+    }
+    const donorPos: Coordinates = { latitude: activeTrip.lat, longitude: activeTrip.lng };
+    const hospPos: Coordinates = {
+      latitude: activeTrip.hospitalLat,
+      longitude: activeTrip.hospitalLng,
+    };
+    const controller = new AbortController();
+    fetchUberStyleRoute(donorPos, hospPos, controller.signal).then((route) => {
+      if (!controller.signal.aborted) {
+        setLiveTripRoute(route);
       }
     });
-  }, []);
+    return () => controller.abort();
+  }, [
+    activeTrip?.id,
+    activeTrip?.lat,
+    activeTrip?.lng,
+    activeTrip?.hospitalLat,
+    activeTrip?.hospitalLng,
+  ]);
 
-  // Build real Donor & SOS pins across all 64 districts + progressively evict seed pins 1-by-1
+  // 1. Request Live GPS on mount + subscribe to continuous watchPosition updates when in GPS mode
+  useEffect(() => {
+    let mounted = true;
+    requestRealDeviceGPSWithStatus().then(({ coords, isRealGps }) => {
+      if (!mounted) return;
+      if (isRealGps) {
+        setOriginCoords(coords);
+        setIsGpsActive(true);
+        setOriginMode('GPS');
+        const near = findNearestDistrictFromCoords(coords);
+        setOriginLabel(
+          lang === 'bn'
+            ? `লাইভ GPS (${near.nameBn})`
+            : `Live GPS (${near.nameEn})`
+        );
+        reverseGeocodeBangladeshCoords(coords, lang)
+          .then((geo) => {
+            if (!mounted) return;
+            setOriginLabel(
+              lang === 'bn'
+                ? `লাইভ GPS (${geo.areaText})`
+                : `Live GPS (${geo.areaText})`
+            );
+          })
+          .catch(() => {});
+        if (!initialFocusId && mapInstanceRef.current) {
+          mapInstanceRef.current.setView([coords.latitude, coords.longitude], 13);
+        }
+      }
+    });
+
+    const stopWatch = watchRealDeviceGPS((liveCoords) => {
+      if (!mounted) return;
+      setIsGpsActive(true);
+      setOriginMode((currMode) => {
+        if (currMode === 'GPS') {
+          setOriginCoords(liveCoords);
+          const near = findNearestDistrictFromCoords(liveCoords);
+          setOriginLabel(
+            lang === 'bn'
+              ? `লাইভ GPS (${near.nameBn})`
+              : `Live GPS (${near.nameEn})`
+          );
+        }
+        return currMode;
+      });
+    });
+
+    return () => {
+      mounted = false;
+      stopWatch();
+    };
+  }, [initialFocusId, lang]);
+
+  // 2. Live Bangladesh Hospital + Street Autocomplete (Instant Local + OSM Nominatim)
+  useEffect(() => {
+    if (!showSuggestions) return;
+    const instant = getInstantLocalPlaceSuggestions(pickupQuery, lang);
+    setPickupSuggestions(instant);
+
+    if (pickupQuery.trim().length < 3) {
+      setIsSearchingPlaces(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsSearchingPlaces(true);
+    const timer = window.setTimeout(() => {
+      searchBangladeshPlacesLive(pickupQuery, lang, controller.signal)
+        .then((results) => {
+          if (!controller.signal.aborted) {
+            setPickupSuggestions(results);
+            setIsSearchingPlaces(false);
+          }
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setIsSearchingPlaces(false);
+        });
+    }, 280);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [pickupQuery, showSuggestions, lang]);
+
+  // 3. Compute all Donors, SOS Requests & Verified Hospitals sorted by live distance from Origin Pin
   const computedLocations = useMemo<ComputedMapLocation[]>(() => {
-    const verifiedHospitals = BASE_LOCATIONS.filter((l) => l.type === 'HOSPITAL');
-    const seedDonorAndSosPins = BASE_LOCATIONS.filter((l) => l.type !== 'HOSPITAL');
-
     const realDynamicPins: MapLocation[] = [];
 
     requests
@@ -336,17 +448,22 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
           district: r.district,
           upazila: r.upazila,
           division: divKey,
+          hospital: r.hospitalName,
           seedKey: `sos-${r.id}`,
         });
+        const cleanCallable = !isPhoneMaskedOrInvalid(r.contactPhone);
         realDynamicPins.push({
           id: `real-map-sos-${r.id}`,
           name: r.hospitalName,
+          shortLabel: r.bloodGroup,
           type: 'SOS',
           bloodGroup: r.bloodGroup,
           units: Math.max(1, r.unitsNeeded - r.unitsCollected),
           division: divKey,
           district: r.upazila ? `${r.upazila}, ${r.district}` : r.district,
-          phone: r.contactPhone || '+8801700000000',
+          districtId: r.district,
+          phone: cleanCallable ? r.contactPhone : '',
+          canDirectCall: cleanCallable,
           available: true,
           lat: coords.latitude,
           lng: coords.longitude,
@@ -363,27 +480,35 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
           division: divKey,
           seedKey: `donor-${d.id}`,
         });
+        const canDirect =
+          d.shareDirectContact !== false &&
+          d.allowCall !== false &&
+          !isPhoneMaskedOrInvalid(d.phone);
         realDynamicPins.push({
           id: `real-map-donor-${d.id}`,
-          name: `${d.name} (${lang === 'bn' ? 'প্রস্তুত রক্তদাতা' : 'Ready Donor'})`,
+          name: `${d.name} (${lang === 'bn' ? 'প্রস্তুত ডোনার' : 'Ready Donor'})`,
+          shortLabel: d.bloodGroup,
           donorName: d.name,
+          sourceDonor: d,
           type: 'DONOR',
           bloodGroup: d.bloodGroup,
           division: divKey,
           district: d.upazila ? `${d.upazila}, ${d.district}` : d.district,
-          phone: d.phone,
+          districtId: d.district,
+          phone: canDirect ? d.phone : '',
+          canDirectCall: canDirect,
           available: d.available,
           lat: coords.latitude,
           lng: coords.longitude,
         });
       });
 
-    const activePeoplePins = evictSeedsProgressively(realDynamicPins, seedDonorAndSosPins);
-    const merged = [...activePeoplePins, ...verifiedHospitals];
+    const activePeoplePins = evictSeedsProgressively(realDynamicPins, []);
+    const merged = [...activePeoplePins, ...VERIFIED_HOSPITAL_LOCATIONS];
 
     return merged
       .map((loc) => {
-        const km = calculateHaversineDistance(userCoords, {
+        const km = calculateHaversineDistance(originCoords, {
           latitude: loc.lat,
           longitude: loc.lng,
         });
@@ -394,33 +519,90 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
         };
       })
       .sort((a, b) => a.distanceKm - b.distanceKm);
-  }, [userCoords, lang, donors, requests]);
+  }, [originCoords, lang, donors, requests]);
 
   const filteredLocations = useMemo(() => {
     return computedLocations.filter((l) => {
       if (filterType !== 'ALL' && l.type !== filterType) return false;
-      if (selectedBloodGroup !== 'ALL' && l.bloodGroup !== selectedBloodGroup) return false;
-      if (selectedDivision !== 'ALL' && l.division !== selectedDivision) return false;
-
-      if (searchQuery.trim() !== '') {
-        const q = searchQuery.toLowerCase();
-        const match =
-          l.name.toLowerCase().includes(q) ||
-          l.district.toLowerCase().includes(q) ||
-          l.bloodGroup.toLowerCase().includes(q);
-        if (!match) return false;
+      if (
+        selectedBloodGroup !== 'ALL' &&
+        l.type !== 'HOSPITAL' &&
+        l.bloodGroup !== selectedBloodGroup
+      ) {
+        return false;
       }
+      if (selectedDivision !== 'ALL' && l.division !== selectedDivision) return false;
       return true;
     });
-  }, [computedLocations, filterType, selectedBloodGroup, selectedDivision, searchQuery]);
+  }, [computedLocations, filterType, selectedBloodGroup, selectedDivision]);
 
-  const selectedLoc: ComputedMapLocation | null =
-    filteredLocations.find((l) => l.id === selectedLocId) ||
-    filteredLocations[0] ||
-    computedLocations[0] ||
-    null;
+  // Prefer nearest Ready Donor first if available, otherwise nearest Hospital/SOS
+  const selectedLoc: ComputedMapLocation | null = useMemo(() => {
+    if (selectedLocId) {
+      const explicit = filteredLocations.find((l) => l.id === selectedLocId);
+      if (explicit) return explicit;
+    }
+    const nearestDonor = filteredLocations.find((l) => l.type === 'DONOR');
+    return nearestDonor || filteredLocations[0] || computedLocations[0] || null;
+  }, [filteredLocations, computedLocations, selectedLocId]);
 
-  // Initialize real Leaflet Map instance when viewMode === 'map'
+  // 4. Calculate Live Uber / Pathao Driving Route & ETA between Origin Pin & Selected Target
+  useEffect(() => {
+    if (!selectedLoc) {
+      setActiveRoute(null);
+      return;
+    }
+    const destCoords: Coordinates = { latitude: selectedLoc.lat, longitude: selectedLoc.lng };
+    const dist = calculateHaversineDistance(originCoords, destCoords);
+    // Avoid drawing noisy line if selected hospital IS the exact origin pin (< 80 meters)
+    if (dist < 0.08) {
+      setActiveRoute({
+        points: [],
+        roadDistanceKm: 0.1,
+        etaMinutes: 2,
+        isRealRoadGeometry: false,
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    fetchUberStyleRoute(originCoords, destCoords, controller.signal).then((route) => {
+      if (!controller.signal.aborted) {
+        setActiveRoute(route);
+      }
+    });
+
+    return () => controller.abort();
+  }, [originCoords.latitude, originCoords.longitude, selectedLoc?.id, selectedLoc?.lat, selectedLoc?.lng]);
+
+  const attachResilientTileLayer = (map: L.Map, style: TileLayerStyle): L.TileLayer => {
+    const cfg = TILE_LAYER_CONFIGS[style];
+    let errorCount = 0;
+    let switchedToFallback = false;
+
+    const layer = L.tileLayer(cfg.url, {
+      attribution: cfg.attribution,
+      maxZoom: 19,
+    });
+
+    layer.on('tileerror', () => {
+      errorCount += 1;
+      if (!switchedToFallback && errorCount >= 4 && mapInstanceRef.current === map) {
+        switchedToFallback = true;
+        map.removeLayer(layer);
+        const backup = L.tileLayer(cfg.fallbackUrl, {
+          attribution: cfg.attribution,
+          maxZoom: 19,
+        }).addTo(map);
+        tileLayerRef.current = backup;
+      }
+    });
+
+    layer.addTo(map);
+    return layer;
+  };
+
+  // 5. Initialize Leaflet Map + Click-to-Set-Pickup-Pin handler
   useEffect(() => {
     if (viewMode !== 'map' || !mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
@@ -431,8 +613,8 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
     );
 
     const map = L.map(mapContainerRef.current, {
-      center: [23.75, 90.39],
-      zoom: 7,
+      center: [originCoords.latitude, originCoords.longitude],
+      zoom: 13,
       minZoom: 6,
       maxZoom: 18,
       zoomControl: false,
@@ -440,83 +622,251 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
       maxBoundsViscosity: 0.7,
     });
 
-    const cfg = TILE_LAYER_CONFIGS[tileStyle];
-    const baseTiles = L.tileLayer(cfg.url, {
-      attribution: cfg.attribution,
-      maxZoom: 19,
-    }).addTo(map);
-
+    const baseTiles = attachResilientTileLayer(map, tileStyle);
+    const routeGroup = L.layerGroup().addTo(map);
+    const liveTripGroup = L.layerGroup().addTo(map);
     const markersGroup = L.layerGroup().addTo(map);
-    const userGroup = L.layerGroup().addTo(map);
+    const originGroup = L.layerGroup().addTo(map);
 
     mapInstanceRef.current = map;
     tileLayerRef.current = baseTiles;
+    routeLayerRef.current = routeGroup;
+    liveTripLayerRef.current = liveTripGroup;
     markersLayerRef.current = markersGroup;
-    userMarkerLayerRef.current = userGroup;
+    originMarkerLayerRef.current = originGroup;
 
-    // Ensure tiles never appear half-blank when switching tabs or resizing mobile screens
+    // Uber / Pathao Tap-on-Map to drop custom Patient / Hospital Pin!
+    map.on('click', (evt: L.LeafletMouseEvent) => {
+      if (!pinDropActiveRef.current) return;
+      const clicked: Coordinates = {
+        latitude: Number(evt.latlng.lat.toFixed(5)),
+        longitude: Number(evt.latlng.lng.toFixed(5)),
+      };
+      const near = findNearestDistrictFromCoords(clicked);
+      setOriginCoords(clicked);
+      setOriginMode('CUSTOM_PIN');
+      setOriginLabel(
+        lang === 'bn'
+          ? `ম্যাপ পিন (${near.nameBn})`
+          : `Pinned Spot (${near.nameEn})`
+      );
+      setPickupQuery(
+        lang === 'bn'
+          ? `ম্যাপে নির্বাচিত পিন (${near.nameBn})`
+          : `Pinned Location (${near.nameEn})`
+      );
+      setPinDropActive(false);
+      setGpsNotice(null);
+      reverseGeocodeBangladeshCoords(clicked, lang)
+        .then((geo) => {
+          const full = `${geo.areaText}, ${geo.districtName}`;
+          setOriginLabel(full);
+          setPickupQuery(full);
+        })
+        .catch(() => {});
+    });
+
     const resizeObserver = new ResizeObserver(() => {
       map.invalidateSize();
     });
     resizeObserver.observe(mapContainerRef.current);
 
-    const timer = window.setTimeout(() => {
-      map.invalidateSize();
-    }, 150);
+    const timer1 = window.setTimeout(() => map.invalidateSize(), 100);
+    const timer2 = window.setTimeout(() => map.invalidateSize(), 400);
 
     return () => {
-      window.clearTimeout(timer);
+      window.clearTimeout(timer1);
+      window.clearTimeout(timer2);
       resizeObserver.disconnect();
       map.remove();
       mapInstanceRef.current = null;
       tileLayerRef.current = null;
+      routeLayerRef.current = null;
+      liveTripLayerRef.current = null;
       markersLayerRef.current = null;
-      userMarkerLayerRef.current = null;
+      originMarkerLayerRef.current = null;
     };
   }, [viewMode]);
 
-  // Swap tile layer seamlessly when user changes Street / Clean / Dark style
+  // Focus pin requested from Home Map Preview if provided
+  useEffect(() => {
+    if (!initialFocusId) return;
+    const match = computedLocations.find((l) => l.id === initialFocusId);
+    if (match) {
+      setSelectedLocId(match.id);
+      setViewMode('map');
+      const timer = window.setTimeout(() => {
+        mapInstanceRef.current?.flyTo([match.lat, match.lng], 14, { duration: 0.75 });
+        onClearInitialFocus?.();
+      }, 180);
+      return () => window.clearTimeout(timer);
+    }
+    onClearInitialFocus?.();
+  }, [initialFocusId, computedLocations, onClearInitialFocus]);
+
+  // Swap tile layer seamlessly when user changes Clean Street / OSM / Dark style
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
     if (tileLayerRef.current) {
       map.removeLayer(tileLayerRef.current);
     }
-    const cfg = TILE_LAYER_CONFIGS[tileStyle];
-    tileLayerRef.current = L.tileLayer(cfg.url, {
-      attribution: cfg.attribution,
-      maxZoom: 19,
-    }).addTo(map);
+    tileLayerRef.current = attachResilientTileLayer(map, tileStyle);
   }, [tileStyle]);
 
-  // Sync user's live GPS marker & accuracy circle on the map
+  // Render Origin Pin (Live GPS Blue Dot OR Custom Patient/Hospital Pickup Pin)
   useEffect(() => {
-    const userGroup = userMarkerLayerRef.current;
-    if (!userGroup) return;
-    userGroup.clearLayers();
+    const originGroup = originMarkerLayerRef.current;
+    if (!originGroup) return;
+    originGroup.clearLayers();
 
-    if (isGpsActive) {
-      L.circle([userCoords.latitude, userCoords.longitude], {
-        radius: 650,
-        color: '#0284c7',
-        fillColor: '#38bdf8',
-        fillOpacity: 0.14,
+    const showingLiveGps = originMode === 'GPS' && isGpsActive;
+    const showingCustomPin = originMode === 'CUSTOM_PIN';
+
+    if (showingLiveGps || showingCustomPin) {
+      L.circle([originCoords.latitude, originCoords.longitude], {
+        radius: showingLiveGps ? 480 : 350,
+        color: showingLiveGps ? '#0284c7' : '#e11d48',
+        fillColor: showingLiveGps ? '#38bdf8' : '#fb7185',
+        fillOpacity: 0.12,
         weight: 1.5,
-      }).addTo(userGroup);
+      }).addTo(originGroup);
 
-      const meMarker = L.marker([userCoords.latitude, userCoords.longitude], {
-        icon: createUserGpsIcon(),
-        zIndexOffset: 900,
+      const meMarker = L.marker([originCoords.latitude, originCoords.longitude], {
+        icon: createPatientOriginIcon(showingLiveGps),
+        draggable: true,
+        zIndexOffset: 950,
       });
-      meMarker.bindTooltip(
-        lang === 'bn' ? 'আপনার বর্তমান জিপিএস লোকেশন' : 'Your Live GPS Position',
-        { direction: 'top', offset: [0, -10] }
-      );
-      meMarker.addTo(userGroup);
-    }
-  }, [userCoords, isGpsActive, viewMode, lang]);
 
-  // Render real geographic markers for all filtered donors, SOS requests & hospitals
+      meMarker.bindTooltip(
+        escapeHtml(
+          originLabel ||
+            (showingLiveGps
+              ? lang === 'bn'
+                ? 'আপনার লাইভ জিপিএস লোকেশন (ড্র্যাগ করে সরানো যাবে)'
+                : 'Your Live GPS (Drag to adjust)'
+              : lang === 'bn'
+                ? 'রোগী / হাসপাতালের পিন (ড্র্যাগ করে সরানো যাবে)'
+                : 'Patient / Hospital Pin (Drag to move)')
+        ),
+        { direction: 'top', offset: [0, -12] }
+      );
+
+      meMarker.on('dragend', () => {
+        const pos = meMarker.getLatLng();
+        const moved: Coordinates = {
+          latitude: Number(pos.lat.toFixed(5)),
+          longitude: Number(pos.lng.toFixed(5)),
+        };
+        const near = findNearestDistrictFromCoords(moved);
+        setOriginCoords(moved);
+        setOriginMode('CUSTOM_PIN');
+        setOriginLabel(
+          lang === 'bn'
+            ? `কাস্টম পিন (${near.nameBn})`
+            : `Custom Pin (${near.nameEn})`
+        );
+      });
+
+      meMarker.addTo(originGroup);
+    }
+  }, [originCoords, originMode, isGpsActive, originLabel, viewMode, lang]);
+
+  // Render Uber / Pathao Route Polyline on Map
+  useEffect(() => {
+    const routeGroup = routeLayerRef.current;
+    if (!routeGroup) return;
+    routeGroup.clearLayers();
+
+    if (!activeRoute || activeRoute.points.length < 2 || activeTrip) return;
+
+    // Outer dark road casing
+    L.polyline(activeRoute.points, {
+      color: '#0f172a',
+      weight: 6,
+      opacity: 0.35,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(routeGroup);
+
+    // Inner Uber/Pathao vibrant route line
+    L.polyline(activeRoute.points, {
+      color: '#e11d48',
+      weight: 3.5,
+      opacity: 0.92,
+      dashArray: activeRoute.isRealRoadGeometry ? undefined : '7, 7',
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(routeGroup);
+  }, [activeRoute, activeTrip, viewMode]);
+
+  // Render Live Donor On-the-Way Road Polyline & Rider/Hospital Markers
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const tripLayer = liveTripLayerRef.current;
+    if (!map || !tripLayer) return;
+    tripLayer.clearLayers();
+
+    if (!activeTrip) return;
+
+    if (liveTripRoute && liveTripRoute.points.length >= 2) {
+      L.polyline(liveTripRoute.points, {
+        color: '#064e3b',
+        weight: 7,
+        opacity: 0.4,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(tripLayer);
+
+      L.polyline(liveTripRoute.points, {
+        color: '#10b981',
+        weight: 4.5,
+        opacity: 0.96,
+        dashArray: liveTripRoute.isRealRoadGeometry ? undefined : '8, 6',
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(tripLayer);
+    }
+
+    const riderMarker = L.marker([activeTrip.lat, activeTrip.lng], {
+      icon: createLiveDonorRiderIcon(
+        activeTrip.bloodGroup,
+        activeTrip.tripStatus === 'ARRIVED'
+      ),
+      zIndexOffset: 1400,
+    });
+    riderMarker.bindTooltip(
+      escapeHtml(`${activeTrip.donorName} · ${activeTrip.areaLabel}`),
+      { direction: 'top', offset: [0, -14] }
+    );
+    riderMarker.addTo(tripLayer);
+
+    const hospMarker = L.marker([activeTrip.hospitalLat, activeTrip.hospitalLng], {
+      icon: createHospitalDestIcon(),
+      zIndexOffset: 1350,
+    });
+    hospMarker.bindTooltip(escapeHtml(activeTrip.hospitalName), {
+      direction: 'top',
+      offset: [0, -14],
+    });
+    hospMarker.addTo(tripLayer);
+
+    const bounds = L.latLngBounds(
+      [activeTrip.lat, activeTrip.lng],
+      [activeTrip.hospitalLat, activeTrip.hospitalLng]
+    );
+    const dist = calculateHaversineDistance(
+      { latitude: activeTrip.lat, longitude: activeTrip.lng },
+      { latitude: activeTrip.hospitalLat, longitude: activeTrip.hospitalLng }
+    );
+    if (dist > 0.08 && dist < 80) {
+      map.flyToBounds(bounds.pad(0.35), { maxZoom: 15, duration: 0.7 });
+    } else {
+      map.flyTo([activeTrip.lat, activeTrip.lng], 14, { duration: 0.7 });
+    }
+  }, [activeTrip, liveTripRoute, viewMode]);
+
+  // Render all Donor, SOS & Hospital markers
   useEffect(() => {
     const map = mapInstanceRef.current;
     const markersGroup = markersLayerRef.current;
@@ -528,261 +878,659 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
       const isSelected = loc.id === selectedLoc?.id;
       const marker = L.marker([loc.lat, loc.lng], {
         icon: createPinDivIcon(loc, isSelected),
-        zIndexOffset: isSelected ? 1000 : loc.type === 'SOS' ? 600 : 200,
+        zIndexOffset: isSelected ? 1000 : loc.type === 'SOS' ? 600 : loc.type === 'DONOR' ? 450 : 200,
       });
 
-      marker.bindTooltip(`${loc.name} (${loc.computedDistance})`, {
+      marker.bindTooltip(escapeHtml(`${loc.name} (${loc.computedDistance})`), {
         direction: 'top',
-        offset: [0, -18],
+        offset: [0, -14],
       });
 
       marker.on('click', () => {
         setSelectedLocId(loc.id);
-        map.flyTo([loc.lat, loc.lng], Math.max(map.getZoom(), 12), {
-          duration: 0.75,
-        });
+        const bounds = L.latLngBounds(
+          [originCoords.latitude, originCoords.longitude],
+          [loc.lat, loc.lng]
+        );
+        if (calculateHaversineDistance(originCoords, { latitude: loc.lat, longitude: loc.lng }) < 35) {
+          map.flyToBounds(bounds.pad(0.32), { maxZoom: 15, duration: 0.65 });
+        } else {
+          map.flyTo([loc.lat, loc.lng], 13, { duration: 0.65 });
+        }
       });
 
       marker.addTo(markersGroup);
     });
-  }, [filteredLocations, selectedLoc?.id, viewMode]);
+  }, [filteredLocations, selectedLoc?.id, originCoords.latitude, originCoords.longitude, viewMode]);
 
-  // Fly smoothly when user selects a division from the dropdown
+  const handleSelectSuggestion = (item: LivePlaceSuggestion) => {
+    setOriginCoords(item.coords);
+    setOriginMode('CUSTOM_PIN');
+    setOriginLabel(item.title);
+    setPickupQuery(item.title);
+    setShowSuggestions(false);
+    setPinDropActive(false);
+    setGpsNotice(null);
+
+    if (item.kind === 'HOSPITAL') {
+      setSelectedLocId('');
+    }
+    if (viewMode !== 'map') setViewMode('map');
+    window.setTimeout(() => {
+      mapInstanceRef.current?.flyTo([item.coords.latitude, item.coords.longitude], 14, {
+        duration: 0.75,
+      });
+    }, 80);
+  };
+
   const handleDivisionChange = (divId: string) => {
     setSelectedDivision(divId);
     const map = mapInstanceRef.current;
     if (!map) return;
 
     if (divId === 'ALL') {
-      map.flyTo([23.75, 90.35], 7, { duration: 0.9 });
+      map.flyTo([23.75, 90.35], 7, { duration: 0.85 });
     } else {
       const target = DIVISION_COORDINATES[divId];
       if (target) {
-        map.flyTo([target.latitude, target.longitude], target.zoom, { duration: 0.9 });
+        setOriginCoords({ latitude: target.latitude, longitude: target.longitude });
+        setOriginMode('CUSTOM_PIN');
+        setOriginLabel(divId.toUpperCase());
+        map.flyTo([target.latitude, target.longitude], divId === 'dhaka' ? 12 : target.zoom + 1, {
+          duration: 0.85,
+        });
       }
     }
   };
 
   const handleLocateMe = async () => {
     setIsLocatingGps(true);
+    setGpsNotice(null);
+    setPinDropActive(false);
     try {
       const res = await requestFreshHighAccuracyGPS();
-      setUserCoords(res.coords);
-      setIsGpsActive(true);
       if (viewMode !== 'map') {
         setViewMode('map');
       }
-      setTimeout(() => {
-        mapInstanceRef.current?.flyTo(
-          [res.coords.latitude, res.coords.longitude],
-          res.isRealGps ? 13 : 11,
-          { duration: 1.0 }
+      if (res.isRealGps) {
+        const near = findNearestDistrictFromCoords(res.coords);
+        setOriginCoords(res.coords);
+        setIsGpsActive(true);
+        setOriginMode('GPS');
+        const label =
+          lang === 'bn' ? `লাইভ GPS (${near.nameBn})` : `Live GPS (${near.nameEn})`;
+        setOriginLabel(label);
+        setPickupQuery('');
+        reverseGeocodeBangladeshCoords(res.coords, lang)
+          .then((geo) => {
+            setOriginLabel(
+              lang === 'bn'
+                ? `লাইভ GPS (${geo.areaText})`
+                : `Live GPS (${geo.areaText})`
+            );
+          })
+          .catch(() => {});
+        window.setTimeout(() => {
+          mapInstanceRef.current?.flyTo([res.coords.latitude, res.coords.longitude], 14, {
+            duration: 0.85,
+          });
+        }, 80);
+      } else {
+        setIsGpsActive(false);
+        setPinDropActive(true);
+        setGpsNotice(
+          res.errorReason === 'PERMISSION_DENIED'
+            ? lang === 'bn'
+              ? 'ব্রাউজারে লোকেশন (Location) অনুমতি ব্লক করা আছে। পিন মোড চালু হয়েছে — ম্যাপের যেকোনো জায়গায় ট্যাপ করে বা উপরে হাসপাতালের নাম লিখে লোকেশন সেট করুন!'
+              : 'Browser location permission is blocked. Pin-Drop mode is now active — tap anywhere on the map or type your hospital above!'
+            : lang === 'bn'
+              ? 'ডিভাইসের জিপিএস সিগন্যাল পাওয়া যায়নি। ম্যাপের যেকোনো রাস্তায় ট্যাপ করে বা উপরে হাসপাতালের নাম লিখে পিন বসান!'
+              : 'Device GPS signal unavailable indoors. Tap anywhere on the map or search your hospital above to drop your pin!'
         );
-      }, 80);
+      }
     } finally {
       setIsLocatingGps(false);
     }
   };
 
-  const handleZoomIn = () => {
-    mapInstanceRef.current?.zoomIn();
-  };
-
-  const handleZoomOut = () => {
-    mapInstanceRef.current?.zoomOut();
-  };
-
-  const handleResetBangladeshView = () => {
-    setSelectedDivision('ALL');
-    mapInstanceRef.current?.flyTo([23.75, 90.35], 7, { duration: 0.85 });
-  };
-
-  const handleFocusLocationFromList = (loc: ComputedMapLocation) => {
+  const handleSelectCarouselItem = (loc: ComputedMapLocation) => {
     setSelectedLocId(loc.id);
-    setViewMode('map');
-    setTimeout(() => {
-      mapInstanceRef.current?.flyTo([loc.lat, loc.lng], 14, { duration: 0.9 });
-    }, 120);
+    if (viewMode !== 'map') {
+      setViewMode('map');
+    }
+    window.setTimeout(() => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+      const dist = calculateHaversineDistance(originCoords, {
+        latitude: loc.lat,
+        longitude: loc.lng,
+      });
+      if (dist > 0.1 && dist < 35) {
+        const bounds = L.latLngBounds(
+          [originCoords.latitude, originCoords.longitude],
+          [loc.lat, loc.lng]
+        );
+        map.flyToBounds(bounds.pad(0.32), { maxZoom: 15, duration: 0.65 });
+      } else {
+        map.flyTo([loc.lat, loc.lng], 14, { duration: 0.65 });
+      }
+    }, 60);
   };
 
   const cycleTileStyle = () => {
-    setTileStyle((prev) => (prev === 'osm' ? 'voyager' : prev === 'voyager' ? 'dark' : 'osm'));
+    setTileStyle((prev) => (prev === 'osm' ? 'hot' : prev === 'hot' ? 'dark' : 'osm'));
   };
+
+  const handleCopyPhone = async (id: string, phone: string) => {
+    const ok = await copyTextReliable(phone);
+    if (ok) {
+      setCopiedPhoneId(id);
+      window.setTimeout(() => setCopiedPhoneId(null), 2000);
+    }
+  };
+
+  const activeOriginNearestDistrict = useMemo(
+    () => findNearestDistrictFromCoords(originCoords),
+    [originCoords]
+  );
 
   return (
     <div className="space-y-3.5 text-left pb-10">
-      {/* 1. Header Bar with Search, GPS Locate & 8-Division Filters */}
-      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-3.5 shadow-sm space-y-3">
+      {/* 1. UBER / PATHAO-STYLE PICKUP & HOSPITAL LOCATION BAR */}
+      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-3.5 sm:p-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)] space-y-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-rose-600 to-red-600 text-white flex items-center justify-center font-bold shadow-sm shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl btn-crimson flex items-center justify-center font-bold shrink-0">
               <Compass className="w-4 h-4" />
             </div>
-            <div>
-              <h2 className="text-sm font-black text-slate-900 dark:text-white leading-tight">
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white leading-tight truncate">
                 {lang === 'bn'
-                  ? 'বাংলাদেশ ৬৪ জেলা লাইভ রক্তদাতা ও হাসপাতাল ম্যাপ'
-                  : 'Bangladesh 64-District Live Blood & Hospital Map'}
+                  ? 'লাইভ ডোনার ও হাসপাতাল রুট ম্যাপ'
+                  : 'Live Donor & Hospital Route Map'}
               </h2>
-              <span className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
-                {lang === 'bn'
-                  ? 'আসল রাস্তার ম্যাপে জুম/ড্র্যাগ করুন ও ১-ক্লিকে ডিরেকশন নিন'
-                  : 'Zoom, pan real streets & open turn-by-turn navigation'}
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium block truncate">
+                {originMode === 'GPS' && isGpsActive
+                  ? lang === 'bn'
+                    ? `${originLabel} · নিকটস্থ ডোনার ও ব্লাড ব্যাংকের রুট দেখুন`
+                    : `${originLabel} · Showing live routes to nearest donors`
+                  : originMode === 'CUSTOM_PIN' && originLabel
+                    ? lang === 'bn'
+                      ? `পিন লোকেশন: ${originLabel} (ম্যাপে পিন টেনে সরানো যাবে)`
+                      : `Pinned at: ${originLabel} (Drag pin on map to adjust)`
+                    : lang === 'bn'
+                      ? 'হাসপাতাল সার্চ করুন, লাইভ GPS দিন অথবা ম্যাপে ট্যাপ করে পিন বসান'
+                      : 'Search hospital, tap Live GPS, or tap on map to drop your pin'}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
               onClick={handleLocateMe}
               disabled={isLocatingGps}
-              className="px-2.5 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 text-xs font-bold cursor-pointer border border-sky-200 dark:border-sky-800 flex items-center gap-1"
-              title={lang === 'bn' ? 'আমার বর্তমান জিপিএস লোকেশন খুঁজুন' : 'Find my live GPS location'}
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                originMode === 'GPS' && isGpsActive
+                  ? 'btn-emerald'
+                  : 'bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800'
+              }`}
             >
-              <LocateFixed className={`w-3.5 h-3.5 ${isLocatingGps ? 'animate-spin' : ''}`} />
-              <span>{lang === 'bn' ? 'আমার লোকেশন' : 'My GPS'}</span>
+              <LocateFixed className={`w-3.5 h-3.5 shrink-0 ${isLocatingGps ? 'animate-spin' : ''}`} />
+              <span>
+                {isLocatingGps
+                  ? lang === 'bn'
+                    ? 'খোঁজা হচ্ছে...'
+                    : 'Locating...'
+                  : originMode === 'GPS' && isGpsActive
+                    ? lang === 'bn'
+                      ? 'লাইভ GPS চালু'
+                      : 'GPS Active'
+                    : lang === 'bn'
+                      ? 'আমার GPS'
+                      : 'My GPS'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (viewMode !== 'map') setViewMode('map');
+                setPinDropActive((v) => !v);
+              }}
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                pinDropActive ? 'btn-crimson' : 'btn-surface'
+              }`}
+              title={
+                lang === 'bn'
+                  ? 'ম্যাপের যেকোনো রাস্তায় ট্যাপ করে রোগীর লোকেশন পিন বসান'
+                  : 'Tap anywhere on the map to set patient location pin'
+              }
+            >
+              <Crosshair className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {pinDropActive
+                  ? lang === 'bn'
+                    ? 'ম্যাপে ট্যাপ করুন...'
+                    : 'Tap Map Now...'
+                  : lang === 'bn'
+                    ? 'পিন বসান'
+                    : 'Drop Pin'}
+              </span>
             </button>
 
             <button
               type="button"
               onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold cursor-pointer border border-slate-300 dark:border-slate-700 flex items-center gap-1"
-              title="ম্যাপ ও লিস্ট ভিউ পরিবর্তন"
+              className="min-h-[40px] px-2.5 py-1.5 rounded-xl btn-surface text-xs font-bold cursor-pointer flex items-center gap-1 whitespace-nowrap"
             >
-              {viewMode === 'map' ? <List className="w-4 h-4" /> : <MapIcon className="w-4 h-4" />}
+              {viewMode === 'map' ? <List className="w-4 h-4 shrink-0" /> : <MapIcon className="w-4 h-4 shrink-0" />}
               <span className="hidden sm:inline">
                 {viewMode === 'map'
                   ? lang === 'bn'
-                    ? 'লিস্ট ভিউ'
-                    : 'List View'
+                    ? 'তালিকা'
+                    : 'List'
                   : lang === 'bn'
-                    ? 'ম্যাপ ভিউ'
-                    : 'Map View'}
+                    ? 'ম্যাপ'
+                    : 'Map'}
               </span>
             </button>
 
             <button
               type="button"
-              onClick={onOpenSOSWizard}
-              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow cursor-pointer whitespace-nowrap"
+              onClick={() =>
+                onOpenSOSWizard({
+                  bloodGroup:
+                    selectedBloodGroup !== 'ALL' ? (selectedBloodGroup as BloodGroup) : undefined,
+                  district: activeOriginNearestDistrict.districtId,
+                  hospitalName:
+                    selectedLoc?.type === 'HOSPITAL'
+                      ? selectedLoc.name
+                      : originMode === 'CUSTOM_PIN' && originLabel
+                        ? originLabel
+                        : undefined,
+                })
+              }
+              className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-crimson text-xs font-bold cursor-pointer whitespace-nowrap flex items-center gap-1.5"
             >
-              + SOS আবেদন
+              <Heart className="w-3.5 h-3.5 fill-white shrink-0" />
+              <span>{lang === 'bn' ? 'রক্ত চান' : 'Request Blood'}</span>
             </button>
           </div>
         </div>
 
-        {/* Search Input */}
+        {gpsNotice && (
+          <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/70 text-amber-950 dark:text-amber-200 text-xs flex items-center justify-between gap-2">
+            <span>{gpsNotice}</span>
+            <button
+              type="button"
+              onClick={() => setGpsNotice(null)}
+              className="min-h-[32px] min-w-[32px] rounded-lg hover:bg-amber-200/50 dark:hover:bg-amber-900/50 font-bold cursor-pointer flex items-center justify-center shrink-0"
+              aria-label="Dismiss GPS notice"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Uber / Pathao Pickup / Hospital Search Input with Instant Autocomplete */}
         <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <Search className="w-4 h-4 text-rose-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={pickupQuery}
+            onFocus={() => setShowSuggestions(true)}
+            onChange={(e) => {
+              setPickupQuery(e.target.value);
+              setShowSuggestions(true);
+            }}
             placeholder={
               lang === 'bn'
-                ? 'হাসপাতাল, জেলা, এলাকা বা রক্তের গ্রুপ দিয়ে ম্যাপে খুঁজুন...'
-                : 'Search hospital, district, area or blood group...'
+                ? 'রোগী কোন হাসপাতালে বা এলাকায়? লিখুন (যেমন: নিকেতন, Square Hospital, DMCH, ধানমন্ডি)...'
+                : 'Where is blood needed? Type hospital or area (e.g. Niketon, Square Hospital, DMCH)...'
             }
-            className="w-full pl-9 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-rose-500"
+            className="w-full h-11 pl-10 pr-9 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
           />
-        </div>
-
-        {/* Blood Group Selector Chips */}
-        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
-          {['ALL', 'A+', 'B+', 'O+', 'AB+', 'O-', 'B-', 'A-', 'AB-'].map((grp) => (
+          {pickupQuery && (
             <button
-              key={grp}
               type="button"
-              onClick={() => setSelectedBloodGroup(grp)}
-              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
-                selectedBloodGroup === grp
-                  ? 'bg-rose-600 text-white shadow-xs'
-                  : 'bg-slate-100 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300'
-              }`}
+              onClick={() => {
+                setPickupQuery('');
+                setShowSuggestions(false);
+              }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 min-h-[32px] min-w-[32px] flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+              aria-label="Clear search"
             >
-              {grp === 'ALL' ? (lang === 'bn' ? 'সকল গ্রুপ' : 'All Groups') : grp}
+              <X className="w-4 h-4" />
             </button>
-          ))}
+          )}
+
+          {showSuggestions && pickupSuggestions.length > 0 && (
+            <div className="absolute left-0 right-0 top-12 z-[500] rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 shadow-xl max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+              {pickupSuggestions.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSelectSuggestion(item)}
+                  className="w-full px-3.5 py-2.5 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800/80 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div
+                      className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                        item.kind === 'HOSPITAL'
+                          ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {item.kind === 'HOSPITAL' ? (
+                        <Hospital className="w-4 h-4" />
+                      ) : (
+                        <MapPin className="w-4 h-4" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                        {item.title}
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                        {item.subtitle}
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 shrink-0 whitespace-nowrap">
+                    {lang === 'bn' ? 'পিন সেট করুন →' : 'Set Pin →'}
+                  </span>
+                </button>
+              ))}
+              {isSearchingPlaces && (
+                <div className="px-3.5 py-2 text-[11px] text-slate-500">
+                  {lang === 'bn' ? 'রাস্তার ম্যাপ থেকে আরও জায়গা খোঁজা হচ্ছে...' : 'Searching Bangladesh streets...'}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Category Filters & Complete 8-Division Selector */}
-        <div className="flex items-center justify-between gap-2 overflow-x-auto scrollbar-none pt-0.5">
-          <div className="flex items-center gap-1.5">
+        {/* Blood Group + Category Filter Row */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
+            {['ALL', 'O+', 'A+', 'B+', 'AB+', 'O-', 'A-', 'B-', 'AB-'].map((grp) => (
+              <button
+                key={grp}
+                type="button"
+                onClick={() => setSelectedBloodGroup(grp)}
+                className={`min-h-[36px] px-2.5 py-1 text-xs font-bold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                  selectedBloodGroup === grp
+                    ? 'btn-crimson'
+                    : 'bg-slate-100 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                }`}
+              >
+                {grp === 'ALL' ? (lang === 'bn' ? 'সব গ্রুপ' : 'All Groups') : grp}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             {[
-              { id: 'ALL', label: lang === 'bn' ? 'সব পিন' : 'All Pins' },
-              { id: 'DONOR', label: lang === 'bn' ? '🩸 রক্তদাতা' : 'Donors' },
-              { id: 'SOS', label: lang === 'bn' ? '🚨 জরুরি SOS' : 'SOS' },
-              { id: 'HOSPITAL', label: lang === 'bn' ? '🏥 হাসপাতাল' : 'Hospitals' },
+              { id: 'ALL', label: lang === 'bn' ? 'সব' : 'All' },
+              { id: 'DONOR', label: lang === 'bn' ? 'ডোনার' : 'Donors' },
+              { id: 'HOSPITAL', label: lang === 'bn' ? 'হাসপাতাল' : 'Hospitals' },
+              { id: 'SOS', label: lang === 'bn' ? 'SOS' : 'SOS' },
             ].map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => setFilterType(item.id as 'ALL' | 'DONOR' | 'SOS' | 'HOSPITAL')}
-                className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+                className={`min-h-[36px] px-2.5 py-1 text-xs font-bold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
                   filterType === item.id
-                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-xs'
-                    : 'bg-slate-100 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                    : 'bg-slate-100 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
                 }`}
               >
                 {item.label}
               </button>
             ))}
-          </div>
 
-          {/* All 8 Divisions Selector */}
-          <select
-            value={selectedDivision}
-            onChange={(e) => handleDivisionChange(e.target.value)}
-            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 cursor-pointer"
-          >
-            <option value="ALL">{lang === 'bn' ? 'সব ৮টি বিভাগ' : 'All 8 Divisions'}</option>
-            {DIVISIONS.map((div) => (
-              <option key={div.id} value={div.id}>
-                {lang === 'bn' ? `${div.nameBn} বিভাগ` : div.nameEn}
-              </option>
-            ))}
-          </select>
+            <select
+              value={selectedDivision}
+              onChange={(e) => handleDivisionChange(e.target.value)}
+              aria-label="Division Map Filter"
+              className="h-[36px] px-2.5 text-xs font-semibold rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 cursor-pointer shrink-0"
+            >
+              <option value="ALL">{lang === 'bn' ? 'সকল বিভাগ' : 'All Divisions'}</option>
+              {DIVISIONS.map((div) => (
+                <option key={div.id} value={div.id}>
+                  {lang === 'bn' ? div.nameBn : div.nameEn}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
-      {/* 2. REAL LEAFLET INTERACTIVE MAP OR SORTED DISTANCE LIST */}
+      {/* 1B. UBER / PATHAO LIVE DONOR ON-THE-WAY TRACKING CARD */}
+      {activeLiveTrips.length > 0 && (
+        <div className="bg-emerald-50/90 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800/80 rounded-2xl p-3.5 sm:p-4 space-y-3 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-200">
+              <Navigation className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>
+                {lang === 'bn'
+                  ? 'লাইভ ডোনার অন-দ্য-ওয়ে ট্র্যাকার'
+                  : 'Live Donor On-the-Way Tracker'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {activeLiveTrips.map((tr) => (
+                <button
+                  key={tr.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedTripId(tr.id);
+                    if (viewMode !== 'map') setViewMode('map');
+                  }}
+                  className={`min-h-[36px] px-3 py-1 rounded-xl text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 ${
+                    activeTrip?.id === tr.id
+                      ? 'bg-emerald-700 text-white'
+                      : 'bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                  }`}
+                >
+                  {tr.donorName} ({tr.bloodGroup})
+                </button>
+              ))}
+
+              {activeTrip && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTripId('')}
+                  className="min-h-[36px] px-2.5 py-1 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  {lang === 'bn' ? 'সব পিন দেখুন' : 'Show All Pins'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {activeTrip && (() => {
+            const currentUid = auth.currentUser?.uid || null;
+            const isMyTrip =
+              Boolean(currentUid && activeTrip.donorUid === currentUid) ||
+              activeTrip.donorUid === 'local_donor';
+            const callHref = !isPhoneMaskedOrInvalid(activeTrip.responderPhone)
+              ? buildDirectCallHref(activeTrip.responderPhone)
+              : null;
+            const displayEta = liveTripRoute?.etaMinutes ?? activeTrip.etaMinutes;
+            const displayKm = liveTripRoute?.roadDistanceKm ?? activeTrip.distanceKm;
+
+            return (
+              <div className="p-3.5 rounded-xl bg-white dark:bg-[#0f172a] border border-emerald-200/80 dark:border-emerald-900/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-11 h-11 rounded-xl bg-emerald-600 text-white font-black text-sm flex items-center justify-center shrink-0">
+                    {activeTrip.bloodGroup}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                      {activeTrip.donorName}{' '}
+                      <span className="font-normal text-slate-500">→</span>{' '}
+                      {activeTrip.hospitalName}
+                    </div>
+                    <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-1.5 mt-1 tabular-nums">
+                      <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                        {activeTrip.tripStatus === 'ARRIVED'
+                          ? lang === 'bn'
+                            ? 'হাসপাতালে পৌঁছেছেন ✓'
+                            : 'Arrived at Hospital ✓'
+                          : lang === 'bn'
+                            ? `বর্তমান অবস্থান: ${activeTrip.areaLabel}`
+                            : `Current road: ${activeTrip.areaLabel}`}
+                      </span>
+                      {activeTrip.tripStatus === 'ON_THE_WAY' && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <strong className="font-mono text-slate-900 dark:text-white">
+                            {formatTravelEta(displayEta, lang)} ({formatDistance(displayKm, lang)})
+                          </strong>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  {callHref && !isMyTrip && (
+                    <a
+                      href={callHref}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                    >
+                      <Phone className="w-3.5 h-3.5 shrink-0" />
+                      <span>{lang === 'bn' ? 'কল করুন' : 'Call Donor'}</span>
+                    </a>
+                  )}
+
+                  {isMyTrip && activeTrip.tripStatus === 'ON_THE_WAY' && onUpdateLiveTripStatus && (
+                    <button
+                      type="button"
+                      onClick={() => onUpdateLiveTripStatus(activeTrip.id, 'ARRIVED')}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{lang === 'bn' ? 'পৌঁছে গেছি' : 'Mark Arrived'}</span>
+                    </button>
+                  )}
+
+                  {isMyTrip && onUpdateLiveTripStatus && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateLiveTripStatus(
+                          activeTrip.id,
+                          activeTrip.tripStatus === 'ARRIVED' ? 'COMPLETED' : 'CANCELLED'
+                        )
+                      }
+                      className="min-h-[44px] px-3 py-2 rounded-xl btn-surface font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <XCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                      <span>
+                        {activeTrip.tripStatus === 'ARRIVED'
+                          ? lang === 'bn'
+                            ? 'রক্তদান সম্পন্ন'
+                            : 'Complete'
+                          : lang === 'bn'
+                            ? 'লোকেশন বন্ধ'
+                            : 'Stop Sharing'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* 2. REAL LEAFLET MAP WITH LIVE UBER/PATHAO ROUTE LINE & ETA */}
       {viewMode === 'map' ? (
-        <div className="space-y-3">
-          <div className="rounded-2xl overflow-hidden shadow-md border border-slate-300 dark:border-slate-700 relative h-[430px] sm:h-[490px] bg-slate-100 dark:bg-[#0b0f19]">
-            {/* Real Interactive Leaflet Map Canvas */}
+        <div className="space-y-3" onClick={() => showSuggestions && setShowSuggestions(false)}>
+          <div
+            className={`rounded-2xl overflow-hidden shadow-xs border relative h-[400px] sm:h-[470px] bg-slate-100 dark:bg-[#0b0f19] ${
+              tileStyle === 'dark' ? 'bsbd-map-dark ' : ''
+            }${
+              pinDropActive
+                ? 'border-rose-500 ring-2 ring-rose-500/30 cursor-crosshair'
+                : 'border-slate-200/90 dark:border-slate-800'
+            }`}
+          >
             <div ref={mapContainerRef} className="w-full h-full z-0" />
 
-            {/* Top Floating Map Controls Overlay */}
+            {/* Top Floating Route ETA & Map Controls */}
             <div className="absolute top-3 left-3 right-3 z-[400] flex items-center justify-between gap-2 pointer-events-none">
-              <div className="px-2.5 py-1.5 rounded-xl bg-slate-900/90 border border-slate-700 text-white flex items-center gap-2 text-xs shadow-md pointer-events-auto">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                <span className="font-bold">
-                  {lang === 'bn'
-                    ? `${filteredLocations.length}টি লাইভ লোকেশন`
-                    : `${filteredLocations.length} Live Pins`}
-                </span>
+              <div className="px-3 py-1.5 rounded-xl bg-slate-900/92 border border-slate-700 text-white flex items-center gap-2 text-xs shadow-md pointer-events-auto tabular-nums">
+                {pinDropActive ? (
+                  <>
+                    <Crosshair className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    <span className="font-bold">
+                      {lang === 'bn'
+                        ? 'ম্যাপের যেকোনো জায়গায় ট্যাপ করে পিন বসান'
+                        : 'Tap anywhere on the map to drop your pin'}
+                    </span>
+                  </>
+                ) : activeTrip ? (
+                  <>
+                    <Navigation className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="font-bold">
+                      {activeTrip.donorName}
+                      <span aria-hidden="true"> · </span>
+                      {activeTrip.tripStatus === 'ARRIVED'
+                        ? lang === 'bn'
+                          ? 'পৌঁছেছেন ✓'
+                          : 'Arrived ✓'
+                        : `${formatTravelEta(
+                            liveTripRoute?.etaMinutes ?? activeTrip.etaMinutes,
+                            lang
+                          )} · ${formatDistance(
+                            liveTripRoute?.roadDistanceKm ?? activeTrip.distanceKm,
+                            lang
+                          )}`}
+                    </span>
+                  </>
+                ) : activeRoute && selectedLoc ? (
+                  <>
+                    <Clock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="font-bold">
+                      {formatTravelEta(activeRoute.etaMinutes, lang)}
+                      <span aria-hidden="true"> · </span>
+                      {formatDistance(activeRoute.roadDistanceKm, lang)}
+                    </span>
+                  </>
+                ) : (
+                  <span className="font-bold">
+                    {lang === 'bn'
+                      ? `${filteredLocations.length}টি সক্রিয় লোকেশন`
+                      : `${filteredLocations.length} Active Pins`}
+                  </span>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5 pointer-events-auto">
                 <button
                   type="button"
                   onClick={cycleTileStyle}
-                  className="px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
+                  className="min-h-[36px] px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
                   title={lang === 'bn' ? 'ম্যাপের স্টাইল পরিবর্তন করুন' : 'Switch Map Layer'}
                 >
-                  <Layers className="w-3.5 h-3.5 text-rose-400" />
-                  <span>
+                  <Layers className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                  <span className="hidden sm:inline">
                     {lang === 'bn'
                       ? TILE_LAYER_CONFIGS[tileStyle].labelBn
                       : TILE_LAYER_CONFIGS[tileStyle].labelEn}
                   </span>
                 </button>
 
-                <div className="flex items-center gap-0.5 bg-slate-900/90 p-1 rounded-xl border border-slate-700 text-white shadow-md">
+                <div className="flex items-center gap-0.5 bg-slate-900/90 p-1 rounded-xl border border-slate-700 text-white shadow-sm">
                   <button
                     type="button"
-                    onClick={handleZoomIn}
+                    onClick={() => mapInstanceRef.current?.zoomIn()}
                     className="p-1.5 hover:bg-slate-800 rounded-lg cursor-pointer"
                     title="Zoom In"
                   >
@@ -790,7 +1538,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={handleZoomOut}
+                    onClick={() => mapInstanceRef.current?.zoomOut()}
                     className="p-1.5 hover:bg-slate-800 rounded-lg cursor-pointer"
                     title="Zoom Out"
                   >
@@ -798,45 +1546,96 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={handleResetBangladeshView}
+                    onClick={() => {
+                      setSelectedDivision('ALL');
+                      mapInstanceRef.current?.flyTo([23.75, 90.35], 7, { duration: 0.85 });
+                    }}
                     className="p-1.5 hover:bg-slate-800 rounded-lg cursor-pointer"
-                    title={lang === 'bn' ? 'পুরো বাংলাদেশ দেখুন' : 'Reset Bangladesh View'}
+                    title={lang === 'bn' ? 'পুরো বাংলাদেশ দেখুন' : 'All Bangladesh'}
                   >
-                    <RotateCcw className="w-4 h-4" />
+                    <Globe2 className="w-4 h-4 text-emerald-400" />
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* Legend Pill Bar at Bottom-Left of Map */}
-            <div className="absolute bottom-3 left-3 z-[400] px-2.5 py-1 rounded-xl bg-slate-900/85 border border-slate-700 text-[11px] text-white flex items-center gap-3 pointer-events-none shadow">
-              <span className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
-                {lang === 'bn' ? 'জরুরি SOS' : 'SOS'}
+            {/* Bottom-Left Compact Legend */}
+            <div className="absolute bottom-3 left-3 z-[400] px-2.5 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-[11px] text-white flex items-center gap-3 pointer-events-none shadow-sm">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
+                {lang === 'bn' ? 'ডোনার' : 'Donor'}
               </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
-                {lang === 'bn' ? 'রক্তদাতা' : 'Donor'}
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" />
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-slate-700 border border-slate-400 inline-block" />
                 {lang === 'bn' ? 'হাসপাতাল' : 'Hospital'}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-red-500 inline-block" />
+                <span>SOS</span>
               </span>
             </div>
           </div>
 
-          {/* 3. Selected Location Interactive Action Card */}
+          {/* 3. UBER / PATHAO QUICK-SELECT NEAREST STRIP (Tap to switch route target!) */}
+          {filteredLocations.length > 0 && (
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+              {filteredLocations.slice(0, 8).map((loc, idx) => {
+                const isSelected = loc.id === selectedLoc?.id;
+                return (
+                  <button
+                    key={loc.id}
+                    type="button"
+                    onClick={() => handleSelectCarouselItem(loc)}
+                    className={`min-h-[48px] px-3 py-2 rounded-2xl border text-left flex items-center gap-2.5 shrink-0 cursor-pointer transition-colors ${
+                      isSelected
+                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-slate-900 dark:border-white shadow-sm'
+                        : 'bg-white dark:bg-[#111827] text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:border-rose-400'
+                    }`}
+                  >
+                    <span
+                      className={`px-2 h-7 rounded-lg font-extrabold text-[11px] text-white flex items-center justify-center shrink-0 ${
+                        loc.type === 'DONOR'
+                          ? 'bg-emerald-600'
+                          : loc.type === 'SOS'
+                            ? 'bg-red-600'
+                            : 'bg-slate-700'
+                      }`}
+                    >
+                      {loc.type === 'HOSPITAL' ? loc.shortLabel : loc.bloodGroup}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold truncate max-w-[140px]">
+                        {idx === 0 ? '★ ' : ''}
+                        {loc.donorName || loc.shortLabel}
+                      </div>
+                      <div
+                        className={`text-[10px] font-mono tabular-nums ${
+                          isSelected
+                            ? 'text-emerald-300 dark:text-emerald-700 font-bold'
+                            : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      >
+                        {loc.computedDistance}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 4. SELECTED LOCATION UBER-STYLE RIDE / DISPATCH SHEET */}
           {selectedLoc ? (
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 space-y-3 shadow-sm">
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 space-y-3 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 min-w-0">
                   <div
-                    className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-base text-white shrink-0 shadow-sm ${
+                    className={`px-2.5 h-12 min-w-[48px] rounded-xl flex items-center justify-center font-black text-sm text-white shrink-0 ${
                       selectedLoc.type === 'DONOR'
                         ? 'bg-emerald-600'
                         : selectedLoc.type === 'SOS'
                           ? 'bg-red-600'
-                          : 'bg-blue-600'
+                          : 'bg-slate-800'
                     }`}
                   >
                     {selectedLoc.type === 'HOSPITAL' ? (
@@ -847,19 +1646,20 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   </div>
 
                   <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <h4 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white leading-snug">
                         {selectedLoc.name}
                       </h4>
                       <span
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold text-white ${
+                        className={`text-xs font-bold ${
                           selectedLoc.type === 'SOS'
-                            ? 'bg-red-600'
+                            ? 'text-red-600 dark:text-red-400'
                             : selectedLoc.type === 'DONOR'
-                              ? 'bg-emerald-600'
-                              : 'bg-blue-600'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-sky-600 dark:text-sky-400'
                         }`}
                       >
+                        ·{' '}
                         {selectedLoc.type === 'SOS'
                           ? lang === 'bn'
                             ? 'জরুরি SOS'
@@ -869,94 +1669,130 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                               ? 'প্রস্তুত রক্তদাতা'
                               : 'Ready Donor'
                             : lang === 'bn'
-                              ? 'ভেরিফাইড হাসপাতাল'
-                              : 'Verified Hospital'}
+                              ? '২৪/৭ ব্লাড ব্যাংক'
+                              : '24/7 Blood Bank'}
                       </span>
                     </div>
 
-                    <div className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 mt-1 flex-wrap">
+                    <div className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 mt-1 flex-wrap tabular-nums">
                       <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
                       <span>{selectedLoc.district}</span>
                       <span>·</span>
                       <strong className="text-emerald-600 dark:text-emerald-400 font-mono">
-                        {selectedLoc.computedDistance} {lang === 'bn' ? 'দূরে' : 'away'}
+                        {activeRoute
+                          ? `${formatDistance(activeRoute.roadDistanceKm, lang)} (${formatTravelEta(
+                              activeRoute.etaMinutes,
+                              lang
+                            )})`
+                          : `${selectedLoc.computedDistance}`}
                       </strong>
                     </div>
                   </div>
                 </div>
-
-                <div className="text-right shrink-0">
-                  <span className="text-xs text-slate-600 dark:text-slate-300 block font-mono">
-                    {lang === 'bn' ? 'গ্রুপ:' : 'Group:'}{' '}
-                    <strong className="text-rose-600 dark:text-rose-400">
-                      {selectedLoc.bloodGroup}
-                    </strong>
-                  </span>
-                  {selectedLoc.units && (
-                    <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold block font-mono mt-0.5">
-                      {selectedLoc.units} {lang === 'bn' ? 'ব্যাগ' : 'units'}
-                    </span>
-                  )}
-                </div>
               </div>
 
-              {/* Action Buttons: Direct Call, In-App Chat & Turn-by-Turn Google Maps Route */}
-              <div className="pt-2.5 border-t border-slate-200 dark:border-slate-700 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                <a
-                  href={`tel:${selectedLoc.phone}`}
-                  className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer transition-all"
-                >
-                  <Phone className="w-3.5 h-3.5" />
-                  <span>{lang === 'bn' ? 'সরাসরি কল' : 'Call Now'}</span>
-                </a>
+              {/* Action Buttons: Call, Chat, Request Blood Here, Turn-by-Turn Navigation */}
+              <div className="pt-2.5 border-t border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center gap-2">
+                {selectedLoc.canDirectCall && selectedLoc.phone ? (
+                  <>
+                    <a
+                      href={`tel:${selectedLoc.phone}`}
+                      className="min-h-[44px] py-2 px-4 rounded-xl btn-emerald font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Phone className="w-3.5 h-3.5 shrink-0" />
+                      <span>{lang === 'bn' ? 'সরাসরি কল করুন' : 'Call Now'}</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyPhone(selectedLoc.id, selectedLoc.phone)}
+                      className="min-h-[44px] py-2 px-3 rounded-xl btn-surface font-mono font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap tabular-nums"
+                    >
+                      {copiedPhoneId === selectedLoc.id ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span>{selectedLoc.phone}</span>
+                    </button>
+                  </>
+                ) : selectedLoc.sourceDonor && onRevealPhone ? (
+                  <button
+                    type="button"
+                    onClick={() => onRevealPhone(selectedLoc.sourceDonor!)}
+                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-surface font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                    <span>{lang === 'bn' ? 'নম্বর অনুরোধ করুন' : 'Request Contact'}</span>
+                  </button>
+                ) : null}
 
-                {onStartChatWithDonor && (
+                {onStartChatWithDonor && selectedLoc.type !== 'HOSPITAL' && (
                   <button
                     type="button"
                     onClick={() =>
                       onStartChatWithDonor(
                         selectedLoc.donorName || selectedLoc.name,
                         selectedLoc.bloodGroup,
-                        selectedLoc.phone
+                        selectedLoc.phone || undefined
                       )
                     }
-                    className="py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer transition-all"
+                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                   >
-                    <MessageCircle className="w-3.5 h-3.5" />
-                    <span>{lang === 'bn' ? 'চ্যাট করুন' : 'In-App Chat'}</span>
+                    <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{lang === 'bn' ? 'চ্যাট করুন' : 'Chat'}</span>
+                  </button>
+                )}
+
+                {selectedLoc.type === 'HOSPITAL' && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenSOSWizard({
+                        bloodGroup:
+                          selectedBloodGroup !== 'ALL'
+                            ? (selectedBloodGroup as BloodGroup)
+                            : undefined,
+                        district: selectedLoc.districtId,
+                        hospitalName: selectedLoc.name,
+                      })
+                    }
+                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  >
+                    <Heart className="w-3.5 h-3.5 fill-white shrink-0" />
+                    <span>{lang === 'bn' ? 'এই হাসপাতালে রক্ত চান' : 'Request Blood Here'}</span>
                   </button>
                 )}
 
                 <a
-                  href={`https://www.google.com/maps/dir/?api=1&destination=${selectedLoc.lat},${selectedLoc.lng}`}
+                  href={`https://www.google.com/maps/dir/?api=1&origin=${originCoords.latitude},${originCoords.longitude}&destination=${selectedLoc.lat},${selectedLoc.lng}&travelmode=driving`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="col-span-2 sm:col-span-1 py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer transition-all border border-slate-700"
+                  className="min-h-[44px] py-2 px-3.5 rounded-xl btn-obsidian font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ml-auto"
                 >
-                  <Navigation className="w-3.5 h-3.5 text-sky-400" />
-                  <span>{lang === 'bn' ? 'Google Maps ডিরেকশন' : 'Directions'}</span>
-                  <ExternalLink className="w-3 h-3 opacity-70" />
+                  <Navigation className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  <span>{lang === 'bn' ? 'নেভিগেশন' : 'Navigate'}</span>
+                  <ExternalLink className="w-3 h-3 opacity-75 shrink-0" />
                 </a>
               </div>
             </div>
           ) : (
-            <div className="p-6 rounded-2xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 text-center text-xs text-slate-500">
+            <div className="p-6 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
               {lang === 'bn'
-                ? 'এই ফিল্টারে কোনো লোকেশন পাওয়া যায়নি। অন্য বিভাগ বা গ্রুপ নির্বাচন করুন।'
-                : 'No locations match this filter. Try changing division or blood group.'}
+                ? 'এই ফিল্টারে কোনো লোকেশন পাওয়া যায়নি। সব গ্রুপ বা অন্য বিভাগ বেছে নিন।'
+                : 'No locations match this filter. Try All Groups or another division.'}
             </div>
           )}
         </div>
       ) : (
         /* SORTED DISTANCE LIST VIEW */
-        <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 shadow-sm space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
+        <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 shadow-xs space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
             <h3 className="font-bold text-sm text-slate-900 dark:text-white">
               {lang === 'bn'
-                ? 'নিকটবর্তী রক্তদাতা ও হাসপাতালের দূরত্ব তালিকা (কাছেরগুলো আগে)'
-                : 'Nearby Blood Donors & Hospitals Sorted by Distance'}
+                ? 'নিকটবর্তী রক্তদাতা ও হাসপাতালের দূরত্ব তালিকা'
+                : 'Nearby Donors & Hospitals by Distance'}
             </h3>
-            <span className="text-xs font-mono text-slate-500">
+            <span className="text-xs font-mono tabular-nums text-slate-500">
               {filteredLocations.length} {lang === 'bn' ? 'টি লোকেশন' : 'items'}
             </span>
           </div>
@@ -966,21 +1802,21 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
               <div key={loc.id} className="py-3 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                   <div
-                    className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-xs text-white shrink-0 ${
+                    className={`px-2 h-10 min-w-[44px] rounded-xl flex items-center justify-center font-black text-xs text-white shrink-0 ${
                       loc.type === 'DONOR'
                         ? 'bg-emerald-600'
                         : loc.type === 'SOS'
                           ? 'bg-red-600'
-                          : 'bg-blue-600'
+                          : 'bg-slate-800'
                     }`}
                   >
-                    {loc.bloodGroup}
+                    {loc.type === 'HOSPITAL' ? loc.shortLabel : loc.bloodGroup}
                   </div>
                   <div className="min-w-0">
                     <span className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white block truncate">
                       {loc.name}
                     </span>
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block truncate">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block truncate tabular-nums">
                       {loc.district} ·{' '}
                       <strong className="text-emerald-600 dark:text-emerald-400 font-mono">
                         {loc.computedDistance}
@@ -992,43 +1828,31 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
-                    onClick={() => handleFocusLocationFromList(loc)}
-                    className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 cursor-pointer"
-                    title={lang === 'bn' ? 'ম্যাপে পিন দেখুন' : 'Focus on Map'}
+                    onClick={() => handleSelectCarouselItem(loc)}
+                    className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 cursor-pointer flex items-center justify-center"
+                    title={lang === 'bn' ? 'ম্যাপে রুট দেখুন' : 'Show Route on Map'}
                   >
                     <MapPin className="w-4 h-4 text-rose-500" />
                   </button>
 
-                  <a
-                    href={`https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-2 rounded-lg bg-sky-50 dark:bg-sky-950 text-sky-600 dark:text-sky-400 hover:bg-sky-100 cursor-pointer"
-                    title={lang === 'bn' ? 'Google Maps রুট' : 'Directions'}
-                  >
-                    <Navigation className="w-4 h-4" />
-                  </a>
-
-                  <a
-                    href={`tel:${loc.phone}`}
-                    className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 cursor-pointer"
-                    title="Call"
-                  >
-                    <Phone className="w-4 h-4" />
-                  </a>
-
-                  {onStartChatWithDonor && (
+                  {loc.canDirectCall && loc.phone ? (
+                    <a
+                      href={`tel:${loc.phone}`}
+                      className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 cursor-pointer flex items-center justify-center"
+                      title="Call"
+                    >
+                      <Phone className="w-4 h-4" />
+                    </a>
+                  ) : loc.sourceDonor && onRevealPhone ? (
                     <button
                       type="button"
-                      onClick={() =>
-                        onStartChatWithDonor(loc.donorName || loc.name, loc.bloodGroup, loc.phone)
-                      }
-                      className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 hover:bg-rose-100 cursor-pointer"
-                      title="Chat"
+                      onClick={() => onRevealPhone(loc.sourceDonor!)}
+                      className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 cursor-pointer flex items-center justify-center"
+                      title={lang === 'bn' ? 'যোগাযোগ অনুরোধ' : 'Request Contact'}
                     >
-                      <MessageCircle className="w-4 h-4" />
+                      <Lock className="w-4 h-4" />
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             ))}

@@ -1594,6 +1594,130 @@
         "isPublic",
         "createdAt"
       ]
+    },
+    "LiveDonorTrip": {
+      "title": "LiveDonorTrip",
+      "description": "Pair-isolated real-time donor-to-hospital live GPS trip & ETA session (deterministic ID requestId__donorUid) readable strictly by donorUid and seekerUid.",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Target blood request document ID."
+        },
+        "seekerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the patient/requester authorized to view this live trip."
+        },
+        "donorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the volunteer donor sharing live travel progress."
+        },
+        "donorName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Display name of the traveling donor."
+        },
+        "bloodGroup": {
+          "type": "string",
+          "enum": ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+          "maxLength": 4,
+          "description": "Blood group of the traveling donor."
+        },
+        "responderPhone": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24,
+          "description": "Optional callback phone shared by the traveling donor."
+        },
+        "hospitalName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Destination hospital name."
+        },
+        "district": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "description": "Destination hospital district."
+        },
+        "lat": {
+          "type": "number",
+          "description": "Current donor latitude within Bangladesh bounds (20.0 to 27.0)."
+        },
+        "lng": {
+          "type": "number",
+          "description": "Current donor longitude within Bangladesh bounds (87.5 to 93.0)."
+        },
+        "hospitalLat": {
+          "type": "number",
+          "description": "Destination hospital latitude within Bangladesh bounds (20.0 to 27.0)."
+        },
+        "hospitalLng": {
+          "type": "number",
+          "description": "Destination hospital longitude within Bangladesh bounds (87.5 to 93.0)."
+        },
+        "distanceKm": {
+          "type": "number",
+          "description": "Live remaining road distance in kilometers (0 to 1000)."
+        },
+        "etaMinutes": {
+          "type": "number",
+          "description": "Live estimated arrival time in minutes (1 to 1440)."
+        },
+        "areaLabel": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Human-readable current road/neighborhood label for the donor."
+        },
+        "tripStatus": {
+          "type": "string",
+          "enum": ["ON_THE_WAY", "ARRIVED", "COMPLETED", "CANCELLED"],
+          "maxLength": 16,
+          "description": "Lifecycle state of the live donor trip; COMPLETED and CANCELLED are terminal."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last server GPS/status update timestamp."
+        }
+      },
+      "required": [
+        "requestId",
+        "seekerUid",
+        "donorUid",
+        "donorName",
+        "bloodGroup",
+        "responderPhone",
+        "hospitalName",
+        "district",
+        "lat",
+        "lng",
+        "hospitalLat",
+        "hospitalLng",
+        "distanceKm",
+        "etaMinutes",
+        "areaLabel",
+        "tripStatus",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -1636,6 +1760,10 @@
     "/requestResponses/{responseId}": {
       "schema": { "$ref": "#/entities/RequestResponse" },
       "description": "Deterministic non-PII volunteer donor responses (requestId__responderUid) displayed on blood request cards."
+    },
+    "/liveDonorTrips/{tripId}": {
+      "schema": { "$ref": "#/entities/LiveDonorTrip" },
+      "description": "Pair-isolated live donor-to-hospital GPS & ETA tracking sessions (requestId__donorUid) accessible strictly to donorUid and seekerUid."
     },
     "/bloodStock/{groupId}": {
       "schema": { "$ref": "#/entities/BloodStockDoc" },

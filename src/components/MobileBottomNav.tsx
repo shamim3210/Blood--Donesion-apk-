@@ -22,7 +22,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   return (
     <nav
       aria-label="Primary Mobile Navigation"
-      className="lg:hidden fixed bottom-0 left-0 right-0 z-40 w-full bg-white/95 dark:bg-[#0b1120]/95 backdrop-blur-md border-t border-slate-200/90 dark:border-slate-800/90 shadow-[0_-4px_20px_rgba(15,23,42,0.06)] pb-safe transition-colors"
+      className="lg:hidden fixed bottom-0 left-0 right-0 z-40 w-full bg-white/95 dark:bg-[#091120]/95 backdrop-blur-md border-t border-slate-200/90 dark:border-slate-800/90 shadow-[0_-6px_24px_rgba(11,34,57,0.08)] pb-safe transition-colors"
     >
       <div className="max-w-lg mx-auto h-16 px-2 grid grid-cols-5 items-center gap-1">
         {/* 1. Home */}
@@ -31,8 +31,8 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           onClick={() => setActiveTab('home')}
           className={`min-h-[48px] rounded-xl flex flex-col items-center justify-center gap-0.5 cursor-pointer whitespace-nowrap ${
             activeTab === 'home'
-              ? 'text-rose-600 dark:text-rose-400 bg-rose-50/90 dark:bg-rose-950/35 font-bold'
-              : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 font-medium'
+              ? 'text-[#dc2626] dark:text-rose-400 bg-rose-50/95 dark:bg-rose-950/40 font-bold'
+              : 'text-slate-600 dark:text-slate-400 hover:text-[#0b2239] dark:hover:text-slate-200 font-medium'
           }`}
         >
           <Home className={`w-5 h-5 ${activeTab === 'home' ? 'stroke-[2.4]' : 'stroke-[1.9]'}`} />
@@ -47,8 +47,8 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           onClick={() => setActiveTab('search')}
           className={`min-h-[48px] rounded-xl flex flex-col items-center justify-center gap-0.5 cursor-pointer whitespace-nowrap ${
             activeTab === 'search' || activeTab === 'onboarding'
-              ? 'text-rose-600 dark:text-rose-400 bg-rose-50/90 dark:bg-rose-950/35 font-bold'
-              : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 font-medium'
+              ? 'text-[#dc2626] dark:text-rose-400 bg-rose-50/95 dark:bg-rose-950/40 font-bold'
+              : 'text-slate-600 dark:text-slate-400 hover:text-[#0b2239] dark:hover:text-slate-200 font-medium'
           }`}
         >
           <Search
@@ -69,14 +69,14 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
             type="button"
             onClick={onOpenSOSModal}
             aria-label={lang === 'bn' ? 'জরুরি রক্তের আবেদন করুন' : 'Post Emergency Blood Request'}
-            className="relative min-h-[46px] px-3.5 rounded-2xl btn-crimson flex flex-col items-center justify-center gap-0.5 cursor-pointer whitespace-nowrap"
+            className="relative min-h-[48px] px-3.5 rounded-2xl btn-crimson flex flex-col items-center justify-center gap-0.5 cursor-pointer whitespace-nowrap"
           >
             <PlusCircle className="w-5 h-5 stroke-[2.3]" />
             <span className="text-[10px] font-black tracking-tight leading-none">
               {lang === 'bn' ? 'জরুরি SOS' : 'SOS'}
             </span>
             {unreadSosCount > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-slate-900 dark:bg-amber-400 text-white dark:text-slate-950 text-[10px] font-bold tabular-nums flex items-center justify-center ring-2 ring-white dark:ring-slate-900">
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0b2239] dark:bg-amber-400 text-white dark:text-slate-950 text-[10px] font-bold tabular-nums flex items-center justify-center ring-2 ring-white dark:ring-slate-900">
                 {unreadSosCount > 9 ? '9+' : unreadSosCount}
               </span>
             )}

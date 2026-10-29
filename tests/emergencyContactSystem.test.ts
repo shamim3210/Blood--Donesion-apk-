@@ -14,8 +14,12 @@ import {
   getDonorAvailabilityConfidence,
   deriveRequestLifecycleState,
 } from '../src/utils/donorMatcher';
-import { resolveBangladeshCoordinates } from '../src/utils/geolocation';
-import { createEmergencyApiApp, type VerifiedCaller } from '../server';
+import {
+  resolveBangladeshCoordinates,
+  resolvePlaceOrHospitalQuery,
+  fetchUberStyleRoute,
+} from '../src/utils/geolocation';
+import { createEmergencyApiApp, sha256Short, type VerifiedCaller } from '../server';
 import type { Donor, BloodRequest } from '../src/types';
 
 const NOW_MS = Date.now();
@@ -64,6 +68,14 @@ async function startTestServer() {
     [
       'token-unverified',
       { uid: 'unverified_uid', emailVerified: false, emailHash: 'hash_unverified' },
+    ],
+    [
+      'token-super-owner',
+      {
+        uid: 'super_owner_uid',
+        emailVerified: true,
+        emailHash: sha256Short('shamimrakib015@gmail.com'),
+      },
     ],
   ]);
 
@@ -183,7 +195,7 @@ test('2. Opted-in donor Call and WhatsApp actions build valid links while masked
   const callHref = buildDirectCallHref(optedInDonor.phone);
   const waHref = buildWhatsAppHref(optedInDonor.whatsappPhone, 'Urgent O+ blood needed');
 
-  assert.equal(callHref, 'tel:01712345678');
+  assert.equal(callHref, 'tel:+8801712345678');
   assert.ok(waHref?.startsWith('https://wa.me/8801712345678?text='));
 
   // Masked phone must NEVER generate fake/broken tel: or wa.me: URLs
@@ -560,3 +572,198 @@ test('7. Request cancellation and fulfillment halt future alerts and block subse
     await srv.close();
   }
 });
+
+test('8. Fuzzy hospital search ("Squire hospital") resolves to Square Hospital Dhaka and ranks nearby compatible donors instead of 0 results', () => {
+  const place = resolvePlaceOrHospitalQuery('Squire hospital');
+  assert.ok(place, 'Squire hospital typo should resolve to Square Hospital');
+  assert.equal(place.districtId, 'dhaka');
+  assert.equal(place.kind, 'HOSPITAL');
+
+  const dhanmondiDonor = makeDonor({
+    id: 'donor_dhanmondi_ab',
+    name: 'Arif Dhanmondi',
+    bloodGroup: 'A+',
+    district: 'dhaka',
+    upazila: 'dhanmondi',
+  });
+  const chattogramDonor = makeDonor({
+    id: 'donor_ctg_ab',
+    name: 'Rashed Chattogram',
+    bloodGroup: 'AB+',
+    division: 'chattogram',
+    district: 'chattogram',
+    upazila: 'panchlaish',
+  });
+
+  const ranked = rankDonorsForSeeker([chattogramDonor, dhanmondiDonor], {
+    bloodGroup: 'AB+',
+    compatibleMatchEnabled: true,
+    district: 'ALL',
+    areaQuery: 'Squire hospital',
+    originCoords: place.coords,
+    nowMs: NOW_MS,
+  });
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].donor.id, 'donor_dhanmondi_ab');
+  assert.ok(ranked[0].distanceKm < 5, 'Dhanmondi donor should be <5 km from Square Hospital');
+});
+
+test('9. Live Donor On-the-Way Tracking enforces pair-isolated Firestore rules and computes Niketon-to-Square-Hospital road ETA', async () => {
+  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+
+  assert.ok(
+    rulesText.includes('match /liveDonorTrips/{tripId}'),
+    'firestore.rules must define match /liveDonorTrips/{tripId}'
+  );
+  assert.ok(
+    rulesText.includes('resource.data.donorUid == request.auth.uid') &&
+      rulesText.includes('resource.data.seekerUid == request.auth.uid'),
+    'liveDonorTrips allow list must enforce pair-isolated Query Enforcer checks'
+  );
+  assert.ok(
+    rulesText.includes('allow update: if isValidLiveDonorTrip(incoming())'),
+    'liveDonorTrips allow update must begin with isValidLiveDonorTrip(incoming())'
+  );
+  assert.ok(
+    rulesText.includes('data.lat >= 20.0 && data.lat <= 27.0') &&
+      rulesText.includes('data.lng >= 87.5 && data.lng <= 93.0'),
+    'liveDonorTrips schema must enforce Bangladesh coordinate bounds'
+  );
+  assert.ok(
+    rulesText.includes("!(existing().tripStatus in ['COMPLETED', 'CANCELLED'])"),
+    'liveDonorTrips update must enforce terminal state lock on COMPLETED/CANCELLED'
+  );
+
+  const niketonCoords = resolveBangladeshCoordinates({
+    district: 'dhaka',
+    upazila: 'niketon',
+  });
+  const squareHospitalCoords = resolveBangladeshCoordinates({
+    district: 'dhaka',
+    hospital: 'Square Hospital',
+  });
+
+  const controller = new AbortController();
+  controller.abort(); // deterministic offline curved-road fallback for fast unit test
+  const route = await fetchUberStyleRoute(niketonCoords, squareHospitalCoords, controller.signal);
+
+  assert.ok(route.roadDistanceKm > 0 && route.roadDistanceKm < 20, 'Road distance should be realistic within Dhaka');
+  assert.ok(route.etaMinutes >= 2, 'ETA should be at least 2 minutes');
+  assert.ok(route.points.length >= 2, 'Route polyline must include origin and destination points');
+});
+
+test('10. Full-stack security audit enforces verified stop/audit auth, cross-user audit isolation, chat anti-spoofing, phone validation & map XSS escaping', async () => {
+  const srv = await startTestServer();
+  try {
+    // 1. Unverified caller blocked from /api/emergency/stop and /api/audit/summary
+    const stopUnverifiedRes = await fetch(`${srv.baseUrl}/api/emergency/stop`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token-unverified',
+      },
+      body: JSON.stringify({ requestId: 'req_sec_1', reason: 'CANCELLED' }),
+    });
+    assert.equal(stopUnverifiedRes.status, 401, 'Unverified caller must be rejected from /api/emergency/stop');
+
+    const auditUnverifiedRes = await fetch(`${srv.baseUrl}/api/audit/summary`, {
+      headers: { Authorization: 'Bearer token-unverified' },
+    });
+    assert.equal(auditUnverifiedRes.status, 401, 'Unverified caller must be rejected from /api/audit/summary');
+
+    // 2. Seeker 1 dispatches an emergency request -> audit event created
+    const dispatchRes = await fetch(`${srv.baseUrl}/api/emergency/dispatch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token-seeker-1',
+      },
+      body: JSON.stringify({
+        requestId: 'req_sec_tenant_1',
+        bloodGroup: 'O-',
+        urgency: 'CRITICAL',
+        district: 'dhaka',
+        hospitalName: 'Square Hospital https://phish.example/steal',
+        matchedDonorIds: ['d1', 'd2'],
+      }),
+    });
+    assert.equal(dispatchRes.status, 200);
+
+    // 3. Attacker 2 queries /api/audit/summary -> must NOT see Seeker 1's request events
+    const attackerAuditRes = await fetch(`${srv.baseUrl}/api/audit/summary`, {
+      headers: { Authorization: 'Bearer token-attacker-2' },
+    });
+    assert.equal(attackerAuditRes.status, 200);
+    const attackerAuditJson = (await attackerAuditRes.json()) as {
+      ok: boolean;
+      recentEvents: Array<{ requestId?: string }>;
+    };
+    assert.equal(
+      attackerAuditJson.recentEvents.some((e) => e.requestId === 'req_sec_tenant_1'),
+      false,
+      'Non-owner verified user must not see another user audit trail'
+    );
+
+    // 4. Seeker 1 sees their own event, and Super Owner sees global events
+    const ownerAuditRes = await fetch(`${srv.baseUrl}/api/audit/summary`, {
+      headers: { Authorization: 'Bearer token-seeker-1' },
+    });
+    const ownerAuditJson = (await ownerAuditRes.json()) as {
+      recentEvents: Array<{ requestId?: string }>;
+    };
+    assert.equal(
+      ownerAuditJson.recentEvents.some((e) => e.requestId === 'req_sec_tenant_1'),
+      true,
+      'Request owner must see their own audit trail'
+    );
+
+    const superAuditRes = await fetch(`${srv.baseUrl}/api/audit/summary`, {
+      headers: { Authorization: 'Bearer token-super-owner' },
+    });
+    const superAuditJson = (await superAuditRes.json()) as {
+      recentEvents: Array<{ requestId?: string }>;
+    };
+    assert.equal(
+      superAuditJson.recentEvents.some((e) => e.requestId === 'req_sec_tenant_1'),
+      true,
+      'Verified Super Owner must see global audit trail'
+    );
+  } finally {
+    await srv.close();
+  }
+
+  // 5. Static verification of Firestore anti-spoofing & Leaflet tooltip XSS escaping
+  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+  assert.ok(
+    rulesText.includes('incoming().participantOneUid < incoming().participantTwoUid'),
+    'directChats create must enforce canonical lexicographical UID ordering'
+  );
+  assert.ok(
+    rulesText.includes("incoming().participantTwoWhatsapp == ''") &&
+      rulesText.includes("incoming().participantTwoFb == ''") &&
+      rulesText.includes("incoming().participantOneWhatsapp == ''") &&
+      rulesText.includes("incoming().participantOneFb == ''"),
+    'directChats create must prevent spoofing peer WhatsApp/FB links'
+  );
+  assert.ok(
+    rulesText.includes("data.responderPhone.matches('^[0-9+\\\\-\\\\s()]{6,24}$')"),
+    'liveDonorTrips responderPhone must enforce strict phone regex'
+  );
+
+  const mapViewText = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/donor/InteractiveMapView.tsx'),
+    'utf8'
+  );
+  const tooltipMatches = mapViewText.match(/\.bindTooltip\(([^,]+)/g) || [];
+  assert.ok(tooltipMatches.length >= 4, 'Expected at least 4 bindTooltip calls in InteractiveMapView');
+  for (const snippet of tooltipMatches) {
+    assert.ok(
+      snippet.includes('escapeHtml('),
+      `Every Leaflet bindTooltip call must wrap dynamic labels in escapeHtml(): ${snippet}`
+    );
+  }
+});
+
+
+

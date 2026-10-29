@@ -7,9 +7,8 @@ import {
   Donor,
   RequiredTimeWindow,
 } from '../../types';
-import { ALL_BLOOD_GROUPS, getCompatibleDonors } from '../../data/compatibility';
+import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
 import { DISTRICTS } from '../../data/bangladeshGeo';
-import { getTranslation } from '../../utils/translations';
 import {
   auth,
   checkActionCooldownGuard,
@@ -25,20 +24,29 @@ import {
   isValidBangladeshMobilePhone,
   normalizeValidBangladeshMobileE164,
 } from '../../utils/donorMatcher';
-import { resolveBangladeshCoordinates } from '../../utils/geolocation';
+import {
+  resolveBangladeshCoordinates,
+  resolvePlaceOrHospitalQuery,
+  getInstantLocalPlaceSuggestions,
+  requestFreshHighAccuracyGPS,
+  findNearestDistrictFromCoords,
+  reverseGeocodeBangladeshCoords,
+  POPULAR_BD_HOSPITALS,
+} from '../../utils/geolocation';
 import { buildOfflineEmergencySmsUri, copyTextReliable } from '../../utils/sosAlertEngine';
 import {
   X,
-  ArrowLeft,
   Check,
   Copy,
-  MapPin,
-  CheckCircle2,
   Mail,
   RefreshCw,
   Phone,
   MessageSquare,
-  AlertTriangle,
+  LocateFixed,
+  ChevronDown,
+  ChevronUp,
+  Hospital,
+  Send,
 } from 'lucide-react';
 
 interface RequestBloodWizardProps {
@@ -48,6 +56,7 @@ interface RequestBloodWizardProps {
   donors?: Donor[];
   initialBloodGroup?: BloodGroup;
   initialDistrict?: string;
+  initialHospitalName?: string;
   onSubmitSOS: (
     newRequest: BloodRequest,
     opts?: { alreadySyncedToCloud?: boolean }
@@ -56,6 +65,8 @@ interface RequestBloodWizardProps {
   onRevealPhone?: (donor: Donor) => void;
 }
 
+const EXPRESS_HOSPITALS = POPULAR_BD_HOSPITALS.slice(0, 6);
+
 export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   isOpen,
   onClose,
@@ -63,28 +74,31 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   donors = [],
   initialBloodGroup,
   initialDistrict,
+  initialHospitalName,
   onSubmitSOS,
   onLogAudit,
   onRevealPhone,
 }) => {
-  const t = getTranslation(lang);
-
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
-  const [urgency, setUrgency] = useState<UrgencyLevel>('CRITICAL');
-  const [requiredTimeWindow, setRequiredTimeWindow] =
-    useState<RequiredTimeWindow>('IMMEDIATE_2H');
+  const [submittedState, setSubmittedState] = useState<'FORM' | 'LIVE_SUCCESS'>('FORM');
   const [bloodGroup, setBloodGroup] = useState<BloodGroup>(initialBloodGroup || 'O+');
-  const [patientName, setPatientName] = useState('');
-  const [patientAge, setPatientAge] = useState<number>(30);
   const [unitsNeeded, setUnitsNeeded] = useState<number>(1);
-  const [hospitalName, setHospitalName] = useState('');
+  const [hospitalName, setHospitalName] = useState(initialHospitalName || '');
+  const [showHospitalSuggestions, setShowHospitalSuggestions] = useState(false);
   const [district, setDistrict] = useState(
     initialDistrict && initialDistrict !== 'ALL' ? initialDistrict : 'dhaka'
   );
   const [contactPhone, setContactPhone] = useState('');
+
+  // Optional collapsible details (smart defaults so stressed families don't get stuck!)
+  const [showOptionalDetails, setShowOptionalDetails] = useState(false);
+  const [urgency, setUrgency] = useState<UrgencyLevel>('CRITICAL');
+  const [requiredTimeWindow, setRequiredTimeWindow] =
+    useState<RequiredTimeWindow>('IMMEDIATE_2H');
+  const [patientName, setPatientName] = useState('');
   const [reason, setReason] = useState('');
   const [exchangeAllowed, setExchangeAllowed] = useState(false);
 
+  const [isLocatingGps, setIsLocatingGps] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [dispatchResult, setDispatchResult] =
@@ -95,11 +109,20 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
   );
 
-  // Prefill seeker phone, blood group & district from context or real logged-in profile
+  // Prefill seeker phone, blood group, hospital & district from context or real logged-in profile
   useEffect(() => {
     if (!isOpen) return;
+    setSubmittedState('FORM');
+    setValidationError(null);
     if (initialBloodGroup) {
       setBloodGroup(initialBloodGroup);
+    }
+    if (initialHospitalName) {
+      setHospitalName(initialHospitalName);
+      const matchedPlace = resolvePlaceOrHospitalQuery(initialHospitalName);
+      if (matchedPlace) {
+        setDistrict(matchedPlace.districtId);
+      }
     }
     if (initialDistrict && initialDistrict !== 'ALL') {
       setDistrict(initialDistrict);
@@ -109,7 +132,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.phone && !contactPhone) setContactPhone(parsed.phone);
-        if (!initialDistrict && parsed?.district) {
+        if (!initialDistrict && !initialHospitalName && parsed?.district) {
           const matched = DISTRICTS.find(
             (d) =>
               d.id === String(parsed.district).toLowerCase() ||
@@ -120,24 +143,72 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
         }
       }
     } catch {}
-  }, [isOpen, initialBloodGroup, initialDistrict]);
+  }, [isOpen, initialBloodGroup, initialDistrict, initialHospitalName]);
+
+  // Auto-detect district whenever user types a recognized hospital (e.g. "Squire hospital" -> Dhaka, "CMCH" -> Chattogram)
+  const handleHospitalInputChange = (val: string) => {
+    setHospitalName(val);
+    setShowHospitalSuggestions(true);
+    const matched = resolvePlaceOrHospitalQuery(val);
+    if (matched) {
+      setDistrict(matched.districtId);
+    }
+  };
+
+  const hospitalSuggestions = useMemo(() => {
+    if (!hospitalName.trim()) return [];
+    return getInstantLocalPlaceSuggestions(hospitalName, lang).slice(0, 5);
+  }, [hospitalName, lang]);
+
+  const handleUseLiveGpsForRequest = async () => {
+    setIsLocatingGps(true);
+    setValidationError(null);
+    try {
+      const res = await requestFreshHighAccuracyGPS();
+      if (res.isRealGps) {
+        const near = findNearestDistrictFromCoords(res.coords);
+        setDistrict(near.districtId);
+        const geo = await reverseGeocodeBangladeshCoords(res.coords, lang);
+        setDistrict(geo.districtId || near.districtId);
+        if (!hospitalName.trim()) {
+          setHospitalName(`${geo.areaText}, ${geo.districtName}`);
+        }
+      } else {
+        setValidationError(
+          lang === 'bn'
+            ? 'ব্রাউজারে GPS অনুমতি বন্ধ আছে — অনুগ্রহ করে হাসপাতালের বা এলাকার নাম (যেমন: নিকেতন) নিচে লিখুন।'
+            : 'Browser GPS is off — please type your hospital or area name (e.g. Niketon) below.'
+        );
+      }
+    } finally {
+      setIsLocatingGps(false);
+    }
+  };
 
   // Compute concurrent matching opted-in donors for this request
   const initialEscalationPlan = useMemo(() => {
+    const origin = resolveBangladeshCoordinates({
+      district,
+      hospital: hospitalName || undefined,
+    });
     return computeEscalationTargets({
       targetLevel: 0,
       bloodGroup,
       originDistrict: district,
+      originCoords: origin,
       allDonors: donors,
       alreadyNotifiedDonorIds: [],
       excludeUid: auth.currentUser?.uid,
       exchangeAllowed,
     });
-  }, [bloodGroup, district, donors, exchangeAllowed]);
+  }, [bloodGroup, district, hospitalName, donors, exchangeAllowed]);
 
   // Top opted-in donors seeker can call immediately in parallel while alerts run
   const immediateDirectDonors = useMemo(() => {
-    const origin = resolveBangladeshCoordinates({ district });
+    const origin = resolveBangladeshCoordinates({
+      district,
+      hospital: hospitalName || undefined,
+    });
     const ranked = rankDonorsForSeeker(donors, {
       bloodGroup,
       compatibleMatchEnabled: true,
@@ -153,12 +224,13 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     });
     return ranked
       .filter((r) => canSeekerViewDirectContact(r.donor, isVerifiedSeeker).allowed)
-      .slice(0, 4);
+      .slice(0, 5);
   }, [
     donors,
     bloodGroup,
     exchangeAllowed,
     district,
+    hospitalName,
     urgency,
     requiredTimeWindow,
     isVerifiedSeeker,
@@ -173,315 +245,191 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
         ? 'জরুরি ২ ঘণ্টার মধ্যে'
         : 'Immediate (Within 2h)'
       : requiredTimeWindow === 'TODAY_6H'
-      ? lang === 'bn'
-        ? 'আজ ৬ ঘণ্টার মধ্যে'
-        : 'Today (Within 6h)'
-      : requiredTimeWindow === 'WITHIN_24H'
-      ? lang === 'bn'
-        ? '২৪ ঘণ্টার মধ্যে'
-        : 'Within 24 hours'
-      : lang === 'bn'
-      ? 'নির্ধারিত সময়'
-      : 'Scheduled';
+        ? lang === 'bn'
+          ? 'আজ ৬ ঘণ্টার মধ্যে'
+          : 'Today (Within 6h)'
+        : requiredTimeWindow === 'WITHIN_24H'
+          ? lang === 'bn'
+            ? '২৪ ঘণ্টার মধ্যে'
+            : 'Within 24 hours'
+          : lang === 'bn'
+            ? 'নির্ধারিত সময়'
+            : 'Scheduled';
 
-  const handleNextStep = async () => {
+  const handlePublishRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
     setValidationError(null);
-    if (step < 3) {
-      setStep((step + 1) as 1 | 2 | 3);
+
+    const cleanHospital = hospitalName.trim();
+    const normalizedPhone = normalizeValidBangladeshMobileE164(contactPhone);
+
+    if (cleanHospital.length < 2) {
+      setValidationError(
+        lang === 'bn'
+          ? 'কোন হাসপাতালে বা এলাকায় রক্ত লাগবে তা লিখুন অথবা নিচের হাসপাতাল বাটনে চাপুন।'
+          : 'Please enter or tap the hospital / area name.'
+      );
+      return;
+    }
+    if (!normalizedPhone || !isValidBangladeshMobilePhone(contactPhone)) {
+      setValidationError(
+        lang === 'bn'
+          ? 'সঠিক ১১ ডিজিটের মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
+      );
       return;
     }
 
-    if (step === 3) {
-      const cleanHospital = hospitalName.trim();
-      const normalizedPhone = normalizeValidBangladeshMobileE164(contactPhone);
+    const guard = checkActionCooldownGuard('CREATE_SOS', 6000);
+    if (!guard.allowed) {
+      setValidationError(
+        lang === 'bn'
+          ? `অনুগ্রহ করে ${guard.waitSeconds} সেকেন্ড অপেক্ষা করে আবার চেষ্টা করুন।`
+          : `Please wait ${guard.waitSeconds}s before sending another request.`
+      );
+      return;
+    }
 
-      if (cleanHospital.length < 3) {
-        setValidationError(
-          lang === 'bn'
-            ? 'অনুগ্রহ করে হাসপাতালের সঠিক নাম লিখুন।'
-            : 'Please enter a valid hospital name.'
-        );
-        return;
-      }
-      if (!normalizedPhone || !isValidBangladeshMobilePhone(contactPhone)) {
-        setValidationError(
-          lang === 'bn'
-            ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)। ভুল বা ১০ ডিজিটের নম্বর গ্রহণযোগ্য নয়।'
-            : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
-        );
-        return;
-      }
+    setIsDispatching(true);
+    try {
+      const distObj = DISTRICTS.find((d) => d.id === district);
+      const cleanPatient =
+        patientName.trim() || (lang === 'bn' ? 'জরুরি রোগী' : 'Emergency Patient');
+      const finalReason =
+        reason.trim() || (lang === 'bn' ? 'জরুরি রক্ত প্রয়োজন' : 'Emergency transfusion');
 
-      const guard = checkActionCooldownGuard('CREATE_SOS', 6000);
-      if (!guard.allowed) {
-        setValidationError(
-          lang === 'bn'
-            ? `অনুগ্রহ করে ${guard.waitSeconds} সেকেন্ড অপেক্ষা করে পরবর্তী আবেদন পাঠান।`
-            : `Please wait ${guard.waitSeconds}s before sending another emergency request.`
-        );
-        return;
-      }
-
-      setIsDispatching(true);
-      try {
-        const distObj = DISTRICTS.find((d) => d.id === district);
-        const cleanPatient =
-          patientName.trim() || (lang === 'bn' ? 'জরুরি রোগী' : 'Emergency Patient');
-        const finalReason =
-          reason.trim() || (lang === 'bn' ? 'জরুরি রক্ত সঞ্চালন' : 'Emergency transfusion');
-
-        const nowMs = Date.now();
-        const expiryHours =
-          requiredTimeWindow === 'IMMEDIATE_2H'
-            ? 6
-            : requiredTimeWindow === 'TODAY_6H'
+      const nowMs = Date.now();
+      const expiryHours =
+        requiredTimeWindow === 'IMMEDIATE_2H'
+          ? 6
+          : requiredTimeWindow === 'TODAY_6H'
             ? 12
             : 24;
 
-        const candidateIds = initialEscalationPlan.eligibleDonorsToNotify.map((d) => d.id);
-        const reqId = `sos_${nowMs}`;
+      const candidateIds = initialEscalationPlan.eligibleDonorsToNotify.map((d) => d.id);
+      const reqId = `sos_${nowMs}`;
 
-        const newReq: BloodRequest = {
-          id: reqId,
-          authorUid: auth.currentUser?.uid,
-          patientName: cleanPatient,
-          patientAge: Number(patientAge) || 30,
-          bloodGroup,
-          unitsNeeded: Number(unitsNeeded) || 1,
-          unitsCollected: 0,
-          hospitalName: cleanHospital,
-          division: distObj?.divisionId || 'dhaka',
-          district,
-          upazila: distObj?.upazilas?.[0]?.id || 'sadar',
-          urgency,
-          requiredTimeWindow,
-          contactName: cleanPatient,
-          contactPhone: normalizedPhone,
-          requiredDate: requiredTimeLabel,
-          reason: finalReason,
-          exchangeAllowed,
-          responders: [],
-          createdAt: lang === 'bn' ? 'এইমাত্র' : 'Just now',
-          createdAtMs: nowMs,
-          expiresAtMs: nowMs + expiryHours * 60 * 60 * 1000,
-          status: 'ACTIVE',
-          lifecycleState: candidateIds.length > 0 ? 'DONORS_NOTIFIED' : 'SEARCHING',
-          notifiedCount: candidateIds.length,
-          viewedCount: 0,
-          respondedCount: 0,
-          contactAttemptsCount: 0,
-          escalationLevel: 0,
-          searchRadiusKm: initialEscalationPlan.radiusKm,
-          escalationIntervalMinutes: 10,
-        };
+      const newReq: BloodRequest = {
+        id: reqId,
+        authorUid: auth.currentUser?.uid,
+        patientName: cleanPatient,
+        patientAge: 30,
+        bloodGroup,
+        unitsNeeded: Number(unitsNeeded) || 1,
+        unitsCollected: 0,
+        hospitalName: cleanHospital,
+        division: distObj?.divisionId || 'dhaka',
+        district,
+        upazila: distObj?.upazilas?.[0]?.id || 'sadar',
+        urgency,
+        requiredTimeWindow,
+        contactName: cleanPatient,
+        contactPhone: normalizedPhone,
+        requiredDate: requiredTimeLabel,
+        reason: finalReason,
+        exchangeAllowed,
+        responders: [],
+        createdAt: lang === 'bn' ? 'এইমাত্র' : 'Just now',
+        createdAtMs: nowMs,
+        expiresAtMs: nowMs + expiryHours * 60 * 60 * 1000,
+        status: 'ACTIVE',
+        lifecycleState: candidateIds.length > 0 ? 'DONORS_NOTIFIED' : 'SEARCHING',
+        notifiedCount: candidateIds.length,
+        viewedCount: 0,
+        respondedCount: 0,
+        contactAttemptsCount: 0,
+        escalationLevel: 0,
+        searchRadiusKm: initialEscalationPlan.radiusKm,
+        escalationIntervalMinutes: 10,
+      };
 
-        const broadcastRes = await dispatchEmergencyBroadcastClient({
-          request: newReq,
-          seekerCallbackPhone: normalizedPhone,
-          candidateCloudDonorIds: candidateIds,
-        });
+      const broadcastRes = await dispatchEmergencyBroadcastClient({
+        request: newReq,
+        seekerCallbackPhone: normalizedPhone,
+        candidateCloudDonorIds: candidateIds,
+      });
 
-        const syncedReq: BloodRequest = {
-          ...newReq,
-          id: broadcastRes.requestId || reqId,
-          notifiedCount: broadcastRes.alertsWritten,
-          lifecycleState:
-            broadcastRes.alertsWritten > 0 ? 'DONORS_NOTIFIED' : 'SEARCHING',
-        };
+      const syncedReq: BloodRequest = {
+        ...newReq,
+        id: broadcastRes.requestId || reqId,
+        notifiedCount: broadcastRes.alertsWritten,
+        lifecycleState:
+          broadcastRes.alertsWritten > 0 ? 'DONORS_NOTIFIED' : 'SEARCHING',
+      };
 
-        setDispatchResult(broadcastRes);
-        onSubmitSOS(syncedReq, { alreadySyncedToCloud: broadcastRes.syncedToCloud });
-        onLogAudit(
-          'CREATE_SOS',
-          `Dispatched ${bloodGroup} emergency request (${unitsNeeded} unit(s), notified=${broadcastRes.alertsWritten})`
-        );
-        setStep(4);
-      } catch {
-        setValidationError(
-          lang === 'bn'
-            ? 'আবেদন পাঠাতে সমস্যা হয়েছে। অনুগ্রহ করে তথ্য যাচাই করে আবার চেষ্টা করুন।'
-            : 'Could not send request. Please verify your details and try again.'
-        );
-      } finally {
-        setIsDispatching(false);
-      }
+      setDispatchResult(broadcastRes);
+      onSubmitSOS(syncedReq, { alreadySyncedToCloud: broadcastRes.syncedToCloud });
+      onLogAudit(
+        'CREATE_SOS',
+        `Dispatched ${bloodGroup} emergency request (${unitsNeeded} unit(s), notified=${broadcastRes.alertsWritten})`
+      );
+      setSubmittedState('LIVE_SUCCESS');
+    } catch {
+      setValidationError(
+        lang === 'bn'
+          ? 'আবেদন পাঠাতে সমস্যা হয়েছে। তথ্য যাচাই করে আবার চেষ্টা করুন।'
+          : 'Could not send request. Please verify your details and try again.'
+      );
+    } finally {
+      setIsDispatching(false);
     }
   };
 
   const handleFinish = () => {
-    setStep(1);
+    setSubmittedState('FORM');
     setDispatchResult(null);
     setValidationError(null);
     onClose();
   };
 
-  const progressWidthClass =
-    step === 1 ? 'w-1/3' : step === 2 ? 'w-2/3' : 'w-full';
-
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain">
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain"
+      onClick={() => showHospitalSuggestions && setShowHospitalSuggestions(false)}
+    >
       <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white p-4 sm:p-6 shadow-2xl border border-slate-300 dark:border-slate-700 transition-colors flex flex-col justify-between text-left">
-        <div>
-          {/* Top Stepper Header */}
-          <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-700">
-            {step > 1 && step < 4 ? (
-              <button
-                type="button"
-                onClick={() => setStep((step - 1) as 1 | 2 | 3)}
-                className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white cursor-pointer"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-            ) : (
-              <div className="w-8" />
-            )}
-
-            <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
-              {step < 4
+        {/* Clean Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-700">
+          <div>
+            <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+              {submittedState === 'FORM'
                 ? lang === 'bn'
-                  ? `জরুরি রক্তের রিকোয়েস্ট · ধাপ ${step}/৩`
-                  : `Emergency Blood Request · Step ${step} of 3`
+                  ? 'সহজ রক্তের রিকোয়েস্ট (১৫ সেকেন্ডে)'
+                  : 'Quick Blood Request (15 Seconds)'
                 : lang === 'bn'
-                ? 'ব্রডকাস্ট স্ট্যাটাস ও সরাসরি কল'
-                : 'Broadcast Status & Direct Contact'}
-            </span>
-
-            <button
-              type="button"
-              onClick={handleFinish}
-              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+                  ? 'রিকোয়েস্ট লাইভ হয়েছে!'
+                  : 'Request Is Now Live!'}
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {submittedState === 'FORM'
+                ? lang === 'bn'
+                  ? 'শুধু রক্তের গ্রুপ, হাসপাতাল ও মোবাইল নম্বর দিলেই কাছাকাছি ডোনাররা অ্যালার্ট পাবেন'
+                  : 'Just pick blood group, hospital & phone to alert nearby ready donors'
+                : lang === 'bn'
+                  ? 'নিচের প্রস্তুত রক্তদাতাদের এখনই সরাসরি কল করতে পারেন'
+                  : 'You can also call ready donors directly below right now'}
+            </p>
           </div>
 
-          {/* Progress Bar (No Inline Styles) */}
-          {step < 4 && (
-            <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full my-3 overflow-hidden">
-              <div
-                className={`h-full bg-rose-600 transition-all duration-200 ${progressWidthClass}`}
-              />
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={handleFinish}
+            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
 
-          {/* STEP 1: URGENCY & REQUIRED TIME */}
-          {step === 1 && (
-            <div className="py-2 space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-                  {lang === 'bn'
-                    ? 'কতটা জরুরি ও কখন রক্ত প্রয়োজন?'
-                    : 'How Urgent Is the Blood Need?'}
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  {lang === 'bn'
-                    ? 'রোগীর অবস্থা অনুযায়ী নিচের যেকোনো একটি ধাপ নির্বাচন করুন।'
-                    : 'Choose the urgency level so nearby available donors are alerted immediately.'}
-                </p>
-              </div>
-
-              <div className="space-y-2.5">
-                {(
-                  [
-                    {
-                      id: 'CRITICAL' as UrgencyLevel,
-                      titleBn: 'অতি জরুরি — এখনই রক্ত প্রয়োজন',
-                      titleEn: 'Critical — Needed Immediately',
-                      descBn: 'অপারেশন, দুর্ঘটনা বা মুমূর্ষু রোগীর জন্য তাৎক্ষণিক রক্ত প্রয়োজন।',
-                      descEn: 'Life-saving transfusion needed right away at the hospital.',
-                    },
-                    {
-                      id: 'URGENT' as UrgencyLevel,
-                      titleBn: 'জরুরি — আজকের মধ্যে প্রয়োজন',
-                      titleEn: 'Urgent — Needed Today',
-                      descBn: 'ডায়ালাইসিস, ডেলিভারি বা চলমান চিকিৎসার জন্য কয়েক ঘণ্টার মধ্যে প্রয়োজন।',
-                      descEn: 'Needed within a few hours for ongoing hospital treatment.',
-                    },
-                    {
-                      id: 'STANDARD' as UrgencyLevel,
-                      titleBn: 'সাধারণ — নির্ধারিত অপারেশন বা আগামীকাল',
-                      titleEn: 'Scheduled — Planned Procedure',
-                      descBn: 'নির্ধারিত সার্জারি বা থ্যালাসেমিয়া রোগীর জন্য অগ্রিম রক্ত সংগ্রহ।',
-                      descEn: 'Planned surgical reserve or next-day transfusion.',
-                    },
-                  ] as const
-                ).map((item) => {
-                  const active = urgency === item.id;
-                  return (
-                    <button
-                      type="button"
-                      key={item.id}
-                      onClick={() => {
-                        setUrgency(item.id);
-                        if (item.id === 'CRITICAL') setRequiredTimeWindow('IMMEDIATE_2H');
-                        else if (item.id === 'URGENT') setRequiredTimeWindow('TODAY_6H');
-                        else setRequiredTimeWindow('WITHIN_24H');
-                      }}
-                      className={`w-full text-left p-3.5 rounded-2xl border transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-500 ring-1 ring-rose-500'
-                          : 'bg-white dark:bg-[#1e293b] border-slate-300 dark:border-slate-700 hover:border-slate-400'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-bold text-slate-900 dark:text-white">
-                          {lang === 'bn' ? item.titleBn : item.titleEn}
-                        </span>
-                        {active && (
-                          <CheckCircle2 className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-                        {lang === 'bn' ? item.descBn : item.descEn}
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="pt-1">
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  {lang === 'bn' ? 'কখন রক্ত প্রয়োজন?' : 'When is blood needed?'}
-                </label>
-                <select
-                  value={requiredTimeWindow}
-                  onChange={(e) =>
-                    setRequiredTimeWindow(e.target.value as RequiredTimeWindow)
-                  }
-                  className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
-                >
-                  <option value="IMMEDIATE_2H">
-                    {lang === 'bn' ? '২ ঘণ্টার মধ্যে (তাৎক্ষণিক)' : 'Within 2 hours (Immediate)'}
-                  </option>
-                  <option value="TODAY_6H">
-                    {lang === 'bn' ? 'আজ ৬ ঘণ্টার মধ্যে' : 'Today within 6 hours'}
-                  </option>
-                  <option value="WITHIN_24H">
-                    {lang === 'bn' ? 'আগামী ২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
-                  </option>
-                  <option value="SCHEDULED">
-                    {lang === 'bn' ? 'নির্ধারিত তারিখে' : 'On a scheduled date'}
-                  </option>
-                </select>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2: BLOOD GROUP SELECTOR */}
-          {step === 2 && (
-            <div className="py-2 space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-                  {lang === 'bn' ? 'রক্তের গ্রুপ নির্বাচন করুন' : 'Select Required Blood Group'}
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  {lang === 'bn'
-                    ? 'রোগীর প্রয়োজনীয় রক্তের গ্রুপ নির্বাচন করুন'
-                    : 'Select the patient’s required blood group'}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-4 gap-2.5 pt-1">
+        {submittedState === 'FORM' ? (
+          /* 1-SCREEN EFFORTLESS REQUEST FORM */
+          <form onSubmit={handlePublishRequest} className="pt-4 space-y-4">
+            {/* 1. Blood Group Buttons */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                {lang === 'bn' ? '১. কোন গ্রুপের রক্ত লাগবে? *' : '1. Blood Group Needed *'}
+              </label>
+              <div className="grid grid-cols-4 gap-2">
                 {ALL_BLOOD_GROUPS.map((group) => {
                   const isSelected = bloodGroup === group;
                   return (
@@ -489,392 +437,441 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                       type="button"
                       key={group}
                       onClick={() => setBloodGroup(group)}
-                      className={`h-16 rounded-2xl font-black text-lg transition-colors cursor-pointer flex flex-col items-center justify-center relative ${
+                      className={`min-h-[46px] rounded-xl font-black text-sm sm:text-base transition-colors cursor-pointer flex items-center justify-center ${
                         isSelected
                           ? 'bg-rose-600 text-white shadow-sm'
-                          : 'bg-white dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white hover:border-rose-400'
+                          : 'bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white hover:border-rose-400'
                       }`}
                     >
-                      <span>{group}</span>
-                      {isSelected && (
-                        <span className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-white text-rose-600 text-[10px] font-bold flex items-center justify-center">
-                          ✓
-                        </span>
-                      )}
+                      {group}
                     </button>
                   );
                 })}
               </div>
-
-              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-rose-700 dark:text-rose-300">
-                    {bloodGroup}{' '}
-                    {lang === 'bn' ? 'গ্রুপ নির্বাচিত' : 'Selected'}
-                  </span>
-                  <p className="text-[11px] text-rose-700/80 dark:text-rose-300 mt-0.5">
-                    {lang === 'bn' ? 'সামঞ্জস্যপূর্ণ ডোনার গ্রুপ:' : 'Compatible donor groups:'}{' '}
-                    {getCompatibleDonors(bloodGroup).join(', ')}
-                  </p>
-                </div>
-                <CheckCircle2 className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />
-              </div>
             </div>
-          )}
 
-          {/* STEP 3: MINIMUM ESSENTIAL HOSPITAL & CONTACT DETAILS */}
-          {step === 3 && (
-            <div className="py-2 space-y-3">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+            {/* 2. Hospital / Location with 1-Tap Chips & GPS Auto-Fill */}
+            <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
                   {lang === 'bn'
-                    ? 'ন্যূনতম জরুরি তথ্য দিন'
-                    : 'Minimum Essential Emergency Details'}
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  {lang === 'bn'
-                    ? 'হাসপাতাল, জেলা ও আপনার সচল নম্বর দিলেই তাৎক্ষণিক ব্রডকাস্ট পাঠানো যাবে।'
-                    : 'Only hospital, district, and active callback phone are required to dispatch.'}
-                </p>
-              </div>
-
-              <div className="space-y-3 pt-1">
-                <div>
-                  <div className="flex justify-between text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    <span>{t.unitsNeeded}</span>
-                    <span className="font-mono tabular-nums text-rose-600 dark:text-rose-400 font-black text-sm">
-                      {unitsNeeded} {lang === 'bn' ? 'ব্যাগ' : 'Unit(s)'}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="6"
-                    value={unitsNeeded}
-                    onChange={(e) => setUnitsNeeded(Number(e.target.value))}
-                    className="w-full accent-rose-600 cursor-pointer"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {t.hospitalName} *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder={
-                      lang === 'bn'
-                        ? 'যেমন: ঢাকা মেডিকেল কলেজ হাসপাতাল (ওয়ার্ড/কেবিন)'
-                        : 'e.g. Dhaka Medical College Hospital (Ward/Bed)'
-                    }
-                    value={hospitalName}
-                    onChange={(e) => setHospitalName(e.target.value)}
-                    className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      {lang === 'bn' ? 'জেলা' : 'District'} *
-                    </label>
-                    <select
-                      value={district}
-                      onChange={(e) => setDistrict(e.target.value)}
-                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                    >
-                      {DISTRICTS.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {lang === 'bn' ? d.nameBn : d.nameEn}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      {t.contactPhone} *
-                    </label>
-                    <input
-                      type="tel"
-                      required
-                      placeholder="01712345678"
-                      value={contactPhone}
-                      onChange={(e) => setContactPhone(e.target.value)}
-                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono tabular-nums"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <div className="sm:col-span-2">
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      {t.patientName} ({lang === 'bn' ? 'ঐচ্ছিক' : 'Optional'})
-                    </label>
-                    <input
-                      type="text"
-                      placeholder={lang === 'bn' ? 'রোগীর নাম' : 'Patient Name'}
-                      value={patientName}
-                      onChange={(e) => setPatientName(e.target.value)}
-                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      {lang === 'bn' ? 'বয়স' : 'Age'}
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={120}
-                      value={patientAge}
-                      onChange={(e) => setPatientAge(Number(e.target.value))}
-                      className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 font-mono tabular-nums"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {lang === 'bn' ? 'সংক্ষিপ্ত কারণ (ঐচ্ছিক)' : 'Medical Reason (Optional)'}
-                  </label>
-                  <input
-                    type="text"
-                    placeholder={
-                      lang === 'bn'
-                        ? 'যেমন: জরুরি সার্জারি / ডেঙ্গু / থ্যালাসেমিয়া'
-                        : 'e.g. Emergency surgery / trauma / thalassemia'
-                    }
-                    value={reason}
-                    onChange={(e) => setReason(e.target.value)}
-                    className="w-full h-10 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                  />
-                </div>
-
-                <label className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 flex items-start gap-2.5 cursor-pointer text-xs">
-                  <input
-                    type="checkbox"
-                    checked={exchangeAllowed}
-                    onChange={(e) => setExchangeAllowed(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 accent-emerald-600 shrink-0"
-                  />
-                  <div>
-                    <span className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-1">
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>
-                        {lang === 'bn'
-                          ? 'ব্লাড ব্যাংক এক্সচেঞ্জ অনুমোদিত (যেকোনো গ্রুপ)'
-                          : 'Blood Bank Exchange Allowed (Any Blood Group)'}
-                      </span>
-                    </span>
-                  </div>
+                    ? '২. হাসপাতাল বা এলাকার নাম *'
+                    : '2. Hospital or Area Name *'}
                 </label>
-
-                {initialEscalationPlan.eligibleDonorsToNotify.length > 0 && (
-                  <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 text-xs text-emerald-900 dark:text-emerald-200 font-semibold">
-                    {lang === 'bn'
-                      ? `এই এলাকায় ${initialEscalationPlan.eligibleDonorsToNotify.length} জন রক্তদাতার কাছে সাথে সাথে নোটিফিকেশন যাবে।`
-                      : `${initialEscalationPlan.eligibleDonorsToNotify.length} matching donors in your area will be notified immediately.`}
-                  </div>
-                )}
-
-                {validationError && (
-                  <p className="text-xs font-bold text-red-600 dark:text-red-400">
-                    {validationError}
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* STEP 4: CONFIRMATION + PARALLEL DIRECT CALL TO MATCHING DONORS */}
-          {step === 4 && (
-            <div className="py-4 space-y-4">
-              <div className="flex items-start gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                  <Check className="w-6 h-6 stroke-[2.5]" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                    {lang === 'bn'
-                      ? 'আপনার রক্তের আবেদন সফলভাবে প্রকাশিত হয়েছে'
-                      : 'Your Blood Request Is Now Live'}
-                  </h2>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-                    {lang === 'bn'
-                      ? dispatchResult?.alertsWritten
-                        ? `${dispatchResult.alertsWritten} জন উপযুক্ত রক্তদাতার কাছে জরুরি বার্তা পাঠানো হয়েছে। দ্রুত রক্ত পেতে নিচের রক্তদাতাদের সরাসরি কল করুন।`
-                        : 'আপনার আবেদনটি রিকোয়েস্ট ফিডে যুক্ত হয়েছে। দ্রুত রক্ত পেতে নিচের উপলব্ধ রক্তদাতাদের সরাসরি কল করুন।'
-                      : dispatchResult?.alertsWritten
-                      ? `${dispatchResult.alertsWritten} matching donors have been alerted. Call available donors below directly for the fastest response.`
-                      : 'Your request is live on the feed. Call available donors below directly for the fastest response.'}
-                  </p>
-                </div>
-              </div>
-
-              {/* Direct Call Strip While Alerts Are Running */}
-              {immediateDirectDonors.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-bold text-slate-900 dark:text-white">
-                    {lang === 'bn'
-                      ? 'অ্যালার্ট চলাকালীন এখনই সরাসরি কল করুন:'
-                      : 'Call Available Opted-In Donors Right Now:'}
-                  </div>
-                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                    {immediateDirectDonors.map(({ donor, freshnessLabel }) => {
-                      const callHref = buildDirectCallHref(donor.phone);
-                      const waHref = buildWhatsAppHref(
-                        donor.whatsappPhone || donor.phone,
-                        `Emergency ${bloodGroup} blood needed at ${hospitalName}. Callback: ${contactPhone}`
-                      );
-                      return (
-                        <div
-                          key={donor.id}
-                          className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
-                        >
-                          <div className="min-w-0">
-                            <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                              {donor.name} · {donor.bloodGroup}
-                            </div>
-                            <div className="text-[11px] text-slate-500 truncate">
-                              {donor.upazila}, {donor.district} · {freshnessLabel}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {callHref ? (
-                              <a
-                                href={callHref}
-                                className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs inline-flex items-center gap-1 whitespace-nowrap"
-                                title="Opens Phone Dialer"
-                              >
-                                <Phone className="w-3 h-3" />
-                                <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
-                              </a>
-                            ) : onRevealPhone ? (
-                              <button
-                                type="button"
-                                onClick={() => onRevealPhone(donor)}
-                                className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                              >
-                                <Phone className="w-3 h-3" />
-                                <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
-                              </button>
-                            ) : null}
-
-                            {waHref && (
-                              <a
-                                href={waHref}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1 whitespace-nowrap"
-                                title="Opens WhatsApp"
-                              >
-                                <MessageSquare className="w-3 h-3" />
-                                <span>WA</span>
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Device Native SMS + 1-Click Copy Emergency Text */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <a
-                  href={buildOfflineEmergencySmsUri(
-                    '',
-                    `Emergency: ${bloodGroup} blood needed (${unitsNeeded} unit(s)) at ${hospitalName} (${district}). Callback: ${contactPhone}`
-                  )}
-                  className="min-h-[42px] px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-2 whitespace-nowrap"
-                >
-                  <Mail className="w-4 h-4 shrink-0" />
-                  <span>
-                    {lang === 'bn' ? 'সিম SMS অ্যাপ খুলুন' : 'Open Phone SMS App'}
-                  </span>
-                </a>
                 <button
                   type="button"
-                  onClick={async () => {
-                    const ok = await copyTextReliable(
-                      lang === 'bn'
-                        ? `জরুরি রক্তের প্রয়োজন: ${bloodGroup} (${unitsNeeded} ব্যাগ)\nহাসপাতাল: ${hospitalName} (${district})\nযোগাযোগ: ${contactPhone}`
-                        : `Emergency: ${bloodGroup} blood needed (${unitsNeeded} unit(s)) at ${hospitalName} (${district}). Contact: ${contactPhone}`
-                    );
-                    if (ok) {
-                      setCopiedFallbackSms(true);
-                      window.setTimeout(() => setCopiedFallbackSms(false), 2200);
-                    }
-                  }}
-                  className="min-h-[42px] px-3 py-2 rounded-xl btn-surface font-bold text-xs flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  onClick={handleUseLiveGpsForRequest}
+                  disabled={isLocatingGps}
+                  className="text-[11px] font-bold text-sky-700 dark:text-sky-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
                 >
-                  {copiedFallbackSms ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>{lang === 'bn' ? 'বার্তা কপি হয়েছে ✓' : 'Copied ✓'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4 shrink-0" />
-                      <span>{lang === 'bn' ? 'জরুরি বার্তা কপি করুন' : 'Copy Emergency Text'}</span>
-                    </>
-                  )}
+                  <LocateFixed className={`w-3.5 h-3.5 ${isLocatingGps ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isLocatingGps
+                      ? lang === 'bn'
+                        ? 'লোকেশন নেওয়া হচ্ছে...'
+                        : 'Detecting...'
+                      : lang === 'bn'
+                        ? 'GPS দিয়ে জেলা নিন'
+                        : 'Use My GPS'}
+                  </span>
                 </button>
               </div>
 
-              {/* Medical Emergency Disclaimer */}
-              <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/35 border border-amber-300/70 dark:border-amber-800/70 flex items-start gap-2 text-[11px] text-amber-950 dark:text-amber-200">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                <span>
-                  {lang === 'bn'
-                    ? 'BloodSearch কোনো জরুরি হাসপাতাল সার্ভিস নয়। তীব্র সংকটে হাসপাতালের ব্লাড ব্যাংক ও চিকিৎসকের পরামর্শ নিন বা ৯৯৯-এ কল করুন।'
-                    : 'BloodSearch is not an emergency medical service and cannot guarantee donor availability. Contact your hospital blood bank or call 999 in critical emergencies.'}
-                </span>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  placeholder={
+                    lang === 'bn'
+                      ? 'যেমন: Square Hospital, ঢাকা মেডিকেল (DMCH), ইবনে সিনা...'
+                      : 'e.g. Square Hospital, Dhaka Medical (DMCH), LabAid...'
+                  }
+                  value={hospitalName}
+                  onFocus={() => setShowHospitalSuggestions(true)}
+                  onChange={(e) => handleHospitalInputChange(e.target.value)}
+                  className="w-full h-11 px-3.5 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+
+                {showHospitalSuggestions && hospitalSuggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 top-12 z-30 rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+                    {hospitalSuggestions.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setHospitalName(item.title);
+                          setDistrict(item.districtId);
+                          setShowHospitalSuggestions(false);
+                        }}
+                        className="w-full px-3 py-2 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800 flex items-center gap-2 cursor-pointer"
+                      >
+                        <Hospital className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                            {item.title}
+                          </div>
+                          <div className="text-[10px] text-slate-500 truncate">
+                            {item.subtitle}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 1-Tap Popular Hospital Quick Chips */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+                {EXPRESS_HOSPITALS.map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => {
+                      setHospitalName(lang === 'bn' ? h.nameBn : h.nameEn);
+                      setDistrict(h.districtId);
+                      setShowHospitalSuggestions(false);
+                    }}
+                    className="min-h-[32px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-300 cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    {h.shortLabel}
+                  </button>
+                ))}
               </div>
             </div>
-          )}
-        </div>
 
-        {/* Bottom Primary CTA */}
-        <div className="pt-4 border-t border-slate-200/60 dark:border-slate-800/60">
-          {step < 4 ? (
+            {/* 3. Phone Number, District & 1-Tap Bag Selector */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? '৩. আপনার মোবাইল নম্বর *' : '3. Callback Mobile Number *'}
+                </label>
+                <input
+                  type="tel"
+                  required
+                  placeholder="01712345678"
+                  value={contactPhone}
+                  onChange={(e) => setContactPhone(e.target.value)}
+                  className="w-full h-11 px-3.5 text-sm rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono tabular-nums"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? 'জেলা' : 'District'}
+                </label>
+                <select
+                  value={district}
+                  onChange={(e) => setDistrict(e.target.value)}
+                  className="w-full h-11 px-3 text-xs sm:text-sm font-semibold rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                >
+                  {DISTRICTS.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {lang === 'bn' ? d.nameBn : d.nameEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* 1-Tap Bag Counter */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                {lang === 'bn' ? 'কত ব্যাগ রক্ত লাগবে?' : 'How many bags needed?'}
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {[1, 2, 3, 4].map((num) => {
+                  const active = unitsNeeded === num;
+                  return (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setUnitsNeeded(num)}
+                      className={`min-h-[42px] rounded-xl text-xs font-bold cursor-pointer tabular-nums ${
+                        active
+                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                          : 'bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {lang === 'bn'
+                        ? `${num === 4 ? '৪+' : num} ব্যাগ`
+                        : `${num === 4 ? '4+' : num} Bag${num > 1 ? 's' : ''}`}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Optional Extra Details Accordion */}
+            <div className="border-t border-slate-200/80 dark:border-slate-800 pt-2.5">
+              <button
+                type="button"
+                onClick={() => setShowOptionalDetails((v) => !v)}
+                className="w-full flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white py-1 cursor-pointer"
+              >
+                <span>
+                  {lang === 'bn'
+                    ? 'অতিরিক্ত তথ্য যোগ করুন (রোগীর নাম, কারণ, সময় — ঐচ্ছিক)'
+                    : 'Add Optional Details (Patient name, time, reason)'}
+                </span>
+                {showOptionalDetails ? (
+                  <ChevronUp className="w-4 h-4 shrink-0" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 shrink-0" />
+                )}
+              </button>
+
+              {showOptionalDetails && (
+                <div className="pt-3 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                        {lang === 'bn' ? 'রোগীর নাম (ঐচ্ছিক)' : 'Patient Name (Optional)'}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={lang === 'bn' ? 'রোগীর নাম' : 'Patient Name'}
+                        value={patientName}
+                        onChange={(e) => setPatientName(e.target.value)}
+                        className="w-full h-10 px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                        {lang === 'bn' ? 'কখন লাগবে?' : 'When needed?'}
+                      </label>
+                      <select
+                        value={requiredTimeWindow}
+                        onChange={(e) => {
+                          const val = e.target.value as RequiredTimeWindow;
+                          setRequiredTimeWindow(val);
+                          setUrgency(
+                            val === 'IMMEDIATE_2H'
+                              ? 'CRITICAL'
+                              : val === 'TODAY_6H'
+                                ? 'URGENT'
+                                : 'STANDARD'
+                          );
+                        }}
+                        className="w-full h-10 px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
+                      >
+                        <option value="IMMEDIATE_2H">
+                          {lang === 'bn' ? 'এখনই / ২ ঘণ্টার মধ্যে' : 'Immediately (Within 2h)'}
+                        </option>
+                        <option value="TODAY_6H">
+                          {lang === 'bn' ? 'আজ ৬ ঘণ্টার মধ্যে' : 'Today (Within 6h)'}
+                        </option>
+                        <option value="WITHIN_24H">
+                          {lang === 'bn' ? 'আগামী ২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
+                        </option>
+                        <option value="SCHEDULED">
+                          {lang === 'bn' ? 'নির্ধারিত তারিখে' : 'Scheduled Later'}
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      {lang === 'bn' ? 'রোগের কারণ / ওয়ার্ড নম্বর (ঐচ্ছিক)' : 'Reason / Ward (Optional)'}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder={
+                        lang === 'bn'
+                          ? 'যেমন: জরুরি অপারেশন / ডেলিভারি / ডেঙ্গু'
+                          : 'e.g. Surgery / delivery / dengue'
+                      }
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      className="w-full h-10 px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
+                    />
+                  </div>
+
+                  <label className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 flex items-center gap-2.5 cursor-pointer text-xs">
+                    <input
+                      type="checkbox"
+                      checked={exchangeAllowed}
+                      onChange={(e) => setExchangeAllowed(e.target.checked)}
+                      className="w-4 h-4 accent-emerald-600 shrink-0"
+                    />
+                    <span className="font-semibold text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
+                      <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        {lang === 'bn'
+                          ? 'ব্লাড ব্যাংক এক্সচেঞ্জ করা যাবে (যেকোনো গ্রুপ)'
+                          : 'Blood Bank Exchange Allowed (Any Group)'}
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {initialEscalationPlan.eligibleDonorsToNotify.length > 0 && (
+              <div className="p-2.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 text-xs text-emerald-900 dark:text-emerald-200 font-semibold tabular-nums">
+                {lang === 'bn'
+                  ? `নিকটবর্তী ${initialEscalationPlan.eligibleDonorsToNotify.length} জন ম্যাচিং রক্তদাতার কাছে সাথে সাথে নোটিফিকেশন যাবে।`
+                  : `${initialEscalationPlan.eligibleDonorsToNotify.length} nearby matching donors will be notified immediately.`}
+              </div>
+            )}
+
+            {validationError && (
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs font-bold text-rose-700 dark:text-rose-300">
+                {validationError}
+              </div>
+            )}
+
             <button
-              type="button"
+              type="submit"
               disabled={isDispatching}
-              onClick={handleNextStep}
-              className="w-full min-h-[48px] rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+              className="w-full min-h-[48px] rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
             >
+              <Send className="w-4 h-4 shrink-0" />
               <span>
                 {isDispatching
                   ? lang === 'bn'
                     ? 'পাঠানো হচ্ছে...'
                     : 'Sending Request...'
-                  : step === 3
-                  ? lang === 'bn'
-                    ? 'রক্তের আবেদন প্রকাশ করুন'
-                    : 'Publish Blood Request'
                   : lang === 'bn'
-                  ? 'পরবর্তী ধাপ →'
-                  : 'Continue →'}
+                    ? 'এখনই রক্তের রিকোয়েস্ট পাঠান'
+                    : 'Send Blood Request Now'}
               </span>
             </button>
-          ) : (
+          </form>
+        ) : (
+          /* LIVE CONFIRMATION + 1-TAP DIRECT CALL SCREEN */
+          <div className="py-4 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                <Check className="w-6 h-6 stroke-[2.5]" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  {lang === 'bn'
+                    ? `${bloodGroup} রক্তের রিকোয়েস্ট সফলভাবে পোস্ট হয়েছে`
+                    : `${bloodGroup} Blood Request Published`}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+                  {lang === 'bn'
+                    ? dispatchResult?.alertsWritten
+                      ? `${dispatchResult.alertsWritten} জন ডোনারের কাছে অ্যালার্ট গেছে। সবচেয়ে দ্রুত সাড়া পেতে নিচের প্রস্তুত ডোনারদের সরাসরি কল করুন:`
+                      : 'রিকোয়েস্টটি লাইভ ফিডে যুক্ত হয়েছে। নিচের প্রস্তুত ডোনারদের সরাসরি কল করুন:'
+                    : dispatchResult?.alertsWritten
+                      ? `${dispatchResult.alertsWritten} donors alerted. Call available donors below for the fastest response:`
+                      : 'Your request is live. Call available donors below directly:'}
+                </p>
+              </div>
+            </div>
+
+            {immediateDirectDonors.length > 0 && (
+              <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                {immediateDirectDonors.map(({ donor, distanceKm }) => {
+                  const callHref = buildDirectCallHref(donor.phone);
+                  const waHref = buildWhatsAppHref(
+                    donor.whatsappPhone || donor.phone,
+                    `জরুরি ${bloodGroup} রক্ত প্রয়োজন (${hospitalName})। যোগাযোগ: ${contactPhone}`
+                  );
+                  return (
+                    <div
+                      key={donor.id}
+                      className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                          {donor.name} · {donor.bloodGroup}
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate tabular-nums">
+                          {donor.upazila}, {donor.district} · ~{distanceKm.toFixed(1)} km
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {callHref ? (
+                          <a
+                            href={callHref}
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs inline-flex items-center gap-1 whitespace-nowrap"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
+                          </a>
+                        ) : onRevealPhone ? (
+                          <button
+                            type="button"
+                            onClick={() => onRevealPhone(donor)}
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
+                          </button>
+                        ) : null}
+
+                        {waHref && (
+                          <a
+                            href={waHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1 whitespace-nowrap"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>WA</span>
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <a
+                href={buildOfflineEmergencySmsUri(
+                  '',
+                  `জরুরি রক্ত প্রয়োজন: ${bloodGroup} (${unitsNeeded} ব্যাগ), হাসপাতাল: ${hospitalName}, যোগাযোগ: ${contactPhone}`
+                )}
+                className="min-h-[42px] px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <Mail className="w-4 h-4 shrink-0" />
+                <span>{lang === 'bn' ? 'SMS পাঠান' : 'Send SMS'}</span>
+              </a>
+              <button
+                type="button"
+                onClick={async () => {
+                  const ok = await copyTextReliable(
+                    lang === 'bn'
+                      ? `জরুরি রক্তের প্রয়োজন: ${bloodGroup} (${unitsNeeded} ব্যাগ)\nহাসপাতাল: ${hospitalName} (${district})\nযোগাযোগ: ${contactPhone}`
+                      : `Emergency: ${bloodGroup} blood needed (${unitsNeeded} unit(s)) at ${hospitalName} (${district}). Contact: ${contactPhone}`
+                  );
+                  if (ok) {
+                    setCopiedFallbackSms(true);
+                    window.setTimeout(() => setCopiedFallbackSms(false), 2200);
+                  }
+                }}
+                className="min-h-[42px] px-3 py-2 rounded-xl btn-surface font-bold text-xs flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+              >
+                {copiedFallbackSms ? (
+                  <>
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{lang === 'bn' ? 'কপি হয়েছে ✓' : 'Copied ✓'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4 shrink-0" />
+                    <span>{lang === 'bn' ? 'মেসেজ কপি করুন' : 'Copy Post Text'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={handleFinish}
-              className="w-full min-h-[48px] rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-sm transition-colors cursor-pointer"
+              className="w-full min-h-[46px] rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-sm transition-colors cursor-pointer"
             >
-              <span>
-                {lang === 'bn'
-                  ? 'রিকোয়েস্ট ট্র্যাকিং ফিডে যান'
-                  : 'View Live Request Tracking'}
-              </span>
+              {lang === 'bn' ? 'সম্পন্ন (রিকোয়েস্ট ফিড দেখুন)' : 'Done'}
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

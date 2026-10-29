@@ -7,6 +7,8 @@ import {
   Donor,
   RequestAlertItem,
   RequestLifecycleState,
+  LiveDonorTrip,
+  LiveDonorTripStatus,
 } from '../types';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { DISTRICTS } from '../data/bangladeshGeo';
@@ -33,7 +35,11 @@ import {
   formatBangladeshPhoneDisplay,
   isPhoneMaskedOrInvalid,
 } from '../utils/donorMatcher';
-import { resolveBangladeshCoordinates } from '../utils/geolocation';
+import {
+  resolveBangladeshCoordinates,
+  formatDistance,
+  formatTravelEta,
+} from '../utils/geolocation';
 import {
   buildOfflineEmergencySmsUri,
   copyTextReliable,
@@ -62,12 +68,14 @@ import {
   Check,
   Trash2,
   ShieldCheck,
+  Navigation,
   X,
 } from 'lucide-react';
 
 interface RequestsFeedProps {
   requests: BloodRequest[];
   donors?: Donor[];
+  liveTrips?: LiveDonorTrip[];
   lang: Language;
   onOpenSOSModal: () => void;
   onRespondToRequest: (
@@ -76,7 +84,21 @@ interface RequestsFeedProps {
     responderPhone: string,
     group: BloodGroup,
     note?: string
-  ) => Promise<{ ok: boolean; reason?: string }>;
+  ) => Promise<{
+    ok: boolean;
+    reason?: string;
+    seekerContactName?: string;
+    seekerContactPhone?: string;
+    authorUid?: string;
+  }>;
+  onStartLiveTrip?: (
+    req: BloodRequest,
+    responderName: string,
+    responderPhone: string,
+    group: BloodGroup
+  ) => Promise<LiveDonorTrip>;
+  onUpdateLiveTripStatus?: (tripId: string, status: LiveDonorTripStatus) => Promise<void> | void;
+  onTrackTripOnMap?: (tripId: string) => void;
   onRevealPhone?: (donor: Donor) => void;
   onUpdateRequestLocal?: (reqId: string, patch: Partial<BloodRequest>) => void;
   onDeleteRequest?: (reqId: string) => Promise<boolean>;
@@ -104,9 +126,13 @@ const LIFECYCLE_LABELS: Record<
 export const RequestsFeed: React.FC<RequestsFeedProps> = ({
   requests,
   donors = [],
+  liveTrips = [],
   lang,
   onOpenSOSModal,
   onRespondToRequest,
+  onStartLiveTrip,
+  onUpdateLiveTripStatus,
+  onTrackTripOnMap,
   onRevealPhone,
   onUpdateRequestLocal,
   onDeleteRequest,
@@ -127,6 +153,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
   const [donorPhone, setDonorPhone] = useState('');
   const [donorGroup, setDonorGroup] = useState<BloodGroup>('O+');
   const [arrivalNote, setArrivalNote] = useState('');
+  const [shareLiveLocation, setShareLiveLocation] = useState<boolean>(true);
   const [respondError, setRespondError] = useState<string | null>(null);
   const [isSubmittingResponse, setIsSubmittingResponse] = useState(false);
 
@@ -356,11 +383,22 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
         lifecycleState: action,
         unitsCollected: action === 'FULFILLED' ? req.unitsNeeded : req.unitsCollected,
       });
+      const safeReqId = req.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+      const terminalTripState: LiveDonorTripStatus =
+        action === 'FULFILLED' ? 'COMPLETED' : 'CANCELLED';
+      for (const tr of liveTrips) {
+        if (
+          tr.requestId === safeReqId &&
+          (tr.tripStatus === 'ON_THE_WAY' || tr.tripStatus === 'ARRIVED')
+        ) {
+          onUpdateLiveTripStatus?.(tr.id, terminalTripState);
+        }
+      }
       showNotice(
         action === 'FULFILLED'
           ? lang === 'bn'
-            ? '✓ আবেদনটি সম্পন্ন হিসেবে চিহ্নিত হয়েছে — পরবর্তী সকল অ্যালার্ট বন্ধ করা হয়েছে।'
-            : '✓ Request marked Fulfilled — all future alerts halted.'
+            ? '✓ আবেদনটি সম্পন্ন হিসেবে চিহ্নিত হয়েছে — পরবর্তী সকল অ্যালার্ট ও লাইভ ট্র্যাকিং সম্পন্ন হয়েছে।'
+            : '✓ Request marked Fulfilled — all future alerts and live tracking halted.'
           : lang === 'bn'
           ? 'আবেদনটি বাতিল করা হয়েছে — পরবর্তী সকল অ্যালার্ট বন্ধ করা হয়েছে।'
           : 'Request Cancelled — all future alerts halted.'
@@ -440,6 +478,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
     if (savedName) setDonorName(savedName);
     if (savedPhone) setDonorPhone(savedPhone);
     setDonorGroup(savedGroup);
+    setShareLiveLocation(true);
   }, []);
 
   useEffect(() => {
@@ -522,6 +561,22 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
           return;
         }
         if (res.reason === 'ALREADY_RESPONDED') {
+          if (shareLiveLocation && onStartLiveTrip) {
+            await onStartLiveTrip(
+              respondingToReq,
+              cleanName,
+              normalizedPhone,
+              donorGroup
+            ).catch(() => null);
+            setRespondingToReq(null);
+            setArrivalNote('');
+            showNotice(
+              lang === 'bn'
+                ? '✓ আপনার লাইভ অন-দ্য-ওয়ে রুট ও পৌঁছানোর সময় রোগীর স্বজনের জন্য চালু হয়েছে!'
+                : '✓ Live on-the-way route & ETA tracking is now active for the patient family!'
+            );
+            return;
+          }
           setRespondError(
             lang === 'bn'
               ? 'আপনি ইতিমধ্যে এই আবেদনে রক্তদানের সাড়া নিশ্চিত করেছেন।'
@@ -548,12 +603,59 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
         }
       }
 
+      const targetReqSnapshot = respondingToReq;
+
+      if (shareLiveLocation && onStartLiveTrip) {
+        await onStartLiveTrip(
+          targetReqSnapshot,
+          cleanName,
+          normalizedPhone,
+          donorGroup
+        ).catch(() => null);
+      }
+
+      // Mutual Contact Exchange: Immediately reveal the Finder/Requester's phone, Call & WhatsApp to the willing donor!
+      let finderPhone =
+        res.seekerContactPhone ||
+        (!isPhoneMaskedOrInvalid(targetReqSnapshot.contactPhone)
+          ? targetReqSnapshot.contactPhone
+          : '');
+      let finderName =
+        res.seekerContactName ||
+        targetReqSnapshot.contactName ||
+        targetReqSnapshot.patientName;
+
+      if (!finderPhone) {
+        const fetched = await fetchRequestDirectContact(targetReqSnapshot.id).catch(() => null);
+        if (fetched?.contactPhone) {
+          finderPhone = fetched.contactPhone;
+          finderName = fetched.contactName || finderName;
+        }
+      }
+
       setRespondingToReq(null);
       setArrivalNote('');
+
+      if (finderPhone) {
+        setCopiedModalPhone(false);
+        setCopiedModalSms(false);
+        setContactModalState({
+          req: targetReqSnapshot,
+          mode: 'CALL',
+          resolvedPhone: finderPhone,
+          resolvedContactName: finderName,
+          isResolving: false,
+        });
+      }
+
       showNotice(
-        lang === 'bn'
-          ? '✓ ধন্যবাদ! আপনার রক্তদানের সাড়া ও নম্বর রোগীর পরিবারের কাছে পাঠানো হয়েছে।'
-          : '✓ Thank you! Your donation response and callback phone have been shared with the patient family.'
+        shareLiveLocation
+          ? lang === 'bn'
+            ? '✓ ধন্যবাদ! আপনার নম্বর রোগীর পরিবারের কাছে গেছে এবং রোগীর যোগাযোগের নম্বর আপনার স্ক্রিনে খোলা হয়েছে।'
+            : '✓ Thank you! Both sides now have direct Call & WhatsApp contact details.'
+          : lang === 'bn'
+            ? '✓ ধন্যবাদ! আপনার রক্তদানের সাড়া ও নম্বর রোগীর পরিবারের কাছে পাঠানো হয়েছে এবং তাদের নম্বর নিচে দেখানো হচ্ছে।'
+            : '✓ Thank you! Your callback phone was shared with the finder, and their direct contact is now unlocked.'
       );
     } finally {
       setIsSubmittingResponse(false);
@@ -606,13 +708,13 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
       )}
 
       {/* Feed Header */}
-      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 sm:p-6 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+      <div className="surface-card rounded-3xl overflow-hidden transition-colors">
+        <div className="banner-brand-strip text-white px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+            <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
               {t.navRequestsFeed}
             </h1>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
+            <p className="text-xs sm:text-sm text-slate-200 mt-1">
               {lang === 'bn'
                 ? 'সক্রিয় রক্তের আবেদন, রিয়েল-টাইম সাড়া ট্র্যাকিং ও সরাসরি হাসপাতাল যোগাযোগ'
                 : 'Verified emergency blood requests, real-time response tracking, and direct hospital contact'}
@@ -620,12 +722,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
           </div>
 
           <div className="flex items-center gap-2.5 flex-wrap">
-            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer min-h-[44px] px-3 rounded-xl btn-surface">
+            <label className="inline-flex items-center gap-2 text-xs font-semibold text-white cursor-pointer min-h-[44px] px-3 rounded-xl bg-white/12 hover:bg-white/20 border border-white/20">
               <input
                 type="checkbox"
                 checked={showResolved}
                 onChange={(e) => setShowResolved(e.target.checked)}
-                className="rounded border-slate-300 text-rose-600 w-4 h-4"
+                className="rounded border-white/40 text-rose-600 w-4 h-4"
               />
               <span className="whitespace-nowrap">
                 {lang === 'bn' ? 'সম্পন্ন/বাতিল দেখান' : 'Show Resolved'}
@@ -643,7 +745,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
         </div>
 
         {/* Filter Bar */}
-        <div className="pt-4 flex flex-wrap items-center gap-3">
+        <div className="p-4 sm:px-6 flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             <button
               type="button"
@@ -701,7 +803,7 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
       {/* Requests List or Clean Empty State */}
       {filteredRequests.length === 0 ? (
-        <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-8 sm:p-12 text-center space-y-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+        <div className="surface-card rounded-2xl p-8 sm:p-12 text-center space-y-4">
           <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 dark:bg-rose-950/40 flex items-center justify-center text-rose-600">
             <Hospital className="w-6 h-6" />
           </div>
@@ -857,10 +959,10 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
             return (
               <div
                 key={req.id}
-                className={`cv-auto bg-white dark:bg-[#111827] border rounded-2xl p-4 sm:p-5 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)] space-y-3.5 ${
+                className={`cv-auto surface-card rounded-2xl p-4 sm:p-5 transition-colors space-y-3.5 ${
                   !isActive
-                    ? 'border-slate-200 dark:border-slate-800 opacity-80'
-                    : 'border-slate-200/90 dark:border-slate-800/90 hover:border-rose-400 dark:hover:border-rose-600'
+                    ? 'opacity-80'
+                    : 'hover:border-rose-400 dark:hover:border-rose-600'
                 }`}
               >
                 {/* Top Row: Group, Patient, Lifecycle State & Units */}
@@ -978,6 +1080,147 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                   </div>
                 )}
 
+                {/* UBER / PATHAO-STYLE LIVE DONOR ON-THE-WAY TRACKER */}
+                {(() => {
+                  const safeReqId = req.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+                  const activeReqTrips = liveTrips.filter(
+                    (tr) =>
+                      tr.requestId === safeReqId &&
+                      (tr.tripStatus === 'ON_THE_WAY' || tr.tripStatus === 'ARRIVED')
+                  );
+                  if (activeReqTrips.length === 0) return null;
+
+                  return (
+                    <div className="p-3.5 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
+                          <Navigation className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <span>
+                            {lang === 'bn'
+                              ? 'লাইভ রক্তদাতা হাসপাতালে আসছেন'
+                              : 'Live Donor On the Way'}
+                          </span>
+                        </span>
+                        <span className="text-[11px] font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
+                          {activeReqTrips.length}{' '}
+                          {lang === 'bn' ? 'জন পথে' : 'active'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
+                        {activeReqTrips.map((tr) => {
+                          const isMyTrip =
+                            Boolean(currentUid && tr.donorUid === currentUid) ||
+                            tr.donorUid === 'local_donor';
+                          const tripCallHref = !isPhoneMaskedOrInvalid(tr.responderPhone)
+                            ? buildDirectCallHref(tr.responderPhone)
+                            : null;
+
+                          return (
+                            <div
+                              key={tr.id}
+                              className="p-3 rounded-xl bg-white dark:bg-[#0f172a] border border-emerald-200/80 dark:border-emerald-900/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white font-black text-xs flex items-center justify-center shrink-0">
+                                  {tr.bloodGroup}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                                    {tr.donorName}
+                                  </div>
+                                  <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-1.5 mt-0.5 tabular-nums">
+                                    <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                                      {tr.tripStatus === 'ARRIVED'
+                                        ? lang === 'bn'
+                                          ? 'হাসপাতালে পৌঁছেছেন ✓'
+                                          : 'Arrived at Hospital ✓'
+                                        : lang === 'bn'
+                                          ? 'পথে আছেন'
+                                          : 'On the way'}
+                                    </span>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="truncate max-w-[160px]">{tr.areaLabel}</span>
+                                    {tr.tripStatus === 'ON_THE_WAY' && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <strong className="font-mono text-slate-900 dark:text-white">
+                                          {formatTravelEta(tr.etaMinutes, lang)} (
+                                          {formatDistance(tr.distanceKm, lang)})
+                                        </strong>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                                {onTrackTripOnMap && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onTrackTripOnMap(tr.id)}
+                                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    <Navigation className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-600 shrink-0" />
+                                    <span>
+                                      {lang === 'bn' ? 'ম্যাপে লাইভ দেখুন' : 'Track on Map'}
+                                    </span>
+                                  </button>
+                                )}
+
+                                {tripCallHref && !isMyTrip && (
+                                  <a
+                                    href={tripCallHref}
+                                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                                  >
+                                    <Phone className="w-3.5 h-3.5 shrink-0" />
+                                    <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
+                                  </a>
+                                )}
+
+                                {isMyTrip && tr.tripStatus === 'ON_THE_WAY' && onUpdateLiveTripStatus && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onUpdateLiveTripStatus(tr.id, 'ARRIVED')}
+                                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                                    <span>{lang === 'bn' ? 'পৌঁছে গেছি' : 'Arrived'}</span>
+                                  </button>
+                                )}
+
+                                {isMyTrip && onUpdateLiveTripStatus && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onUpdateLiveTripStatus(
+                                        tr.id,
+                                        tr.tripStatus === 'ARRIVED' ? 'COMPLETED' : 'CANCELLED'
+                                      )
+                                    }
+                                    className="min-h-[40px] px-2.5 py-1.5 rounded-xl btn-surface font-semibold text-xs inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    <XCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                                    <span>
+                                      {tr.tripStatus === 'ARRIVED'
+                                        ? lang === 'bn'
+                                          ? 'রক্তদান সম্পন্ন'
+                                          : 'Done'
+                                        : lang === 'bn'
+                                          ? 'লোকেশন বন্ধ'
+                                          : 'Stop Sharing'}
+                                    </span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Seeker Owner Panel: Honest Delivery Counts, Escalation, Parallel Direct Call & Lifecycle Controls */}
                 {isOwner && (
                   <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 space-y-3">
@@ -1057,14 +1300,20 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                         </div>
                         {acceptedAlerts.map((al) => {
                           const callUrl = buildDirectCallHref(al.responderPhone);
+                          const waUrl = buildWhatsAppHref(
+                            al.responderPhone,
+                            lang === 'bn'
+                              ? `আসসালামু আলাইকুম ${al.responderName || ''}, আমাদের জরুরি ${req.bloodGroup} রক্তের আবেদনে (${req.hospitalName}) সাড়া দেওয়ার জন্য ধন্যবাদ।`
+                              : `Hello ${al.responderName || ''}, thank you for responding to our urgent ${req.bloodGroup} blood request at ${req.hospitalName}.`
+                          );
                           return (
                             <div
                               key={al.id}
-                              className="flex items-center justify-between gap-2 text-xs p-2 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900/60"
+                              className="flex flex-wrap items-center justify-between gap-2 text-xs p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900/60"
                             >
                               <span className="font-semibold text-slate-900 dark:text-white truncate">
                                 {al.responderName || 'Voluntary Donor'} ·{' '}
-                                <span className="font-mono tabular-nums">
+                                <span className="font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
                                   {formatBangladeshPhoneDisplay(al.responderPhone)}
                                 </span>
                               </span>
@@ -1086,6 +1335,16 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                                   <Copy className="w-3 h-3" />
                                   <span>{lang === 'bn' ? 'কপি' : 'Copy'}</span>
                                 </button>
+                                {waUrl && (
+                                  <a
+                                    href={waUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[#25D366] hover:bg-emerald-500 text-slate-950 font-black text-xs inline-flex items-center gap-1 whitespace-nowrap"
+                                  >
+                                    <span>WhatsApp</span>
+                                  </a>
+                                )}
                                 {callUrl && (
                                   <a
                                     href={callUrl}
@@ -1715,6 +1974,25 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
                   className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                 />
               </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={shareLiveLocation}
+                  onChange={(e) => setShareLiveLocation(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-emerald-400 text-emerald-600 shrink-0"
+                />
+                <span className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed">
+                  <strong className="font-bold text-emerald-800 dark:text-emerald-300 block">
+                    {lang === 'bn'
+                      ? 'লাইভ রুট ও হাসপাতালে পৌঁছানোর সময় শেয়ার করুন'
+                      : 'Share Live On-the-Way Route & Hospital ETA'}
+                  </strong>
+                  {lang === 'bn'
+                    ? 'শুধু রোগীর পরিবার ম্যাপে দেখতে পাবেন আপনি কত মিনিটে হাসপাতালে পৌঁছাবেন। যেকোনো সময় ১-ট্যাপে বন্ধ করতে পারবেন।'
+                    : 'Only the patient family will see your live road ETA on the map. Stop sharing anytime with 1 tap.'}
+                </span>
+              </label>
 
               {respondError && (
                 <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-300">

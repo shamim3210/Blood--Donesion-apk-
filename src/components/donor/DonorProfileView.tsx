@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import {
   Language,
+  BloodGroup,
+  Donor,
   HealthConditions,
   UserAccount,
   DonorAvailabilityStatus,
   ContactVisibility,
   ContactConsentRequestItem,
 } from '../../types';
+import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
+import { DISTRICTS } from '../../data/bangladeshGeo';
 import {
   QrCode,
   Award,
@@ -24,6 +28,10 @@ import {
   BellOff,
   ShieldCheck,
   Phone,
+  MapPin,
+  LocateFixed,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { PrivacyPolicyModal } from '../ecosystem/PrivacyPolicyModal';
 import { DonorCertificateModal } from './DonorCertificateModal';
@@ -34,15 +42,27 @@ import {
   calculateRecoveryCountdown,
 } from '../../utils/sosAlertEngine';
 import {
+  isValidBangladeshMobilePhone,
+  normalizeValidBangladeshMobileE164,
+} from '../../utils/donorMatcher';
+import {
+  requestFreshHighAccuracyGPS,
+  reverseGeocodeBangladeshCoords,
+} from '../../utils/geolocation';
+import {
   auth,
   onAuthStateChanged,
+  signInWithGoogleReal,
   signOutReal,
   DEFAULT_AVATAR_DATA_URI,
   isBootstrappedAdminUser,
+  isUserVerifiedForWrites,
+  registerSmartAccountInFirestore,
   updateDonorAvailabilityAndConsentInFirestore,
   recordCompletedDonationInFirestore,
   subscribeIncomingContactRequestsForDonor,
   respondToContactRequestInFirestore,
+  parseFirebaseAuthError,
   User as FirebaseUser,
 } from '../../firebase';
 
@@ -150,6 +170,247 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     setAlertsPaused(currentUser.alertsPaused === true);
   }, [currentUser]);
 
+  // Quick Inline Profile Edit State (Name, Blood Group, Mobile, District, Custom Area + GPS)
+  const [isQuickEditOpen, setIsQuickEditOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editGroup, setEditGroup] = useState<BloodGroup>('O+');
+  const [editPhone, setEditPhone] = useState('');
+  const [editDistrict, setEditDistrict] = useState('dhaka');
+  const [editArea, setEditArea] = useState('');
+  const [isSavingQuickEdit, setIsSavingQuickEdit] = useState(false);
+  const [isLocatingQuickGps, setIsLocatingQuickGps] = useState(false);
+  const [quickEditError, setQuickEditError] = useState<string | null>(null);
+
+  const openInlineQuickEdit = () => {
+    setQuickEditError(null);
+    setEditName(
+      currentUser?.name ||
+        firebaseUser?.displayName ||
+        firebaseUser?.email?.split('@')[0] ||
+        ''
+    );
+    setEditGroup(currentUser?.bloodGroup || 'O+');
+    setEditPhone(
+      currentUser?.phone && currentUser.phone !== '01700000000'
+        ? currentUser.phone
+        : firebaseUser?.phoneNumber || ''
+    );
+    const matchedDist = DISTRICTS.find(
+      (d) =>
+        d.id === String(currentUser?.district || '').toLowerCase() ||
+        d.nameBn === currentUser?.district ||
+        d.nameEn.toLowerCase() === String(currentUser?.district || '').toLowerCase()
+    );
+    setEditDistrict(matchedDist?.id || 'dhaka');
+    setEditArea(
+      currentUser?.upazila &&
+        currentUser.upazila !== 'sadar' &&
+        currentUser.upazila !== 'সদর'
+        ? currentUser.upazila
+        : ''
+    );
+    setIsQuickEditOpen(true);
+  };
+
+  const handleQuickEditGps = async () => {
+    setIsLocatingQuickGps(true);
+    setQuickEditError(null);
+    try {
+      const res = await requestFreshHighAccuracyGPS();
+      if (res.isRealGps) {
+        const rev = await reverseGeocodeBangladeshCoords(res.coords, lang);
+        setEditDistrict(rev.districtId);
+        setEditArea(rev.areaText);
+      } else {
+        setQuickEditError(
+          lang === 'bn'
+            ? 'ব্রাউজারে GPS বন্ধ আছে — নিচে আপনার এলাকার নাম (যেমন: নিকেতন) লিখে দিন।'
+            : 'Browser GPS is off — simply type your area name (e.g. Niketon) below.'
+        );
+      }
+    } finally {
+      setIsLocatingQuickGps(false);
+    }
+  };
+
+  const handleSaveQuickEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setQuickEditError(null);
+
+    const cleanName = editName.trim();
+    if (cleanName.length < 2) {
+      setQuickEditError(
+        lang === 'bn' ? 'অনুগ্রহ করে আপনার নাম লিখুন।' : 'Please enter your name.'
+      );
+      return;
+    }
+
+    const cleanPhone = normalizeValidBangladeshMobileE164(editPhone);
+    if (!cleanPhone || !isValidBangladeshMobilePhone(editPhone)) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit mobile number (e.g. 01712345678).'
+      );
+      return;
+    }
+
+    let pendingAuth: Promise<FirebaseUser> | null = null;
+    if (!auth.currentUser || !isUserVerifiedForWrites(auth.currentUser)) {
+      pendingAuth = signInWithGoogleReal();
+    }
+
+    setIsSavingQuickEdit(true);
+    try {
+      let activeUser = auth.currentUser;
+      if (pendingAuth) {
+        try {
+          activeUser = await pendingAuth;
+          setFirebaseUser(activeUser);
+        } catch (authErr: any) {
+          const parsed = parseFirebaseAuthError(authErr);
+          setQuickEditError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+          setIsSavingQuickEdit(false);
+          return;
+        }
+      }
+
+      if (!activeUser) {
+        setIsSavingQuickEdit(false);
+        return;
+      }
+
+      const distObj = DISTRICTS.find((d) => d.id === editDistrict) || DISTRICTS[0];
+      const finalArea = (
+        editArea.trim() ||
+        (lang === 'bn' ? distObj.nameBn : distObj.nameEn) ||
+        'Dhaka'
+      ).slice(0, 50);
+
+      const isSuperOwner = isBootstrappedAdminUser(activeUser);
+      const effectiveRole: 'USER' | 'ADMIN' =
+        currentUser?.role === 'ADMIN' || isSuperOwner ? 'ADMIN' : 'USER';
+
+      const uidShort =
+        activeUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
+      const defaultCardId =
+        effectiveRole === 'ADMIN' ? `ADMIN-BD-${uidShort}` : `BS-${uidShort}`;
+      const cleanCardId =
+        currentUser?.idCardNumber &&
+        /^[a-zA-Z0-9+-]{5,40}$/.test(currentUser.idCardNumber)
+          ? currentUser.idCardNumber
+          : defaultCardId;
+
+      // If previously auto-synced with placeholder phone '01700000000', promote visibility to PUBLIC_OPT_IN when user saves their real phone!
+      const hadPlaceholderPhone =
+        !currentUser?.phone || currentUser.phone === '01700000000';
+      const effectiveVisibility =
+        hadPlaceholderPhone && contactVisibility === 'REQUEST_ONLY'
+          ? 'PUBLIC_OPT_IN'
+          : contactVisibility;
+      const effectiveShareDirect = effectiveVisibility !== 'REQUEST_ONLY';
+
+      const updatedAccount: UserAccount = {
+        id: activeUser.uid,
+        name: cleanName,
+        email:
+          activeUser.email ||
+          currentUser?.email ||
+          `${activeUser.uid.slice(0, 8)}@bloodsearch.bd`,
+        phone: cleanPhone,
+        whatsappPhone: cleanPhone,
+        facebookUrl: currentUser?.facebookUrl || 'https://facebook.com/bloodsearch.bd',
+        bloodGroup: editGroup,
+        division: distObj.divisionId || 'dhaka',
+        district: distObj.id,
+        upazila: finalArea,
+        photoUrl: currentUser?.photoUrl || activeUser.photoURL || DEFAULT_AVATAR_DATA_URI,
+        role: effectiveRole,
+        verifiedStatus: true,
+        idCardNumber: cleanCardId,
+        age: currentUser?.age || 25,
+        gender: currentUser?.gender || 'MALE',
+        weightKg: currentUser?.weightKg || 62,
+        availableToDonate: availabilityStatus === 'AVAILABLE',
+        availabilityStatus,
+        availabilityConfirmedAtMs: Date.now(),
+        shareDirectContact: effectiveShareDirect,
+        contactVisibility: effectiveVisibility,
+        allowCall,
+        allowWhatsApp,
+        allowSms,
+        emergencyAlertsOptIn,
+        alertsPaused,
+        lastDonationDate: currentUser?.lastDonationDate || '',
+        totalDonations: currentUser?.totalDonations || 0,
+        createdAt: currentUser?.createdAt || new Date().toISOString(),
+      };
+
+      const updatedDonor: Donor = {
+        id: activeUser.uid,
+        name: cleanName,
+        bloodGroup: editGroup,
+        division: distObj.divisionId || 'dhaka',
+        district: distObj.id,
+        upazila: finalArea,
+        phone: cleanPhone,
+        whatsappPhone: cleanPhone,
+        available: availabilityStatus === 'AVAILABLE',
+        availabilityStatus,
+        availabilityConfirmedAtMs: Date.now(),
+        shareDirectContact: effectiveShareDirect,
+        contactVisibility: effectiveVisibility,
+        allowCall,
+        allowWhatsApp,
+        allowSms,
+        emergencyAlertsOptIn,
+        alertsPaused,
+        isCloudRecord: true,
+        lastDonatedDate: updatedAccount.lastDonationDate || '',
+        totalDonations: updatedAccount.totalDonations || 0,
+        verifiedBadge: effectiveRole === 'ADMIN',
+        rating: 5.0,
+        reviewsCount: 0,
+        age: updatedAccount.age || 25,
+        gender: updatedAccount.gender || 'MALE',
+        weightKg: updatedAccount.weightKg || 62,
+        hospitalAffiliation:
+          effectiveRole === 'ADMIN'
+            ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
+            : 'স্বেচ্ছাসেবী রক্তদাতা',
+        avatar: updatedAccount.photoUrl,
+      };
+
+      await registerSmartAccountInFirestore({
+        firebaseUser: activeUser,
+        account: updatedAccount,
+        donor: updatedDonor,
+      });
+
+      if (effectiveVisibility !== contactVisibility) {
+        setContactVisibility(effectiveVisibility);
+      }
+      localStorage.setItem('bloodsearch_current_user', JSON.stringify(updatedAccount));
+      setCurrentUser(updatedAccount);
+      window.dispatchEvent(new Event('bloodsearch_user_changed'));
+      setIsQuickEditOpen(false);
+      showToast(
+        lang === 'bn'
+          ? '✓ আপনার নাম, মোবাইল নম্বর ও ঠিকানা সফলভাবে পরিবর্তন হয়েছে!'
+          : '✓ Your name, phone, and address have been updated!'
+      );
+    } catch (err) {
+      console.error('Quick profile update failed:', err);
+      setQuickEditError(
+        lang === 'bn'
+          ? 'তথ্য সেভ করা যায়নি। ইন্টারনেট সংযোগ চেক করে আবার চেষ্টা করুন।'
+          : 'Could not save details. Please check your connection and try again.'
+      );
+    } finally {
+      setIsSavingQuickEdit(false);
+    }
+  };
+
   // Quick Log Completed Donation inside Profile
   const [showLogForm, setShowLogForm] = useState(false);
   const [logDate, setLogDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -236,11 +497,30 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   };
 
   const handleRespondContactReq = async (reqId: string, approve: boolean) => {
+    const validDonorPhone = isValidBangladeshMobilePhone(currentUser?.phone)
+      ? currentUser?.phone
+      : isValidBangladeshMobilePhone(firebaseUser?.phoneNumber)
+      ? firebaseUser?.phoneNumber || undefined
+      : undefined;
+    const validDonorWa = isValidBangladeshMobilePhone(currentUser?.whatsappPhone)
+      ? currentUser?.whatsappPhone
+      : validDonorPhone;
+
+    if (approve && !validDonorPhone) {
+      showToast(
+        lang === 'bn'
+          ? 'নম্বর শেয়ার করার আগে "প্রোফাইল / আইডি আপডেট" বাটনে গিয়ে আপনার সচল মোবাইল নম্বর যুক্ত করুন।'
+          : 'Please add your active mobile number via "Update Smart ID" before approving contact sharing.'
+      );
+      onOpenRegister?.('USER');
+      return;
+    }
+
     const ok = await respondToContactRequestInFirestore({
       contactReqId: reqId,
       approve,
-      donorPhone: currentUser?.phone,
-      donorWhatsApp: currentUser?.whatsappPhone || currentUser?.phone,
+      donorPhone: validDonorPhone,
+      donorWhatsApp: validDonorWa,
     });
     if (ok) {
       showToast(
@@ -285,7 +565,21 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     firebaseUser?.displayName ||
     firebaseUser?.email?.split('@')[0] ||
     (lang === 'bn' ? 'গেস্ট ভিজিটর (লগইন করুন)' : 'Guest Visitor');
-  const displayPhone = currentUser?.phone || firebaseUser?.phoneNumber || '—';
+  const verifiedProfilePhone = isValidBangladeshMobilePhone(currentUser?.phone)
+    ? currentUser!.phone
+    : isValidBangladeshMobilePhone(firebaseUser?.phoneNumber)
+    ? firebaseUser!.phoneNumber!
+    : '';
+  const verifiedWhatsappPhone = isValidBangladeshMobilePhone(currentUser?.whatsappPhone)
+    ? currentUser!.whatsappPhone!
+    : '';
+  const displayPhone =
+    verifiedProfilePhone ||
+    (isLoggedIn
+      ? lang === 'bn'
+        ? 'নম্বর যুক্ত হয়নি'
+        : 'Phone not added'
+      : '—');
   const displayEmail =
     currentUser?.email ||
     firebaseUser?.email ||
@@ -300,8 +594,26 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       ? 'লগইন করলে যুক্ত হবে'
       : 'Sign in to generate');
   const rawDistrict = currentUser?.district || 'dhaka';
-  const displayDistrict =
-    rawDistrict.toLowerCase() === 'dhaka' ? (lang === 'bn' ? 'ঢাকা' : 'Dhaka') : rawDistrict;
+  const matchedProfileDist = DISTRICTS.find(
+    (d) =>
+      d.id === rawDistrict.toLowerCase() ||
+      d.nameBn === rawDistrict ||
+      d.nameEn.toLowerCase() === rawDistrict.toLowerCase()
+  );
+  const displayDistrict = matchedProfileDist
+    ? lang === 'bn'
+      ? matchedProfileDist.nameBn
+      : matchedProfileDist.nameEn
+    : rawDistrict;
+  const displayArea =
+    currentUser?.upazila &&
+    currentUser.upazila !== 'sadar' &&
+    currentUser.upazila !== 'সদর'
+      ? currentUser.upazila
+      : '';
+  const displayFullAddress = displayArea
+    ? `${displayArea}, ${displayDistrict}`
+    : displayDistrict;
   const displayGender =
     currentUser?.gender === 'FEMALE'
       ? lang === 'bn'
@@ -330,7 +642,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       donorName: displayName,
       bloodGroup: displayGroup,
       idCardNumber: displayId,
-      phone: displayPhone,
+      phone: verifiedProfilePhone,
       district: displayDistrict,
       totalDonations: displayDonations,
       isAvailable,
@@ -403,33 +715,26 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono truncate px-2">
           {displayEmail} · {displayPhone}
         </div>
-        <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400 font-mono mt-1">
+        <div className="mt-1 inline-flex items-center justify-center gap-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+          <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+          <span>{displayFullAddress}</span>
+        </div>
+        <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400 font-mono mt-0.5">
           {lang === 'bn' ? 'স্মার্ট কার্ড নং:' : 'Card ID:'} {displayId}
         </div>
 
         {/* WhatsApp & Facebook Links when registered */}
-        {(currentUser?.whatsappPhone || currentUser?.facebookUrl) && (
+        {(verifiedWhatsappPhone || currentUser?.facebookUrl) && (
           <div className="mt-2.5 flex items-center justify-center gap-2 flex-wrap text-xs">
-            {currentUser?.whatsappPhone && (
+            {verifiedWhatsappPhone && (
               <a
-                href={`https://wa.me/${currentUser.whatsappPhone.replace(/[^0-9]/g, '')}`}
+                href={`https://wa.me/${verifiedWhatsappPhone.replace(/[^0-9]/g, '')}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-bold text-[11px]"
               >
                 <MessageCircle className="w-3.5 h-3.5" />
-                <span>WhatsApp: {currentUser.whatsappPhone}</span>
-              </a>
-            )}
-            {currentUser?.facebookUrl && (
-              <a
-                href={currentUser.facebookUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-300 font-bold text-[11px]"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>{lang === 'bn' ? 'ফেসবুক প্রোফাইল' : 'Facebook Profile'}</span>
+                <span>WhatsApp: {verifiedWhatsappPhone}</span>
               </a>
             )}
           </div>
@@ -441,7 +746,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           </div>
         )}
 
-        {/* Primary Profile Actions including Smart ID PNG Download */}
+        {/* Primary Profile Actions including 1-Tap Inline Quick Edit */}
         <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
           {!isLoggedIn && onOpenAuthModal && (
             <button
@@ -450,25 +755,32 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               className="min-h-[44px] px-4 py-2 rounded-xl btn-obsidian text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             >
               <LogIn className="w-3.5 h-3.5 shrink-0" />
-              <span>{lang === 'bn' ? 'Gmail / সিম লগইন করুন' : 'Sign In Now'}</span>
+              <span>{lang === 'bn' ? 'Google লগইন করুন' : 'Sign In Now'}</span>
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={openInlineQuickEdit}
+            className="min-h-[44px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Pencil className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {lang === 'bn'
+                ? 'নাম ও ঠিকানা পরিবর্তন করুন'
+                : 'Edit Name & Address'}
+            </span>
+          </button>
 
           {onOpenRegister && (
             <button
               type="button"
               onClick={() => onOpenRegister('USER')}
-              className="min-h-[44px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[44px] px-3.5 py-2 rounded-xl btn-surface text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             >
               <UserPlus className="w-3.5 h-3.5 shrink-0" />
               <span>
-                {isLoggedIn
-                  ? lang === 'bn'
-                    ? 'প্রোফাইল / আইডি আপডেট'
-                    : 'Update Smart ID'
-                  : lang === 'bn'
-                  ? 'নতুন আইডি রেজিস্ট্রেশন'
-                  : 'Register Smart ID'}
+                {lang === 'bn' ? 'ছবি ও পূর্ণ সেটআপ' : 'Photo & Full Setup'}
               </span>
             </button>
           )}
@@ -512,6 +824,190 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </button>
           )}
         </div>
+
+        {/* Inline 1-Click Quick Profile Editor (Name, Group, Phone, GPS + Custom Area) */}
+        {isQuickEditOpen && (
+          <form
+            onSubmit={handleSaveQuickEdit}
+            className="mt-4 p-4 rounded-2xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 text-left space-y-3"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
+                {lang === 'bn'
+                  ? 'নাম, মোবাইল নম্বর ও ঠিকানা পরিবর্তন করুন'
+                  : 'Edit Name, Phone & Address'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsQuickEditOpen(false)}
+                className="min-h-[32px] min-w-[32px] rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {quickEditError && (
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-200">
+                {quickEditError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {lang === 'bn' ? 'আপনার নাম *' : 'Your Name *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={80}
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder={lang === 'bn' ? 'আপনার নাম লিখুন' : 'Your full name'}
+                  className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {lang === 'bn' ? 'মোবাইল নম্বর *' : 'Mobile Number *'}
+                </label>
+                <input
+                  type="tel"
+                  required
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="017XXXXXXXX"
+                  className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-mono font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                {lang === 'bn' ? 'রক্তের গ্রুপ' : 'Blood Group'}
+              </label>
+              <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                {ALL_BLOOD_GROUPS.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setEditGroup(g)}
+                    className={`min-h-[38px] rounded-xl font-black text-xs cursor-pointer ${
+                      editGroup === g
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200'
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                  {lang === 'bn'
+                    ? 'জেলা ও এলাকার ঠিকানা (GPS অথবা নিজে লিখুন)'
+                    : 'District & Area Address (GPS or Type Freely)'}
+                </label>
+                <button
+                  type="button"
+                  onClick={handleQuickEditGps}
+                  disabled={isLocatingQuickGps}
+                  className="min-h-[34px] px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <LocateFixed className={`w-3 h-3 ${isLocatingQuickGps ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isLocatingQuickGps
+                      ? lang === 'bn'
+                        ? 'GPS নেওয়া হচ্ছে...'
+                        : 'Locating...'
+                      : lang === 'bn'
+                        ? 'আমার GPS নিন'
+                        : 'Use My GPS'}
+                  </span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                <select
+                  value={editDistrict}
+                  onChange={(e) => setEditDistrict(e.target.value)}
+                  className="sm:col-span-5 h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
+                >
+                  {DISTRICTS.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {lang === 'bn' ? d.nameBn : d.nameEn}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  type="text"
+                  maxLength={50}
+                  value={editArea}
+                  onChange={(e) => setEditArea(e.target.value)}
+                  placeholder={
+                    lang === 'bn'
+                      ? 'যেমন: নিকেতন, রোড ৪ / Niketon / ধানমন্ডি...'
+                      : 'e.g. Niketon, Road 4 / Gulshan-1...'
+                  }
+                  className="sm:col-span-7 h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              {editDistrict === 'dhaka' && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {[
+                    lang === 'bn' ? 'নিকেতন, গুলশান-১' : 'Niketon, Gulshan-1',
+                    lang === 'bn' ? 'বনানী' : 'Banani',
+                    lang === 'bn' ? 'ধানমন্ডি' : 'Dhanmondi',
+                    lang === 'bn' ? 'মিরপুর' : 'Mirpur',
+                    lang === 'bn' ? 'উত্তরা' : 'Uttara',
+                    lang === 'bn' ? 'বনশ্রী' : 'Banasree',
+                  ].map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => setEditArea(chip)}
+                      className="min-h-[30px] px-2 py-0.5 rounded-lg bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:border-rose-400 cursor-pointer"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsQuickEditOpen(false)}
+                className="min-h-[42px] px-3.5 py-2 rounded-xl btn-surface text-xs font-bold cursor-pointer whitespace-nowrap"
+              >
+                {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingQuickEdit}
+                className="min-h-[42px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-60"
+              >
+                <Check className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {isSavingQuickEdit
+                    ? lang === 'bn'
+                      ? 'সেভ হচ্ছে...'
+                      : 'Saving...'
+                    : lang === 'bn'
+                      ? 'পরিবর্তন সেভ করুন'
+                      : 'Save Changes'}
+                </span>
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Metric Tiles dynamically bound to real profile (Never shows "0 bags") */}
         <div
@@ -1037,6 +1533,45 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Live OTA App Update & Backward-Compatible APK Manager Card */}
+      <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm space-y-3 text-left">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
+              App Update & Live OTA Sync
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              Installed APKs receive web updates automatically without reinstalling. Older APK versions keep working smoothly when you tap &ldquo;Maybe Later&rdquo;.
+            </p>
+          </div>
+          <span className="text-xs font-mono font-bold text-emerald-700 dark:text-emerald-400">
+            OTA Ready
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(new Event('bloodsearch_manual_update_check'));
+            }}
+            className="min-h-[42px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold cursor-pointer"
+          >
+            Check for App Update
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(new Event('bloodsearch_preview_update_modal'));
+            }}
+            className="min-h-[42px] px-4 py-2 rounded-xl btn-surface text-xs font-bold cursor-pointer"
+          >
+            Preview Update Screen
+          </button>
         </div>
       </div>
 

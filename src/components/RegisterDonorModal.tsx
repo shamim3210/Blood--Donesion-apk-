@@ -9,7 +9,7 @@ import {
 } from '../types';
 import { BrandLogo } from './BrandLogo';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
-import { DIVISIONS, DISTRICTS } from '../data/bangladeshGeo';
+import { DISTRICTS } from '../data/bangladeshGeo';
 import {
   auth,
   onAuthStateChanged,
@@ -19,7 +19,6 @@ import {
   isBootstrappedAdminUser,
   registerSmartAccountInFirestore,
   isUserVerifiedForWrites,
-  normalizeAsciiDigits,
   parseFirebaseAuthError,
   compressAvatarIfNeeded,
   DEFAULT_AVATAR_DATA_URI,
@@ -29,29 +28,23 @@ import {
   isValidBangladeshMobilePhone,
   normalizeValidBangladeshMobileE164,
 } from '../utils/donorMatcher';
-import { copyTextReliable } from '../utils/sosAlertEngine';
+import {
+  requestFreshHighAccuracyGPS,
+  reverseGeocodeBangladeshCoords,
+  getInstantLocalPlaceSuggestions,
+} from '../utils/geolocation';
 import {
   X,
   Check,
-  UserPlus,
   Camera,
-  Upload,
-  QrCode,
-  ShieldCheck,
   CheckCircle2,
   Phone,
   MapPin,
   AlertCircle,
+  LocateFixed,
   KeyRound,
-  Lock,
-  Eye,
-  EyeOff,
-  ChevronRight,
-  ChevronLeft,
-  MessageCircle,
-  Copy,
-  Minus,
-  Plus,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface RegisterDonorModalProps {
@@ -64,28 +57,28 @@ interface RegisterDonorModalProps {
   onNavigateTab?: (tab: any) => void;
 }
 
-const makeAvatarSvg = (bgHex: string, accentHex: string) =>
-  `data:image/svg+xml;utf8,${encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" rx="28" fill="${bgHex}"/><circle cx="60" cy="45" r="21" fill="${accentHex}"/><path d="M25 104c5-20 18-31 35-31s30 11 35 31" fill="${accentHex}"/></svg>`
-  )}`;
-
-const PRESET_AVATARS = [
-  DEFAULT_AVATAR_DATA_URI,
-  makeAvatarSvg('#0f172a', '#f8fafc'),
-  makeAvatarSvg('#059669', '#ecfdf5'),
-  makeAvatarSvg('#1d4ed8', '#eff6ff'),
-  makeAvatarSvg('#b45309', '#fffbeb'),
+const DHAKA_POPULAR_AREAS = [
+  { bn: 'নিকেতন, গুলশান-১', en: 'Niketon, Gulshan-1' },
+  { bn: 'গুলশান-২', en: 'Gulshan-2' },
+  { bn: 'বনানী', en: 'Banani' },
+  { bn: 'ধানমন্ডি', en: 'Dhanmondi' },
+  { bn: 'মিরপুর', en: 'Mirpur' },
+  { bn: 'উত্তরা', en: 'Uttara' },
+  { bn: 'বনশ্রী', en: 'Banasree' },
+  { bn: 'বসুন্ধরা', en: 'Bashundhara' },
+  { bn: 'মোহাম্মদপুর', en: 'Mohammadpur' },
+  { bn: 'মহাখালী', en: 'Mohakhali' },
 ];
 
-const QUICK_CITIES = [
-  { div: 'dhaka', dist: 'dhaka', labelBn: 'ঢাকা', labelEn: 'Dhaka' },
-  { div: 'chattogram', dist: 'chattogram', labelBn: 'চট্টগ্রাম', labelEn: 'Chattogram' },
-  { div: 'sylhet', dist: 'sylhet', labelBn: 'সিলেট', labelEn: 'Sylhet' },
-  { div: 'rajshahi', dist: 'rajshahi', labelBn: 'রাজশাহী', labelEn: 'Rajshahi' },
-  { div: 'khulna', dist: 'khulna', labelBn: 'খুলনা', labelEn: 'Khulna' },
-  { div: 'barishal', dist: 'barishal', labelBn: 'বরিশাল', labelEn: 'Barishal' },
-  { div: 'rangpur', dist: 'rangpur', labelBn: 'রংপুর', labelEn: 'Rangpur' },
-  { div: 'mymensingh', dist: 'mymensingh', labelBn: 'ময়মনসিংহ', labelEn: 'Mymensingh' },
+const QUICK_DISTRICTS = [
+  { id: 'dhaka', bn: 'ঢাকা', en: 'Dhaka' },
+  { id: 'chattogram', bn: 'চট্টগ্রাম', en: 'Chattogram' },
+  { id: 'sylhet', bn: 'সিলেট', en: 'Sylhet' },
+  { id: 'rajshahi', bn: 'রাজশাহী', en: 'Rajshahi' },
+  { id: 'khulna', bn: 'খুলনা', en: 'Khulna' },
+  { id: 'barishal', bn: 'বরিশাল', en: 'Barishal' },
+  { id: 'rangpur', bn: 'রংপুর', en: 'Rangpur' },
+  { id: 'mymensingh', bn: 'ময়মনসিংহ', en: 'Mymensingh' },
 ];
 
 export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
@@ -99,88 +92,67 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Interactive 3-Step Studio State (1, 2, or 3)
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-
-  // Panel Choice: 'USER' (User Panel) vs 'ADMIN' (Admin Panel — Owner-Locked)
-  const [accountRole, setAccountRole] = useState<'USER' | 'ADMIN'>(initialRole);
-  const [adminSecretCode, setAdminSecretCode] = useState('');
-  const [showAdminCodeInput, setShowAdminCodeInput] = useState(false);
-  const [adminError, setAdminError] = useState('');
-
-  // Live Firebase Auth State
   const [firebaseUser, setFirebaseUser] = useState<User | null>(auth.currentUser);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCompressingPhoto, setIsCompressingPhoto] = useState(false);
+  const [isLocatingGps, setIsLocatingGps] = useState(false);
+  const [gpsStatusNote, setGpsStatusNote] = useState<string | null>(null);
 
-  // Form State
+  // Simple 1-screen core fields
   const [name, setName] = useState('');
+  const [bloodGroup, setBloodGroup] = useState<BloodGroup>('O+');
   const [phone, setPhone] = useState('');
-  const [whatsappPhone, setWhatsappPhone] = useState('');
-  const [facebookUrl, setFacebookUrl] = useState('');
-  const [email, setEmail] = useState('');
-  const [bloodGroup, setBloodGroup] = useState<BloodGroup>('B+');
-  const [division, setDivision] = useState('dhaka');
   const [district, setDistrict] = useState('dhaka');
-  const [upazila, setUpazila] = useState('dhanmondi');
-  const [age, setAge] = useState(24);
-  const [gender, setGender] = useState<'MALE' | 'FEMALE' | 'OTHER'>('MALE');
-  const [weightKg, setWeightKg] = useState(62);
+  const [areaAddress, setAreaAddress] = useState('');
+  const [showAreaSuggestions, setShowAreaSuggestions] = useState(false);
   const [available, setAvailable] = useState(true);
-  const [lastDonatedDate, setLastDonatedDate] = useState('');
-  const [contactVisibility, setContactVisibility] = useState<ContactVisibility>('PUBLIC_OPT_IN');
-  const [allowCall, setAllowCall] = useState(true);
-  const [allowWhatsApp, setAllowWhatsApp] = useState(true);
-  const [allowSms, setAllowSms] = useState(true);
-  const [emergencyAlertsOptIn, setEmergencyAlertsOptIn] = useState(true);
+  const [shareDirectContact, setShareDirectContact] = useState(true);
+  const [gender, setGender] = useState<'MALE' | 'FEMALE' | 'OTHER'>('MALE');
+  const [photoUrl, setPhotoUrl] = useState<string>(DEFAULT_AVATAR_DATA_URI);
 
-  // Photo Upload State
-  const [photoUrl, setPhotoUrl] = useState<string>(PRESET_AVATARS[0]);
-  const [photoFileName, setPhotoFileName] = useState<string>('');
+  // Optional Admin Invite Mode (hidden by default unless initialRole === 'ADMIN')
+  const [showAdminInviteBox, setShowAdminInviteBox] = useState(initialRole === 'ADMIN');
+  const [accountRole, setAccountRole] = useState<'USER' | 'ADMIN'>(initialRole);
+  const [adminSecretCode, setAdminSecretCode] = useState('');
 
-  // Generated ID Card Screen
-  const [createdAccount, setCreatedAccount] = useState<UserAccount | null>(null);
-  const [isCopiedId, setIsCopiedId] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [savedAccount, setSavedAccount] = useState<UserAccount | null>(null);
 
   useEffect(() => {
     setAccountRole(initialRole);
+    setShowAdminInviteBox(initialRole === 'ADMIN');
     if (isOpen) {
-      setStep(1);
+      setSavedAccount(null);
       setFormError(null);
-      setAdminError('');
+      setGpsStatusNote(null);
       try {
         const raw = localStorage.getItem('bloodsearch_current_user');
         if (raw) {
           const saved = JSON.parse(raw) as Partial<UserAccount>;
           if (saved.name) setName(saved.name);
-          if (saved.phone && saved.phone !== '01700000000') setPhone(saved.phone);
-          if (saved.whatsappPhone && saved.whatsappPhone !== '01700000000') {
-            setWhatsappPhone(saved.whatsappPhone);
-          }
-          if (
-            saved.facebookUrl &&
-            saved.facebookUrl !== 'https://facebook.com/bloodsearch.bd'
-          ) {
-            setFacebookUrl(saved.facebookUrl);
-          }
-          if (saved.email) setEmail(saved.email);
           if (saved.bloodGroup) setBloodGroup(saved.bloodGroup);
-          if (saved.division) setDivision(saved.division);
-          if (saved.district && saved.district !== 'ঢাকা') setDistrict(saved.district);
-          if (saved.upazila && saved.upazila !== 'সদর') setUpazila(saved.upazila);
-          if (saved.age) setAge(saved.age);
-          if (saved.gender) setGender(saved.gender);
-          if (saved.weightKg) setWeightKg(saved.weightKg);
-          if (typeof saved.availableToDonate === 'boolean') setAvailable(saved.availableToDonate);
-          if (saved.lastDonationDate) setLastDonatedDate(saved.lastDonationDate);
-          if (saved.contactVisibility) setContactVisibility(saved.contactVisibility);
-          if (typeof saved.allowCall === 'boolean') setAllowCall(saved.allowCall);
-          if (typeof saved.allowWhatsApp === 'boolean') setAllowWhatsApp(saved.allowWhatsApp);
-          if (typeof saved.allowSms === 'boolean') setAllowSms(saved.allowSms);
-          if (typeof saved.emergencyAlertsOptIn === 'boolean') {
-            setEmergencyAlertsOptIn(saved.emergencyAlertsOptIn);
+          if (saved.phone && saved.phone !== '01700000000') setPhone(saved.phone);
+          if (saved.district) {
+            const matched = DISTRICTS.find(
+              (d) =>
+                d.id === String(saved.district).toLowerCase() ||
+                d.nameBn === saved.district ||
+                d.nameEn.toLowerCase() === String(saved.district).toLowerCase()
+            );
+            if (matched) setDistrict(matched.id);
           }
+          if (saved.upazila && saved.upazila !== 'sadar' && saved.upazila !== 'সদর') {
+            setAreaAddress(saved.upazila);
+          }
+          if (typeof saved.availableToDonate === 'boolean') {
+            setAvailable(saved.availableToDonate);
+          }
+          if (typeof saved.shareDirectContact === 'boolean') {
+            setShareDirectContact(saved.shareDirectContact);
+          } else if (saved.contactVisibility) {
+            setShareDirectContact(saved.contactVisibility !== 'REQUEST_ONLY');
+          }
+          if (saved.gender) setGender(saved.gender);
           if (saved.photoUrl) setPhotoUrl(saved.photoUrl);
         }
       } catch {}
@@ -192,93 +164,91 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       setFirebaseUser(u);
       if (u) {
         setName((prev) => prev || u.displayName || '');
-        if (u.email) setEmail(u.email);
         if (u.phoneNumber) {
           setPhone((prev) => prev || u.phoneNumber || '');
-          setWhatsappPhone((prev) => prev || u.phoneNumber || '');
         }
         if (u.photoURL) {
-          setPhotoUrl((prev) => (prev === PRESET_AVATARS[0] ? u.photoURL! : prev));
+          setPhotoUrl((prev) => (prev === DEFAULT_AVATAR_DATA_URI ? u.photoURL! : prev));
         }
       }
     });
     return () => unsub();
   }, []);
 
-  const currentDistricts = useMemo(
-    () => DISTRICTS.filter((d) => d.divisionId === division),
-    [division]
-  );
   const selectedDistrictObj = useMemo(
-    () => DISTRICTS.find((d) => d.id === district),
+    () => DISTRICTS.find((d) => d.id === district) || DISTRICTS[0],
     [district]
   );
-  const currentUpazilas = selectedDistrictObj ? selectedDistrictObj.upazilas : [];
 
-  // Live Completion Progress Percentage for Engaging Studio Feel
-  const completionPercent = useMemo(() => {
-    let score = 25; // Role + BloodGroup selected by default
-    if (firebaseUser && isUserVerifiedForWrites(firebaseUser)) score += 20;
-    if (name.trim().length >= 2) score += 15;
-    if (isValidBangladeshMobilePhone(phone)) score += 15;
-    if (isValidBangladeshMobilePhone(whatsappPhone || phone)) score += 10;
-    if (facebookUrl.trim().length >= 5) score += 15;
-    return Math.min(100, score);
-  }, [firebaseUser, name, phone, whatsappPhone, facebookUrl]);
+  // Quick selectable chips: Dhaka gets Niketon + popular neighborhoods; other districts get their real Upazilas
+  const quickAreaChips = useMemo(() => {
+    if (district === 'dhaka') {
+      return DHAKA_POPULAR_AREAS.map((a) => (lang === 'bn' ? a.bn : a.en));
+    }
+    return (selectedDistrictObj?.upazilas || []).map((u) =>
+      lang === 'bn' ? u.nameBn : u.nameEn
+    );
+  }, [district, selectedDistrictObj, lang]);
+
+  // Instant autocomplete while typing custom neighborhood
+  const typedAreaSuggestions = useMemo(() => {
+    const q = areaAddress.trim();
+    if (q.length < 2) return [];
+    return getInstantLocalPlaceSuggestions(q, lang).slice(0, 5);
+  }, [areaAddress, lang]);
 
   if (!isOpen) return null;
 
-  const handleDivisionChange = (newDiv: string) => {
-    setDivision(newDiv);
-    const firstDist = DISTRICTS.find((d) => d.divisionId === newDiv);
-    if (firstDist) {
-      setDistrict(firstDist.id);
-      setUpazila(firstDist.upazilas[0]?.id || '');
-    }
-  };
-
-  const handleDistrictChange = (newDist: string) => {
-    setDistrict(newDist);
-    const dObj = DISTRICTS.find((d) => d.id === newDist);
-    setUpazila(dObj?.upazilas[0]?.id || '');
-  };
-
-  const handleQuickCitySelect = (divId: string, distId: string) => {
-    setDivision(divId);
-    const dObj = DISTRICTS.find((d) => d.id === distId);
-    if (dObj) {
-      setDistrict(dObj.id);
-      setUpazila(dObj.upazilas[0]?.id || '');
+  const handleUseMyGps = async () => {
+    setIsLocatingGps(true);
+    setFormError(null);
+    setGpsStatusNote(null);
+    try {
+      const res = await requestFreshHighAccuracyGPS();
+      if (res.isRealGps) {
+        const rev = await reverseGeocodeBangladeshCoords(res.coords, lang);
+        setDistrict(rev.districtId);
+        setAreaAddress(rev.areaText);
+        setGpsStatusNote(
+          lang === 'bn'
+            ? `GPS থেকে পাওয়া ঠিকানা: ${rev.areaText}, ${rev.districtName} (চাইলে নিচে লিখে পরিবর্তন করতে পারবেন)`
+            : `GPS detected: ${rev.areaText}, ${rev.districtName} (you can edit it below)`
+        );
+      } else {
+        setFormError(
+          lang === 'bn'
+            ? 'ব্রাউজারে GPS অনুমতি বন্ধ আছে। কোনো সমস্যা নেই — নিচে আপনার এলাকার নাম (যেমন: নিকেতন) সরাসরি লিখে দিন।'
+            : 'Browser GPS permission is off. Simply type your area name (e.g. Niketon) in the box below.'
+        );
+      }
+    } finally {
+      setIsLocatingGps(false);
     }
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setPhotoFileName(file.name);
     setIsCompressingPhoto(true);
     const reader = new FileReader();
     reader.onloadend = async () => {
       if (typeof reader.result === 'string') {
-        // Compress immediately so state updates never lag the UI!
-        const fastThumb = await compressAvatarIfNeeded(reader.result);
-        setPhotoUrl(fastThumb);
+        const compressed = await compressAvatarIfNeeded(reader.result);
+        setPhotoUrl(compressed);
       }
       setIsCompressingPhoto(false);
     };
     reader.readAsDataURL(file);
   };
 
-  const handleConnectRealGmail = () => {
-    // Invoke signInWithGoogleReal synchronously inside click handler to prevent popup blocking
-    const popupPromise = signInWithGoogleReal(email);
+  const handleConnectGoogle = () => {
+    const popupPromise = signInWithGoogleReal();
     setFormError(null);
     popupPromise
       .then((u) => {
         setFirebaseUser(u);
-        if (u.displayName && !name) setName(u.displayName);
-        if (u.email) setEmail(u.email);
-        if (u.photoURL && photoUrl === PRESET_AVATARS[0]) setPhotoUrl(u.photoURL);
+        if (u.displayName && !name.trim()) setName(u.displayName);
+        if (u.photoURL && photoUrl === DEFAULT_AVATAR_DATA_URI) setPhotoUrl(u.photoURL);
       })
       .catch((err: any) => {
         const parsed = parseFirebaseAuthError(err);
@@ -286,118 +256,55 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       });
   };
 
-  const validateAndGoStep = (targetStep: 1 | 2 | 3) => {
-    setFormError(null);
-    setAdminError('');
-
-    if (targetStep > 1 && accountRole === 'ADMIN') {
-      const isSuperOwner = isBootstrappedAdminUser(firebaseUser);
-      if (!isSuperOwner) {
-        const check = computeAdminProofHashSync(adminSecretCode);
-        if (!check.wellFormed) {
-          setStep(1);
-          setAdminError(
-            lang === 'bn'
-              ? 'অ্যাপ ওনারের প্রদানকৃত কমপক্ষে ৬ অক্ষরের অ্যাডমিন ইনভাইট কোড দিন অথবা ইউজার প্যানেল বেছে নিন।'
-              : 'Enter the Owner-issued Admin Invite Code (min 6 chars) or choose User Panel.'
-          );
-          return;
-        }
-      }
-    }
-
-    if (targetStep === 3) {
-      const normalizedPhone = normalizeValidBangladeshMobileE164(phone);
-      const normalizedWa = normalizeValidBangladeshMobileE164(whatsappPhone || phone);
-
-      if (name.trim().length < 2) {
-        setStep(2);
-        setFormError(
-          lang === 'bn'
-            ? 'অনুগ্রহ করে আপনার পূর্ণ নাম লিখুন।'
-            : 'Please enter your full name.'
-        );
-        return;
-      }
-      if (!normalizedPhone || !isValidBangladeshMobilePhone(phone)) {
-        setStep(2);
-        setFormError(
-          lang === 'bn'
-            ? 'সঠিক ১১ ডিজিটের সচল বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
-            : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
-        );
-        return;
-      }
-      if (!normalizedWa) {
-        setStep(2);
-        setFormError(
-          lang === 'bn'
-            ? 'সঠিক ১১ ডিজিটের হোয়াটসঅ্যাপ নম্বর দিন অথবা খালি রাখুন।'
-            : 'Please provide a valid 11-digit WhatsApp number or leave it blank.'
-        );
-        return;
-      }
-    }
-
-    setStep(targetStep);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
-    setAdminError('');
+
+    const cleanName = name.trim();
+    if (cleanName.length < 2) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার নাম লিখুন।'
+          : 'Please enter your name.'
+      );
+      return;
+    }
 
     const cleanPhone = normalizeValidBangladeshMobileE164(phone);
-    const cleanWa = normalizeValidBangladeshMobileE164(whatsappPhone || phone);
-    const fb = facebookUrl.trim();
+    if (!cleanPhone || !isValidBangladeshMobilePhone(phone)) {
+      setFormError(
+        lang === 'bn'
+          ? 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).'
+      );
+      return;
+    }
 
-    // SYNCHRONOUS FORMAT CHECK (Zero `await` before signInWithGoogleReal so popup is NEVER blocked!)
     if (accountRole === 'ADMIN' && !isBootstrappedAdminUser(auth.currentUser)) {
       const check = computeAdminProofHashSync(adminSecretCode);
-      if (!check.wellFormed && adminSecretCode.trim().length > 0) {
-        setStep(1);
-        setAdminError(
+      if (!check.wellFormed) {
+        setFormError(
           lang === 'bn'
-            ? 'ভুল গোপন কোড! শুধুমাত্র অ্যাপ ওনারের অনুমোদিত গোপন কোড দিলেই অ্যাডমিন প্যানেল আইডি তৈরি করা যাবে।'
-            : 'Invalid Secret Code! Only Owner-issued invite codes can create an Admin Panel ID.'
+            ? 'সঠিক অ্যাডমিন ইনভাইট কোড দিন অথবা সাধারণ ডোনার হিসেবে সেভ করুন।'
+            : 'Enter a valid Admin Invite Code or switch back to Regular Donor.'
         );
         return;
       }
     }
 
-    if (name.trim().length < 2 || !cleanPhone || !isValidBangladeshMobilePhone(phone)) {
-      setStep(2);
-      setFormError(
-        lang === 'bn'
-          ? 'অনুগ্রহ করে আপনার পূর্ণ নাম এবং সঠিক ১১ ডিজিটের বাংলাদেশি মোবাইল নম্বর (017XXXXXXXX) প্রদান করুন।'
-          : 'Please provide your full name and a valid 11-digit Bangladesh mobile number.'
-      );
-      return;
-    }
-
-    if (!cleanWa) {
-      setStep(2);
-      setFormError(
-        lang === 'bn'
-          ? 'সঠিক ১১ ডিজিটের হোয়াটসঅ্যাপ নম্বর দিন।'
-          : 'Please provide a valid 11-digit WhatsApp number.'
-      );
-      return;
-    }
-
-    // Start Google OAuth popup SYNCHRONOUSLY if user isn't signed in yet
+    // Start Google popup synchronously BEFORE any await if user is not signed in yet
     let pendingAuthPromise: Promise<User> | null = null;
     if (!auth.currentUser || !isUserVerifiedForWrites(auth.currentUser)) {
-      pendingAuthPromise = signInWithGoogleReal(email);
+      pendingAuthPromise = signInWithGoogleReal();
     }
 
     setIsSubmitting(true);
     try {
-      let activeFirebaseUser = auth.currentUser;
+      let activeUser = auth.currentUser;
       if (pendingAuthPromise) {
         try {
-          activeFirebaseUser = await pendingAuthPromise;
-          setFirebaseUser(activeFirebaseUser);
+          activeUser = await pendingAuthPromise;
+          setFirebaseUser(activeUser);
         } catch (authErr: any) {
           const parsed = parseFirebaseAuthError(authErr);
           setFormError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
@@ -406,21 +313,19 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         }
       }
 
-      if (!activeFirebaseUser) {
+      if (!activeUser) {
         setIsSubmitting(false);
         return;
       }
 
-      // Server-Side Cloud Vault Verification for ADMIN role (Super Owner passes automatically!)
       let verifiedProofHash = '';
       if (accountRole === 'ADMIN') {
-        const cloudCheck = await verifyAdminInviteCodeInCloud(adminSecretCode, activeFirebaseUser);
+        const cloudCheck = await verifyAdminInviteCodeInCloud(adminSecretCode, activeUser);
         if (!cloudCheck.valid || !cloudCheck.proofHash) {
-          setStep(1);
-          setAdminError(
+          setFormError(
             lang === 'bn'
-              ? 'অ্যাডমিন প্যানেল ওনার লক দ্বারা সুরক্ষিত! শুধুমাত্র অ্যাপ ওনার (shamimrakib015@gmail.com) অথবা তাঁর দেওয়া সক্রিয় ইনভাইট কোড দিয়েই অ্যাডমিন আইডি খোলা যাবে।'
-              : 'Admin Panel is Owner-Locked! Only the verified App Owner or an active Owner-issued Invite Code can register an Admin ID.'
+              ? 'অ্যাডমিন কোডটি সঠিক নয়। সাধারণ ডোনার হিসেবে প্রোফাইল সেভ করতে অ্যাডমিন অপশন বন্ধ করুন।'
+              : 'Invalid Admin Code. Turn off Admin mode to save your regular donor profile.'
           );
           setIsSubmitting(false);
           return;
@@ -432,1187 +337,648 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       try {
         const raw = localStorage.getItem('bloodsearch_current_user');
         if (raw) {
-          const p = JSON.parse(raw);
-          if (p && p.id === activeFirebaseUser.uid) existingSaved = p;
+          const parsed = JSON.parse(raw);
+          if (parsed && (!parsed.id || parsed.id === activeUser.uid)) {
+            existingSaved = parsed;
+          }
         }
       } catch {}
 
-      const randomSerial = Math.floor(1000 + Math.random() * 9000);
-      const keepExistingId =
+      const isSuperOwner = isBootstrappedAdminUser(activeUser);
+      const effectiveRole: 'USER' | 'ADMIN' =
+        accountRole === 'ADMIN' || existingSaved?.role === 'ADMIN' || isSuperOwner
+          ? 'ADMIN'
+          : 'USER';
+
+      const uidShort =
+        activeUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
+      const defaultCardId =
+        effectiveRole === 'ADMIN' ? `ADMIN-BD-${uidShort}` : `BS-${uidShort}`;
+      const cleanExistingCardId =
         existingSaved?.idCardNumber &&
-        !existingSaved.idCardNumber.startsWith('BD-AUTO-') &&
-        (accountRole === 'ADMIN'
-          ? existingSaved.idCardNumber.startsWith('ADMIN-')
-          : !existingSaved.idCardNumber.startsWith('ADMIN-'));
+        /^[a-zA-Z0-9+-]{5,40}$/.test(existingSaved.idCardNumber)
+          ? existingSaved.idCardNumber
+          : defaultCardId;
 
-      const generatedId = keepExistingId
-        ? existingSaved!.idCardNumber!
-        : accountRole === 'ADMIN'
-          ? `ADMIN-BD-${new Date().getFullYear()}-${randomSerial}`
-          : `USER-BD-${new Date().getFullYear()}-${randomSerial}`;
+      const resolvedDivision = selectedDistrictObj?.divisionId || 'dhaka';
+      const resolvedArea = (
+        areaAddress.trim() ||
+        (lang === 'bn' ? selectedDistrictObj.nameBn : selectedDistrictObj.nameEn) ||
+        'Dhaka'
+      ).slice(0, 50);
 
-      const normalizedFb =
-        fb.length >= 5
-          ? fb.startsWith('http')
-            ? fb
-            : `https://${fb}`
-          : existingSaved?.facebookUrl || 'https://facebook.com/bloodsearch.bd';
-
-      const availabilityStatus: DonorAvailabilityStatus = available
+      const resolvedStatus: DonorAvailabilityStatus = available
         ? 'AVAILABLE'
         : 'TEMPORARILY_UNAVAILABLE';
-      const shareDirectContact = contactVisibility !== 'REQUEST_ONLY';
-      const preservedDonations = Math.max(
-        existingSaved?.totalDonations || 0,
-        lastDonatedDate ? 1 : 0
-      );
+      const resolvedVisibility: ContactVisibility = shareDirectContact
+        ? 'PUBLIC_OPT_IN'
+        : 'REQUEST_ONLY';
+      const nowMs = Date.now();
 
-      const newAccount: UserAccount = {
-        id: activeFirebaseUser.uid,
-        name: name.trim(),
+      const accountRecord: UserAccount = {
+        id: activeUser.uid,
+        name: cleanName,
         email:
-          activeFirebaseUser.email ||
-          email.trim() ||
-          `${activeFirebaseUser.uid.slice(0, 8)}@bloodsearch.bd`,
+          activeUser.email ||
+          existingSaved?.email ||
+          `${activeUser.uid.slice(0, 8)}@bloodsearch.bd`,
         phone: cleanPhone,
-        whatsappPhone: cleanWa,
-        facebookUrl: normalizedFb,
+        whatsappPhone: cleanPhone,
+        facebookUrl: existingSaved?.facebookUrl || 'https://facebook.com/bloodsearch.bd',
         bloodGroup,
-        division,
+        division: resolvedDivision,
         district,
-        upazila,
-        photoUrl,
-        role: accountRole,
+        upazila: resolvedArea,
+        photoUrl: photoUrl || DEFAULT_AVATAR_DATA_URI,
+        role: effectiveRole,
         verifiedStatus: true,
-        idCardNumber: generatedId,
-        age: Number(age) || 24,
+        idCardNumber: cleanExistingCardId,
+        age: existingSaved?.age || 25,
         gender,
-        weightKg: Number(weightKg) || 62,
+        weightKg: existingSaved?.weightKg || 62,
         availableToDonate: available,
-        availabilityStatus,
-        availabilityConfirmedAtMs: Date.now(),
+        availabilityStatus: resolvedStatus,
+        availabilityConfirmedAtMs: nowMs,
         shareDirectContact,
-        contactVisibility,
-        allowCall,
-        allowWhatsApp,
-        allowSms,
-        emergencyAlertsOptIn,
-        alertsPaused: false,
-        lastDonationDate: lastDonatedDate || undefined,
-        totalDonations: preservedDonations,
+        contactVisibility: resolvedVisibility,
+        allowCall: true,
+        allowWhatsApp: true,
+        allowSms: true,
+        emergencyAlertsOptIn: existingSaved?.emergencyAlertsOptIn !== false,
+        alertsPaused: existingSaved?.alertsPaused === true,
+        lastDonationDate: existingSaved?.lastDonationDate || '',
+        totalDonations: existingSaved?.totalDonations || 0,
         createdAt: existingSaved?.createdAt || new Date().toISOString(),
       };
 
-      const newDonor: Donor = {
-        id: activeFirebaseUser.uid,
-        name: name.trim(),
+      const donorRecord: Donor = {
+        id: activeUser.uid,
+        name: cleanName,
         bloodGroup,
-        division,
+        division: resolvedDivision,
         district,
-        upazila,
+        upazila: resolvedArea,
         phone: cleanPhone,
-        whatsappPhone: cleanWa,
-        facebookUrl: normalizedFb,
+        whatsappPhone: cleanPhone,
         available,
-        availabilityStatus,
-        availabilityConfirmedAtMs: Date.now(),
+        availabilityStatus: resolvedStatus,
+        availabilityConfirmedAtMs: nowMs,
         shareDirectContact,
-        contactVisibility,
-        allowCall,
-        allowWhatsApp,
-        allowSms,
-        emergencyAlertsOptIn,
-        alertsPaused: false,
-        lastDonatedDate: lastDonatedDate || '',
-        totalDonations: preservedDonations,
-        verifiedBadge: accountRole === 'ADMIN',
+        contactVisibility: resolvedVisibility,
+        allowCall: true,
+        allowWhatsApp: true,
+        allowSms: true,
+        emergencyAlertsOptIn: accountRecord.emergencyAlertsOptIn,
+        alertsPaused: accountRecord.alertsPaused,
+        isCloudRecord: true,
+        lastDonatedDate: accountRecord.lastDonationDate || '',
+        totalDonations: accountRecord.totalDonations || 0,
+        verifiedBadge: effectiveRole === 'ADMIN',
         rating: 5.0,
         reviewsCount: 0,
-        age: Number(age) || 24,
+        age: accountRecord.age || 25,
         gender,
-        weightKg: Number(weightKg) || 62,
+        weightKg: accountRecord.weightKg || 62,
         hospitalAffiliation:
-          accountRole === 'ADMIN' ? 'জেলা রক্ত সমন্বয়ক ও অ্যাডমিন' : 'স্বেচ্ছাসেবী রক্তদাতা',
-        bio: 'জরুরি প্রয়োজনে রক্তদানে প্রস্তুত আছি।',
-        avatar: photoUrl,
-        reliabilityScore: 99,
+          effectiveRole === 'ADMIN'
+            ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
+            : 'স্বেচ্ছাসেবী রক্তদাতা',
+        avatar: accountRecord.photoUrl,
       };
 
       await registerSmartAccountInFirestore({
-        firebaseUser: activeFirebaseUser,
-        account: newAccount,
-        donor: newDonor,
-        adminProofHash: accountRole === 'ADMIN' ? verifiedProofHash : undefined,
+        firebaseUser: activeUser,
+        account: accountRecord,
+        donor: donorRecord,
+        adminProofHash: verifiedProofHash || undefined,
       });
 
-      localStorage.setItem('bloodsearch_current_user', JSON.stringify(newAccount));
+      localStorage.setItem('bloodsearch_current_user', JSON.stringify(accountRecord));
       window.dispatchEvent(new Event('bloodsearch_user_changed'));
 
-      onRegisterDonor(newDonor, newAccount);
+      onRegisterDonor(donorRecord, accountRecord);
       onLogAudit(
-        accountRole === 'ADMIN' ? 'STATUS_CHANGE' : 'DONOR_REGISTERED',
-        `${accountRole === 'ADMIN' ? 'ADMIN PANEL ID' : 'USER PANEL ID'} Registered in Firestore: ${newAccount.name} (${generatedId})`
+        'REGISTER_DONOR',
+        `Saved profile for ${cleanName} (${bloodGroup}, ${resolvedArea}, ${district})`
       );
-      setCreatedAccount(newAccount);
+      setSavedAccount(accountRecord);
     } catch (err: any) {
+      console.error('Profile save error:', err);
       setFormError(
         lang === 'bn'
-          ? 'প্রোফাইল সংরক্ষণ করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।'
-          : 'Could not save profile right now. Please try again.'
+          ? 'প্রোফাইল সেভ করতে সমস্যা হয়েছে। ইন্টারনেট সংযোগ চেক করে আবার "প্রোফাইল সেভ করুন" চাপুন।'
+          : 'Could not save profile right now. Please check your connection and try again.'
       );
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleCopyCardId = async () => {
-    if (createdAccount) {
-      const ok = await copyTextReliable(createdAccount.idCardNumber);
-      if (ok) {
-        setIsCopiedId(true);
-        setTimeout(() => setIsCopiedId(false), 2000);
-      }
-    }
-  };
-
-  const handleClose = () => {
-    setCreatedAccount(null);
-    onClose();
-  };
-
-  const previewDistrictName = selectedDistrictObj
-    ? lang === 'bn'
-      ? selectedDistrictObj.nameBn
-      : selectedDistrictObj.nameEn
-    : district;
-  const previewUpazilaObj = currentUpazilas.find((u) => u.id === upazila);
-  const previewUpazilaName = previewUpazilaObj
-    ? lang === 'bn'
-      ? previewUpazilaObj.nameBn
-      : previewUpazilaObj.nameEn
-    : upazila;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain">
-      <div className="w-full max-w-xl my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white p-4 sm:p-6 shadow-2xl border border-slate-300 dark:border-slate-700 text-left">
-        {/* Top Modal Header */}
-        <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3 min-w-0">
-            <BrandLogo variant="mark" size="md" />
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain"
+      onClick={() => showAreaSuggestions && setShowAreaSuggestions(false)}
+    >
+      <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#111827] text-slate-900 dark:text-white p-4 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800 text-left">
+        {/* Clean Header */}
+        <div className="flex items-center justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-800">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <BrandLogo size="sm" />
             <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white leading-snug">
-                {createdAccount
-                  ? lang === 'bn'
-                    ? 'ডিজিটাল রক্তদাতা স্মার্ট কার্ড'
-                    : 'Digital Donor Smart Card'
-                  : lang === 'bn'
-                  ? 'রক্তদাতা নিবন্ধন ও প্রোফাইল'
-                  : 'Donor Registration & Profile'}
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+              <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
                 {lang === 'bn'
-                  ? 'সহজ ৩টি ধাপে আপনার ভেরিফাইড ডোনার কার্ড তৈরি করুন'
-                  : 'Create your verified donor profile in 3 quick steps'}
+                  ? 'ডোনার প্রোফাইল ও ঠিকানা সেটআপ'
+                  : 'Donor Profile & Address Setup'}
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                {lang === 'bn'
+                  ? 'সহজ ১-ধাপে নাম, গ্রুপ ও আপনার এলাকার ঠিকানা সেভ করুন'
+                  : 'Save your name, blood group & exact neighborhood in one simple step'}
               </p>
             </div>
           </div>
 
           <button
-            onClick={handleClose}
-            className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer shrink-0"
+            type="button"
+            onClick={onClose}
+            className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+            aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* ================================================================= */}
-        {/* 1. GENERATED SMART ID CARD VIEW (SUCCESS SCREEN)                  */}
-        {/* ================================================================= */}
-        {createdAccount ? (
-          <div className="py-4 space-y-4">
-            <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-black shrink-0">
-                <Check className="w-5 h-5 stroke-[3]" />
-              </div>
-              <div className="text-xs min-w-0">
-                <h4 className="font-bold text-emerald-900 dark:text-emerald-200">
-                  {createdAccount.role === 'ADMIN'
-                    ? lang === 'bn'
-                      ? 'অ্যাডমিন প্যানেল স্মার্ট আইডি সফলভাবে তৈরি হয়েছে!'
-                      : 'Admin Panel Smart ID Created & Saved!'
-                    : lang === 'bn'
-                    ? 'ইউজার প্যানেল স্মার্ট আইডি সফলভাবে তৈরি হয়েছে!'
-                    : 'User Panel Smart ID Created & Saved!'}
-                </h4>
-                <p className="text-emerald-700 dark:text-emerald-300 text-[11px] mt-0.5 truncate">
-                  {createdAccount.email} · WhatsApp ও লাইভ চ্যাট চালু হয়েছে
-                </p>
-              </div>
+        {savedAccount ? (
+          /* Clean Success Confirmation Screen */
+          <div className="pt-5 space-y-4 text-center">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
+              <CheckCircle2 className="w-7 h-7" />
             </div>
 
-            {/* Digital Smart Card */}
-            <div
-              className={`w-full rounded-3xl text-white p-5 shadow-xl relative overflow-hidden ${
-                createdAccount.role === 'ADMIN'
-                  ? 'bg-[#1c1917] border-2 border-amber-500/70'
-                  : 'bg-[#0f172a] border-2 border-rose-500/60'
-              }`}
-            >
-              <div className="absolute top-2 right-2 p-2 opacity-10 pointer-events-none text-white">
-                <QrCode className="w-24 h-24" />
-              </div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-black text-slate-900 dark:text-white">
+                {lang === 'bn'
+                  ? 'আপনার প্রোফাইল সফলভাবে সেভ হয়েছে!'
+                  : 'Your Profile Has Been Saved!'}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {lang === 'bn'
+                  ? 'আপনার নতুন নাম, রক্তের গ্রুপ এবং ঠিকানা সাথে সাথে আপডেট হয়ে গেছে।'
+                  : 'Your updated name, blood group, and address are now live.'}
+              </p>
+            </div>
 
-              <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-700/80 relative z-10">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <BrandLogo variant="mark" size="xs" />
-                  <div className="min-w-0">
-                    <span
-                      className={`text-[10px] uppercase font-bold tracking-wider block ${
-                        createdAccount.role === 'ADMIN' ? 'text-amber-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {createdAccount.role === 'ADMIN'
-                        ? 'BLOODSEARCH BANGLADESH · ADMIN'
-                        : 'BLOODSEARCH BANGLADESH · MEMBER'}
-                    </span>
-                    <span className="text-xs font-bold text-slate-200 block truncate">
-                      {createdAccount.role === 'ADMIN'
-                        ? 'অফিসিয়াল অ্যাডমিন প্যানেল ও সমন্বয়ক কার্ড'
-                        : 'জাতীয় ডিজিটাল রক্তদাতা ও ইউজার স্মার্ট কার্ড'}
-                    </span>
-                  </div>
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 flex items-center gap-3.5 text-left">
+              <img
+                src={savedAccount.photoUrl || DEFAULT_AVATAR_DATA_URI}
+                alt={savedAccount.name}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
+                }}
+                className="w-14 h-14 rounded-2xl object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-black text-sm sm:text-base text-slate-900 dark:text-white truncate">
+                    {savedAccount.name}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-lg bg-rose-600 text-white font-black text-xs shrink-0">
+                    {savedAccount.bloodGroup}
+                  </span>
                 </div>
-
-                <span className="text-[11px] font-black text-emerald-400 shrink-0">
-                  ✓ VERIFIED
-                </span>
-              </div>
-
-              <div className="py-4 flex flex-col sm:flex-row items-center sm:items-start gap-4 relative z-10">
-                <div
-                  className={`w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden ring-2 shrink-0 bg-slate-800 ${
-                    createdAccount.role === 'ADMIN' ? 'ring-amber-400' : 'ring-rose-500'
-                  }`}
-                >
-                  <img
-                    src={createdAccount.photoUrl}
-                    alt={createdAccount.name}
-                    className="w-full h-full object-cover"
-                  />
+                <div className="text-xs text-slate-600 dark:text-slate-300 mt-1 flex items-center gap-1 truncate">
+                  <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span className="truncate">
+                    {savedAccount.upazila},{' '}
+                    {lang === 'bn'
+                      ? selectedDistrictObj.nameBn
+                      : selectedDistrictObj.nameEn}
+                  </span>
                 </div>
-
-                <div className="flex-1 min-w-0 text-center sm:text-left space-y-1.5 w-full">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
-                    <h3 className="text-lg font-black text-white truncate">{createdAccount.name}</h3>
-                    <span
-                      className={`inline-flex self-center sm:self-auto items-center px-3 py-1 rounded-xl text-white font-black text-sm ${
-                        createdAccount.role === 'ADMIN' ? 'bg-amber-600' : 'bg-rose-600'
-                      }`}
-                    >
-                      {createdAccount.bloodGroup}
-                    </span>
-                  </div>
-
-                  <div className="text-xs text-slate-300 font-mono flex items-center justify-center sm:justify-start gap-1.5">
-                    <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span>{createdAccount.phone}</span>
-                  </div>
-
-                  <div className="text-xs text-slate-300 flex items-center justify-center sm:justify-start gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                    <span className="capitalize truncate">
-                      {createdAccount.upazila}, {createdAccount.district}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-center sm:justify-start gap-3 pt-1 flex-wrap text-[11px] text-slate-300">
-                    {createdAccount.whatsappPhone && (
-                      <a
-                        href={`https://wa.me/${createdAccount.whatsappPhone.replace(/[^0-9]/g, '')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-emerald-400 hover:underline font-bold"
-                      >
-                        WhatsApp: {createdAccount.whatsappPhone}
-                      </a>
-                    )}
-                    {createdAccount.facebookUrl && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <a
-                          href={createdAccount.facebookUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-sky-400 hover:underline font-bold"
-                        >
-                          Facebook Profile ↗
-                        </a>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="pt-2 flex items-center justify-between text-[11px] text-slate-400 font-mono border-t border-slate-800">
-                    <span>
-                      ID:{' '}
-                      <strong
-                        className={createdAccount.role === 'ADMIN' ? 'text-amber-300' : 'text-white'}
-                      >
-                        {createdAccount.idCardNumber}
-                      </strong>
-                    </span>
-                    <span className="text-emerald-400 font-bold">
-                      {lang === 'bn' ? 'সক্রিয় সদস্য' : 'Verified Member'}
-                    </span>
-                  </div>
+                <div className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-0.5">
+                  {savedAccount.phone}
                 </div>
               </div>
             </div>
 
-            {/* Action Buttons After Creation */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+            <div className="flex items-center gap-2.5 pt-1">
               <button
                 type="button"
-                onClick={handleCopyCardId}
-                className="py-3 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer border border-slate-300 dark:border-slate-700"
+                onClick={() => {
+                  onClose();
+                  onNavigateTab?.('profile');
+                }}
+                className="flex-1 min-h-[46px] px-4 py-2.5 rounded-xl btn-crimson font-bold text-xs sm:text-sm cursor-pointer whitespace-nowrap"
               >
-                {isCopiedId ? (
-                  <Check className="w-4 h-4 text-emerald-500" />
-                ) : (
-                  <Copy className="w-4 h-4 text-slate-500" />
-                )}
-                <span>{isCopiedId ? 'কপি হয়েছে!' : 'আইডি কপি'}</span>
+                {lang === 'bn' ? 'প্রোফাইল দেখুন' : 'View Profile'}
               </button>
-
-              {onNavigateTab && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleClose();
-                    onNavigateTab('chat');
-                  }}
-                  className="py-3 px-4 rounded-xl bg-[#075e54] hover:bg-[#064e46] text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
-                >
-                  <MessageCircle className="w-4 h-4" />
-                  <span>{lang === 'bn' ? 'লাইভ চ্যাটে যান' : 'Open Live Chat'}</span>
-                </button>
-              )}
-
-              {createdAccount.role === 'ADMIN' && onNavigateTab ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleClose();
-                    onNavigateTab('admin');
-                  }}
-                  className="py-3 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>{lang === 'bn' ? 'অ্যাডমিন প্যানেল →' : 'Admin Panel →'}</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleClose}
-                  className="py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
-                >
-                  <span>{lang === 'bn' ? 'হোমে ফিরে যান' : 'Done'}</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="min-h-[46px] px-4 py-2.5 rounded-xl btn-surface font-bold text-xs sm:text-sm cursor-pointer whitespace-nowrap"
+              >
+                {lang === 'bn' ? 'বন্ধ করুন' : 'Done'}
+              </button>
             </div>
           </div>
         ) : (
-          /* ================================================================= */
-          /* 2. INTERACTIVE 3-STEP SMART ID STUDIO                             */
-          /* ================================================================= */
-          <form onSubmit={handleSubmit} className="pt-3.5 space-y-3.5">
-            {/* LIVE REAL-TIME MINI SMART ID PREVIEW */}
-            <div
-              className={`rounded-2xl p-3.5 text-white transition-colors border ${
-                accountRole === 'ADMIN'
-                  ? 'bg-[#1c1917] border-amber-500/60'
-                  : 'bg-[#0f172a] border-slate-700'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2 text-[11px] pb-2 mb-2.5 border-b border-white/10">
-                <div className="flex items-center gap-2 min-w-0">
-                  <BrandLogo variant="mark" size="xs" />
-                  <span className="font-bold text-slate-200 truncate">
-                    {accountRole === 'ADMIN'
-                      ? lang === 'bn'
-                        ? 'লাইভ প্রিভিউ · অ্যাডমিন স্মার্ট কার্ড'
-                        : 'Live Preview · Admin Smart Card'
-                      : lang === 'bn'
-                      ? 'লাইভ প্রিভিউ · ইউজার স্মার্ট কার্ড'
-                      : 'Live Preview · User Smart Card'}
-                  </span>
+          /* Single Easy 1-Screen Form */
+          <form onSubmit={handleSubmit} className="pt-4 space-y-4">
+            {/* Google Sign-In Status Bar (Only prominent if not signed in yet) */}
+            {!firebaseUser ? (
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2.5">
+                <div className="text-xs text-slate-700 dark:text-slate-300">
+                  {lang === 'bn'
+                    ? 'প্রোফাইল স্থায়ীভাবে সেভ করতে Google দিয়ে যুক্ত হোন:'
+                    : 'Connect Google once to save your profile across devices:'}
                 </div>
-                <span className="font-mono font-bold text-emerald-400 shrink-0">
-                  {completionPercent}% {lang === 'bn' ? 'সম্পন্ন' : 'Ready'}
-                </span>
+                <button
+                  type="button"
+                  onClick={handleConnectGoogle}
+                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-obsidian text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  {lang === 'bn' ? 'Google লগইন' : 'Google Sign-In'}
+                </button>
               </div>
-
-              <div className="flex items-center gap-3">
-                <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-slate-800 ring-2 ring-white/20 shrink-0">
-                  <img src={photoUrl} alt="Preview" className="w-full h-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    title="ছবি পরিবর্তন করুন"
-                    className="absolute inset-0 bg-black/35 hover:bg-black/55 flex items-center justify-center text-white opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
-                  >
-                    <Camera className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-black text-sm text-white truncate">
-                      {name.trim() || (lang === 'bn' ? 'আপনার নাম এখানে দেখাবে' : 'Your Full Name')}
-                    </div>
-                    <span
-                      className={`px-2.5 py-0.5 rounded-lg font-black text-xs text-white shrink-0 ${
-                        accountRole === 'ADMIN' ? 'bg-amber-600' : 'bg-rose-600'
-                      }`}
-                    >
-                      {bloodGroup}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-slate-300 mt-1 flex items-center gap-2 truncate">
-                    <span className="font-mono">
-                      {phone.trim() || '01XXXXXXXXX'}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="truncate">
-                      {previewUpazilaName}, {previewDistrictName}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Smooth Progress Bar */}
-              <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden mt-3">
-                <div
-                  className={`h-full transition-all duration-300 ${
-                    accountRole === 'ADMIN' ? 'bg-amber-500' : 'bg-emerald-500'
-                  }`}
-                  style={{ width: `${completionPercent}%` }}
-                />
-              </div>
-            </div>
-
-            {/* INTERACTIVE 3-STEP SEGMENTED TABS */}
-            <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                className={`py-2 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer truncate ${
-                  step === 1
-                    ? 'bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {lang === 'bn' ? '১. প্যানেল ও রক্ত' : '1. Role & Group'}
-              </button>
-              <button
-                type="button"
-                onClick={() => validateAndGoStep(2)}
-                className={`py-2 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer truncate ${
-                  step === 2
-                    ? 'bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {lang === 'bn' ? '২. নাম ও WhatsApp' : '2. Contact & WA'}
-              </button>
-              <button
-                type="button"
-                onClick={() => validateAndGoStep(3)}
-                className={`py-2 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer truncate ${
-                  step === 3
-                    ? 'bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {lang === 'bn' ? '৩. ঠিকানা ও সম্পন্ন' : '3. Area & Finish'}
-              </button>
-            </div>
-
-            {/* Hidden File Input (Shared across steps & preview) */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              onChange={handlePhotoUpload}
-              className="hidden"
-            />
+            ) : null}
 
             {formError && (
-              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
+              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 flex items-start gap-2.5 text-xs font-semibold text-rose-800 dark:text-rose-200">
+                <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                 <span>{formError}</span>
               </div>
             )}
 
-            {/* =============================================================== */}
-            {/* STEP 1: PANEL CHOICE, GOOGLE FAST-FILL, BLOOD GROUP & PHOTO     */}
-            {/* =============================================================== */}
-            {step === 1 && (
-              <div className="space-y-3.5 max-h-[52vh] overflow-y-auto pr-0.5 app-scroll-smooth">
-                {/* 1A: User Panel vs Admin Panel */}
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAccountRole('USER');
-                      setAdminError('');
-                    }}
-                    className={`p-3 rounded-2xl border-2 text-left transition-colors cursor-pointer ${
-                      accountRole === 'USER'
-                        ? 'bg-rose-50 dark:bg-rose-950/35 border-rose-600'
-                        : 'bg-slate-50 dark:bg-[#0f172a] border-slate-200 dark:border-slate-800 hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-xs sm:text-sm text-slate-900 dark:text-white">
-                        {lang === 'bn' ? 'সাধারণ ডোনার প্রোফাইল' : 'Donor Profile'}
-                      </span>
-                      {accountRole === 'USER' && (
-                        <CheckCircle2 className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-snug">
-                      {lang === 'bn'
-                        ? 'স্বেচ্ছাসেবী রক্তদাতা ও সদস্য হিসেবে যুক্ত হোন'
-                        : 'Register as a voluntary blood donor & member'}
-                    </p>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setAccountRole('ADMIN')}
-                    className={`p-3 rounded-2xl border-2 text-left transition-colors cursor-pointer ${
-                      accountRole === 'ADMIN'
-                        ? 'bg-amber-50 dark:bg-amber-950/35 border-amber-500'
-                        : 'bg-slate-50 dark:bg-[#0f172a] border-slate-200 dark:border-slate-800 hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-xs sm:text-sm text-slate-900 dark:text-white">
-                        {lang === 'bn' ? 'সমন্বয়ক / অ্যাডমিন' : 'Admin Coordinator'}
-                      </span>
-                      {accountRole === 'ADMIN' && (
-                        <CheckCircle2 className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-snug">
-                      {lang === 'bn'
-                        ? 'শুধুমাত্র অনুমোদিত গোপন কোডধারীদের জন্য'
-                        : 'For authorized team members with invite code'}
-                    </p>
-                  </button>
-                </div>
-
-                {/* Admin Owner-Locked Gate Box */}
-                {accountRole === 'ADMIN' && (
-                  <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-400 dark:border-amber-700 space-y-2">
-                    {isBootstrappedAdminUser(firebaseUser) ? (
-                      <div className="flex items-center gap-2 text-xs font-black text-emerald-700 dark:text-emerald-300">
-                        <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span>
-                          {lang === 'bn'
-                            ? 'মূল অ্যাডমিন অ্যাকাউন্ট যাচাই হয়েছে — সরাসরি অ্যাডমিন কার্ড তৈরি করা যাবে।'
-                            : 'Super Owner verified — direct Admin ID creation unlocked.'}
-                        </span>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex items-center justify-between gap-2">
-                          <label className="text-xs font-black text-amber-950 dark:text-amber-200 flex items-center gap-1.5">
-                            <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                            <span>
-                              {lang === 'bn'
-                                ? 'অনুমোদিত অ্যাডমিন কোড *'
-                                : 'Authorized Admin Invite Code *'}
-                            </span>
-                          </label>
-                          <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
-                            {lang === 'bn' ? 'সুরক্ষিত' : 'Protected'}
-                          </span>
-                        </div>
-
-                        <div className="relative">
-                          <KeyRound className="w-4 h-4 text-amber-600 absolute left-3 top-2.5" />
-                          <input
-                            type={showAdminCodeInput ? 'text' : 'password'}
-                            value={adminSecretCode}
-                            onChange={(e) => {
-                              setAdminSecretCode(e.target.value);
-                              setAdminError('');
-                            }}
-                            placeholder={
-                              lang === 'bn'
-                                ? 'ওনারের দেওয়া গোপন কোড লিখুন (অথবা ওনার Gmail সংযুক্ত করুন)...'
-                                : 'Enter Owner-issued secret code...'
-                            }
-                            className="w-full pl-9 pr-10 py-2 rounded-xl border border-amber-400 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowAdminCodeInput(!showAdminCodeInput)}
-                            className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-700 cursor-pointer"
-                          >
-                            {showAdminCodeInput ? (
-                              <EyeOff className="w-4 h-4" />
-                            ) : (
-                              <Eye className="w-4 h-4" />
-                            )}
-                          </button>
-                        </div>
-
-                        <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                          {lang === 'bn'
-                            ? 'অ্যান্টি-হ্যাক সুরক্ষা: অ্যাপ ওনার ছাড়া অন্য কেউ অনুমান করে অ্যাডমিন হতে পারবে না। আপনি ওনার হলে নিচে Google সংযুক্ত করুন।'
-                            : 'Anti-Hijack Protection: Only the App Owner or holders of an active Cloud Vault code can create an Admin ID.'}
-                        </p>
-                      </>
-                    )}
-
-                    {adminError && (
-                      <p className="text-xs text-red-600 dark:text-red-400 font-bold flex items-center gap-1">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        <span>{adminError}</span>
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {/* 1B: 1-Click Google Auto-Fill (Saves typing!) */}
-                <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    {firebaseUser && isUserVerifiedForWrites(firebaseUser) ? (
-                      <>
-                        <span className="text-xs font-black text-emerald-700 dark:text-emerald-400 block">
-                          ✓ আসল Gmail সংযুক্ত হয়েছে
-                        </span>
-                        <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono block truncate">
-                          {firebaseUser.email || firebaseUser.phoneNumber}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-xs font-bold text-slate-900 dark:text-white block">
-                          {lang === 'bn'
-                            ? '১-ক্লিকে নাম ও ছবি অটো-ফিল করুন'
-                            : '1-Click Auto-Fill Name & Photo'}
-                        </span>
-                        <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
-                          {lang === 'bn'
-                            ? 'Google অ্যাকাউন্ট দিয়ে দ্রুত ফর্ম পূরণ করুন'
-                            : 'Connect Google to fill details automatically'}
-                        </span>
-                      </>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleConnectRealGmail}
-                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-200 text-white dark:text-slate-900 font-bold text-xs cursor-pointer shrink-0"
-                  >
-                    {firebaseUser
-                      ? lang === 'bn'
-                        ? 'অন্য Gmail'
-                        : 'Switch'
-                      : lang === 'bn'
-                      ? 'Gmail যুক্ত করুন'
-                      : 'Connect Gmail'}
-                  </button>
-                </div>
-
-                {/* 1C: Blood Group Interactive Grid */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-2">
-                    {lang === 'bn' ? 'আপনার রক্তের গ্রুপ ট্যাপ করুন *' : 'Tap Your Blood Group *'}
-                  </label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {ALL_BLOOD_GROUPS.map((grp) => (
-                      <button
-                        key={grp}
-                        type="button"
-                        onClick={() => setBloodGroup(grp)}
-                        className={`py-2.5 rounded-xl text-center font-black text-sm transition-colors cursor-pointer ${
-                          bloodGroup === grp
-                            ? 'bg-rose-600 text-white shadow-sm ring-2 ring-rose-400'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-rose-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
-                        }`}
-                      >
-                        {grp}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 1D: Fast Avatar Picker & Upload */}
-                <div className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    {PRESET_AVATARS.map((url, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => {
-                          setPhotoUrl(url);
-                          setPhotoFileName('');
-                        }}
-                        className={`w-8 h-8 rounded-xl overflow-hidden cursor-pointer transition-transform ${
-                          photoUrl === url ? 'ring-2 ring-rose-600 scale-105' : 'opacity-65 hover:opacity-100'
-                        }`}
-                      >
-                        <img src={url} alt="" className="w-full h-full object-cover" />
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>
-                      {isCompressingPhoto
-                        ? 'অপ্টিমাইজ হচ্ছে...'
-                        : photoFileName
-                        ? 'ছবি বদলান'
-                        : lang === 'bn'
-                        ? 'নিজের ছবি দিন'
-                        : 'Upload Photo'}
-                    </span>
-                  </button>
-                </div>
+            {/* 1. Photo + Name Row */}
+            <div className="flex items-center gap-3">
+              <div className="relative shrink-0">
+                <img
+                  src={photoUrl || DEFAULT_AVATAR_DATA_URI}
+                  alt={name || 'Avatar'}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
+                  }}
+                  className="w-14 h-14 rounded-2xl object-cover border border-slate-300 dark:border-slate-700"
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isCompressingPhoto}
+                  className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow cursor-pointer"
+                  title={lang === 'bn' ? 'ছবি পরিবর্তন করুন' : 'Change Photo'}
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                </button>
               </div>
-            )}
 
-            {/* =============================================================== */}
-            {/* STEP 2: IDENTITY, WHATSAPP CONNECT & FACEBOOK PROFILE           */}
-            {/* =============================================================== */}
-            {step === 2 && (
-              <div className="space-y-3.5 max-h-[52vh] overflow-y-auto pr-0.5 app-scroll-smooth">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                      {lang === 'bn' ? 'পূর্ণ নাম *' : 'Full Name *'}
-                    </label>
-                    <input
-                      type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder={lang === 'bn' ? 'যেমন: তানভীর আহমেদ' : 'Full Name'}
-                      className="w-full px-3.5 py-2.5 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:border-rose-500 font-semibold"
-                    />
-                  </div>
+              <div className="flex-1 min-w-0">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? '১. আপনার নাম *' : '1. Your Full Name *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={80}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={lang === 'bn' ? 'আপনার নাম লিখুন (যেমন: শামীম রাকিব)' : 'Enter your name'}
+                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+            </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                      {lang === 'bn' ? 'মোবাইল নম্বর *' : 'Mobile Number *'}
-                    </label>
-                    <input
-                      type="tel"
-                      value={phone}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setPhone(val);
-                        if (!whatsappPhone || whatsappPhone === phone) {
-                          setWhatsappPhone(val);
-                        }
-                      }}
-                      placeholder="017XXXXXXXX"
-                      className="w-full px-3.5 py-2.5 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:border-rose-500 font-mono font-bold"
-                    />
-                  </div>
-                </div>
+            {/* 2. Blood Group 8-Button Selector */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                {lang === 'bn' ? '২. রক্তের গ্রুপ নির্বাচন করুন *' : '2. Select Blood Group *'}
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {ALL_BLOOD_GROUPS.map((grp) => {
+                  const selected = bloodGroup === grp;
+                  return (
+                    <button
+                      key={grp}
+                      type="button"
+                      onClick={() => setBloodGroup(grp)}
+                      className={`min-h-[44px] rounded-xl font-black text-sm transition-colors cursor-pointer flex items-center justify-center ${
+                        selected
+                          ? 'bg-rose-600 text-white shadow-xs'
+                          : 'bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white hover:border-rose-400'
+                      }`}
+                    >
+                      {grp}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-                {/* WhatsApp Box with Auto-Fill from Mobile */}
-                <div className="p-3.5 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-300 dark:border-emerald-800 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs font-bold text-emerald-950 dark:text-emerald-200">
-                      {lang === 'bn'
-                        ? 'WhatsApp নম্বর (ঐচ্ছিক — খালি রাখলে মোবাইল নম্বরই ব্যবহৃত হবে)'
-                        : 'WhatsApp Number (Optional — defaults to mobile number)'}
-                    </label>
-                    {phone.trim().length >= 5 && whatsappPhone !== phone && (
-                      <button
-                        type="button"
-                        onClick={() => setWhatsappPhone(phone)}
-                        className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 underline cursor-pointer shrink-0"
-                      >
-                        {lang === 'bn' ? 'মোবাইল নম্বরই দিন' : 'Use mobile'}
-                      </button>
-                    )}
-                  </div>
+            {/* 3. Mobile Number + Gender */}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div className="sm:col-span-8">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn'
+                    ? '৩. সচল মোবাইল নম্বর (Call ও WhatsApp) *'
+                    : '3. Active Mobile Number (Call & WhatsApp) *'}
+                </label>
+                <div className="relative">
+                  <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="tel"
-                    value={whatsappPhone}
-                    onChange={(e) => setWhatsappPhone(e.target.value)}
-                    placeholder="01XXXXXXXXX"
-                    className="w-full px-3.5 py-2.5 text-xs sm:text-sm rounded-xl bg-white dark:bg-[#0f172a] border border-emerald-300 dark:border-emerald-700 text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:border-emerald-600"
-                  />
-                </div>
-
-                {/* Optional Facebook Link Box */}
-                <div className="p-3.5 rounded-2xl bg-sky-50/70 dark:bg-sky-950/25 border border-sky-300 dark:border-sky-800 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs font-bold text-sky-950 dark:text-sky-200">
-                      {lang === 'bn'
-                        ? 'ফেসবুক প্রোফাইল লিংক (ঐচ্ছিক)'
-                        : 'Facebook Profile Link (Optional)'}
-                    </label>
-                    {!facebookUrl.includes('facebook.com/') && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setFacebookUrl((prev) =>
-                            prev.trim()
-                              ? `https://facebook.com/${prev.replace(/^https?:\/\/(www\.)?facebook\.com\//i, '')}`
-                              : 'https://facebook.com/'
-                          )
-                        }
-                        className="px-2 py-0.5 rounded-lg bg-sky-600 text-white text-[10px] font-bold cursor-pointer shrink-0"
-                      >
-                        + facebook.com/
-                      </button>
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    value={facebookUrl}
-                    onChange={(e) => setFacebookUrl(e.target.value)}
-                    placeholder="https://facebook.com/your.username"
-                    className="w-full px-3.5 py-2.5 text-xs sm:text-sm rounded-xl bg-white dark:bg-[#0f172a] border border-sky-300 dark:border-sky-700 text-slate-900 dark:text-white focus:outline-none focus:border-sky-600"
+                    required
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="017XXXXXXXX"
+                    className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
                   />
                 </div>
               </div>
-            )}
 
-            {/* =============================================================== */}
-            {/* STEP 3: QUICK CITY CHIPS, STEPPERS & INSTANT CLOUD CREATE       */}
-            {/* =============================================================== */}
-            {step === 3 && (
-              <div className="space-y-3.5 max-h-[52vh] overflow-y-auto pr-0.5 app-scroll-smooth">
-                {/* 1-Tap Popular Cities so users don't get bored scrolling dropdowns */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1.5">
-                    {lang === 'bn' ? 'দ্রুত শহর নির্বাচন করুন' : 'Quick Select City'}
+              <div className="sm:col-span-4">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? 'লিঙ্গ' : 'Gender'}
+                </label>
+                <select
+                  value={gender}
+                  onChange={(e) => setGender(e.target.value as 'MALE' | 'FEMALE' | 'OTHER')}
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
+                >
+                  <option value="MALE">{lang === 'bn' ? 'পুরুষ (Male)' : 'Male'}</option>
+                  <option value="FEMALE">{lang === 'bn' ? 'মহিলা (Female)' : 'Female'}</option>
+                  <option value="OTHER">{lang === 'bn' ? 'অন্যান্য' : 'Other'}</option>
+                </select>
+              </div>
+            </div>
+
+            {/* 4. Hybrid Address: GPS + Select District + Custom Area Text Input + Chips */}
+            <div
+              className="p-3.5 rounded-2xl bg-slate-50/90 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-3"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-900 dark:text-white">
+                  {lang === 'bn'
+                    ? '৪. আপনার বর্তমান ঠিকানা (সিলেক্ট করুন বা নিজে লিখুন) *'
+                    : '4. Your Current Address (Select, GPS, or Type) *'}
+                </label>
+
+                <button
+                  type="button"
+                  onClick={handleUseMyGps}
+                  disabled={isLocatingGps}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <LocateFixed className={`w-3.5 h-3.5 shrink-0 ${isLocatingGps ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isLocatingGps
+                      ? lang === 'bn'
+                        ? 'GPS নেওয়া হচ্ছে...'
+                        : 'Detecting GPS...'
+                      : lang === 'bn'
+                        ? 'আমার GPS লোকেশন নিন'
+                        : 'Use My Live GPS'}
+                  </span>
+                </button>
+              </div>
+
+              {gpsStatusNote && (
+                <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                  ✓ {gpsStatusNote}
+                </div>
+              )}
+
+              {/* Quick Popular Districts */}
+              <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
+                {QUICK_DISTRICTS.map((qd) => {
+                  const active = district === qd.id;
+                  return (
+                    <button
+                      key={qd.id}
+                      type="button"
+                      onClick={() => setDistrict(qd.id)}
+                      className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 ${
+                        active
+                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                          : 'bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {lang === 'bn' ? qd.bn : qd.en}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                {/* 64 District Select */}
+                <div className="sm:col-span-5">
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    {lang === 'bn' ? 'জেলা নির্বাচন করুন' : 'Select District'}
                   </label>
-                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-                    {QUICK_CITIES.map((c) => {
-                      const active = district === c.dist;
+                  <select
+                    value={district}
+                    onChange={(e) => setDistrict(e.target.value)}
+                    className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white"
+                  >
+                    {DISTRICTS.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {lang === 'bn' ? `${d.nameBn} (${d.nameEn})` : d.nameEn}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Free-Text Editable Area / Neighborhood Input */}
+                <div className="sm:col-span-7 relative">
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    {lang === 'bn'
+                      ? 'এলাকা / মহল্লা / রোড (নিজে লিখুন অথবা নিচে চাপুন)'
+                      : 'Area / Neighborhood (Type freely or tap below)'}
+                  </label>
+                  <div className="relative">
+                    <MapPin className="w-4 h-4 text-rose-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      maxLength={50}
+                      value={areaAddress}
+                      onFocus={() => setShowAreaSuggestions(true)}
+                      onChange={(e) => {
+                        setAreaAddress(e.target.value);
+                        setShowAreaSuggestions(true);
+                      }}
+                      placeholder={
+                        lang === 'bn'
+                          ? 'যেমন: নিকেতন, রোড ৪ / Niketon / ধানমন্ডি...'
+                          : 'e.g. Niketon, Road 4 / Banani / Dhanmondi...'
+                      }
+                      className="w-full h-11 pl-9 pr-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                    />
+                  </div>
+
+                  {showAreaSuggestions && typedAreaSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-[68px] z-30 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 shadow-xl max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+                      {typedAreaSuggestions.map((sug) => (
+                        <button
+                          key={sug.id}
+                          type="button"
+                          onClick={() => {
+                            setAreaAddress(sug.title.slice(0, 50));
+                            setDistrict(sug.districtId);
+                            setShowAreaSuggestions(false);
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800 flex items-center justify-between gap-2 text-xs cursor-pointer"
+                        >
+                          <span className="font-bold text-slate-900 dark:text-white truncate">
+                            {sug.title}
+                          </span>
+                          <span className="text-[10px] text-slate-500 shrink-0">
+                            {sug.subtitle}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 1-Tap Popular Area Chips (Users can tap OR edit freely!) */}
+              {quickAreaChips.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {lang === 'bn'
+                      ? 'দ্রুত নির্বাচন (ট্যাপ করার পরেও উপরে নিজের মতো লিখে নিতে পারবেন):'
+                      : 'Quick select (you can still edit or add road/block above):'}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {quickAreaChips.slice(0, 10).map((chip) => {
+                      const isPicked = areaAddress.trim().toLowerCase() === chip.toLowerCase();
                       return (
                         <button
-                          key={c.dist}
+                          key={chip}
                           type="button"
-                          onClick={() => handleQuickCitySelect(c.div, c.dist)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
-                            active
+                          onClick={() => {
+                            setAreaAddress(chip);
+                            setShowAreaSuggestions(false);
+                          }}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors ${
+                            isPicked
                               ? 'bg-rose-600 text-white'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                              : 'bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-rose-400'
                           }`}
                         >
-                          {lang === 'bn' ? c.labelBn : c.labelEn}
+                          {chip}
                         </button>
                       );
                     })}
                   </div>
                 </div>
+              )}
+            </div>
 
-                {/* Detailed Division, District, Upazila */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      {lang === 'bn' ? 'বিভাগ' : 'Division'}
-                    </label>
-                    <select
-                      value={division}
-                      onChange={(e) => handleDivisionChange(e.target.value)}
-                      className="w-full h-10 px-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
-                    >
-                      {DIVISIONS.map((div) => (
-                        <option key={div.id} value={div.id}>
-                          {lang === 'bn' ? div.nameBn : div.nameEn}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+            {/* 5. Simple Everyday Toggle Checkboxes (Zero unlabeled dropdowns!) */}
+            <div className="p-3.5 rounded-2xl bg-slate-50/90 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-2.5">
+              <label className="flex items-center gap-2.5 cursor-pointer min-h-[36px]">
+                <input
+                  type="checkbox"
+                  checked={available}
+                  onChange={(e) => setAvailable(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-600 rounded shrink-0"
+                />
+                <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                  {lang === 'bn'
+                    ? 'আমি জরুরি রক্তদানের জন্য প্রস্তুত আছি'
+                    : 'I am available for emergency blood donation'}
+                </span>
+              </label>
 
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      {lang === 'bn' ? 'জেলা' : 'District'}
-                    </label>
-                    <select
-                      value={district}
-                      onChange={(e) => handleDistrictChange(e.target.value)}
-                      className="w-full h-10 px-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
-                    >
-                      {currentDistricts.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {lang === 'bn' ? d.nameBn : d.nameEn}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+              <label className="flex items-center gap-2.5 cursor-pointer min-h-[36px]">
+                <input
+                  type="checkbox"
+                  checked={shareDirectContact}
+                  onChange={(e) => setShareDirectContact(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-600 rounded shrink-0"
+                />
+                <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">
+                  {lang === 'bn'
+                    ? 'জরুরি রোগীর পরিবার আমাকে সরাসরি কল বা WhatsApp করতে পারবেন'
+                    : 'Allow emergency patients to Call or WhatsApp me directly'}
+                </span>
+              </label>
+            </div>
 
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      {lang === 'bn' ? 'উপজেলা / থানা' : 'Area / Upazila'}
-                    </label>
-                    <select
-                      value={upazila}
-                      onChange={(e) => setUpazila(e.target.value)}
-                      className="w-full h-10 px-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
-                    >
-                      {currentUpazilas.map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {lang === 'bn' ? u.nameBn : u.nameEn}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+            {/* Optional Admin Invite Toggle (Quiet & collapsed for normal users) */}
+            <div className="pt-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showAdminInviteBox;
+                  setShowAdminInviteBox(next);
+                  setAccountRole(next ? 'ADMIN' : 'USER');
+                }}
+                className="text-[11px] text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 inline-flex items-center gap-1 cursor-pointer"
+              >
+                <KeyRound className="w-3 h-3" />
+                <span>
+                  {lang === 'bn'
+                    ? 'সমন্বয়ক / অ্যাডমিন ইনভাইট কোড আছে? (ঐচ্ছিক)'
+                    : 'Have an Admin Coordinator Invite Code? (Optional)'}
+                </span>
+                {showAdminInviteBox ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
 
-                {/* Interactive Age & Weight Touch Steppers + Gender */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
-                    <span className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      {lang === 'bn' ? 'বয়স (বছর)' : 'Age (Years)'}
-                    </span>
-                    <div className="flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={() => setAge((a) => Math.max(18, a - 1))}
-                        className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center cursor-pointer"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="font-mono font-black text-sm">{age}</span>
-                      <button
-                        type="button"
-                        onClick={() => setAge((a) => Math.min(65, a + 1))}
-                        className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
-                    <span className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      {lang === 'bn' ? 'ওজন (কেজি)' : 'Weight (kg)'}
-                    </span>
-                    <div className="flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={() => setWeightKg((w) => Math.max(45, w - 1))}
-                        className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center cursor-pointer"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="font-mono font-black text-sm">{weightKg}</span>
-                      <button
-                        type="button"
-                        onClick={() => setWeightKg((w) => Math.min(150, w + 1))}
-                        className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="col-span-2 sm:col-span-1 p-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
-                    <span className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      {lang === 'bn' ? 'লিঙ্গ' : 'Gender'}
-                    </span>
-                    <select
-                      value={gender}
-                      onChange={(e) => setGender(e.target.value as any)}
-                      className="w-full h-7 px-2 text-xs rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-semibold"
-                    >
-                      <option value="MALE">পুরুষ (Male)</option>
-                      <option value="FEMALE">মহিলা (Female)</option>
-                      <option value="OTHER">অন্যান্য</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Availability & Optional Last Donation Row */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800">
-                  <label className="inline-flex items-center gap-2.5 cursor-pointer text-xs font-bold text-slate-800 dark:text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={available}
-                      onChange={(e) => setAvailable(e.target.checked)}
-                      className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span>
-                      {lang === 'bn'
-                        ? 'আমি বর্তমানে জরুরি রক্তদানের জন্য প্রস্তুত'
-                        : 'Available for emergency blood donation'}
-                    </span>
-                  </label>
-
+              {showAdminInviteBox && !isBootstrappedAdminUser(firebaseUser) && (
+                <div className="mt-2 p-3 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-1.5">
                   <input
-                    type="date"
-                    value={lastDonatedDate}
-                    onChange={(e) => setLastDonatedDate(e.target.value)}
-                    title="সর্বশেষ রক্তদানের তারিখ (ঐচ্ছিক)"
-                    className="px-2.5 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200"
+                    type="password"
+                    value={adminSecretCode}
+                    onChange={(e) => setAdminSecretCode(e.target.value)}
+                    placeholder={
+                      lang === 'bn'
+                        ? 'ওনার প্রদত্ত অ্যাডমিন কোড লিখুন'
+                        : 'Enter Owner-issued Admin Invite Code'
+                    }
+                    className="w-full h-10 px-3 rounded-lg bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
                   />
                 </div>
-
-                {/* Direct Contact Consent & Privacy Settings */}
-                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 space-y-2.5">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-900 dark:text-white">
-                      {lang === 'bn'
-                        ? 'যোগাযোগের গোপনীয়তা ও সরাসরি কল সম্মতি (Privacy & Direct Contact Consent)'
-                        : 'Direct Contact Consent & Privacy Setting'}
-                    </label>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      {lang === 'bn'
-                        ? 'জরুরি মুহূর্তে কারা আপনার ফোন/WhatsApp নম্বরে সরাসরি যোগাযোগ করতে পারবেন তা নির্বাচন করুন।'
-                        : 'Choose who can view and contact your phone/WhatsApp directly during emergencies.'}
-                    </p>
-                  </div>
-
-                  <select
-                    value={contactVisibility}
-                    onChange={(e) => setContactVisibility(e.target.value as ContactVisibility)}
-                    className="w-full h-10 px-3 text-xs font-semibold rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
-                  >
-                    <option value="PUBLIC_OPT_IN">
-                      {lang === 'bn'
-                        ? 'সব জরুরি রক্তপ্রার্থীর জন্য সরাসরি কল ও WhatsApp উন্মুক্ত (দ্রুততম জীবনরক্ষা)'
-                        : 'Direct Call & WhatsApp for All Emergency Seekers (Fastest)'}
-                    </option>
-                    <option value="VERIFIED_SEEKERS">
-                      {lang === 'bn'
-                        ? 'শুধু লগইনকৃত ভেরিফাইড রক্তপ্রার্থীদের জন্য সরাসরি কল/WhatsApp'
-                        : 'Verified Signed-In Blood Seekers Only'}
-                    </option>
-                    <option value="REQUEST_ONLY">
-                      {lang === 'bn'
-                        ? 'নম্বর গোপন রাখুন — শুধু ইন-অ্যাপ চ্যাট ও অনুমতি সাপেক্ষে নম্বর শেয়ার'
-                        : 'Private — In-App Chat & Consent Request Only'}
-                    </option>
-                  </select>
-
-                  {contactVisibility !== 'REQUEST_ONLY' && (
-                    <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-slate-700 dark:text-slate-300">
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={allowCall}
-                          onChange={(e) => setAllowCall(e.target.checked)}
-                          className="w-4 h-4 rounded text-emerald-600"
-                        />
-                        <span>{lang === 'bn' ? 'সরাসরি ফোন কল' : 'Phone Call'}</span>
-                      </label>
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={allowWhatsApp}
-                          onChange={(e) => setAllowWhatsApp(e.target.checked)}
-                          className="w-4 h-4 rounded text-emerald-600"
-                        />
-                        <span>WhatsApp</span>
-                      </label>
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={allowSms}
-                          onChange={(e) => setAllowSms(e.target.checked)}
-                          className="w-4 h-4 rounded text-emerald-600"
-                        />
-                        <span>SMS</span>
-                      </label>
-                    </div>
-                  )}
-
-                  <label className="flex items-center gap-2 pt-1 cursor-pointer text-xs font-semibold text-slate-800 dark:text-slate-200 border-t border-slate-200/80 dark:border-slate-800">
-                    <input
-                      type="checkbox"
-                      checked={emergencyAlertsOptIn}
-                      onChange={(e) => setEmergencyAlertsOptIn(e.target.checked)}
-                      className="w-4 h-4 rounded text-rose-600"
-                    />
-                    <span>
-                      {lang === 'bn'
-                        ? 'আমার এলাকার জরুরি রক্তের SOS ব্রডকাস্ট নোটিফিকেশন পেতে চাই'
-                        : 'Opt in to emergency blood request broadcast alerts in my area'}
-                    </span>
-                  </label>
-                </div>
-              </div>
-            )}
-
-            {/* BOTTOM STEP NAVIGATION BAR */}
-            <div className="flex items-center justify-between gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
-              {step > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep((s) => (s === 3 ? 2 : 1))}
-                  className="min-h-[46px] px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>{lang === 'bn' ? 'পেছনে' : 'Back'}</span>
-                </button>
-              ) : (
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                  {lang === 'bn' ? 'ধাপ ১ / ৩' : 'Step 1 of 3'}
-                </div>
               )}
+            </div>
 
-              {step < 3 ? (
-                <button
-                  type="button"
-                  onClick={() => validateAndGoStep(step === 1 ? 2 : 3)}
-                  className="min-h-[46px] px-6 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm ml-auto"
-                >
-                  <span>
-                    {step === 1
-                      ? lang === 'bn'
-                        ? 'পরবর্তী ধাপ: নাম ও WhatsApp'
-                        : 'Next: Contact & WhatsApp'
-                      : lang === 'bn'
-                      ? 'পরবর্তী ধাপ: ঠিকানা ও কার্ড তৈরি'
-                      : 'Next: Location & Create'}
-                  </span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className={`flex-1 min-h-[46px] px-5 rounded-xl text-white font-black text-xs sm:text-sm shadow-md flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60 ${
-                    accountRole === 'ADMIN'
-                      ? 'bg-amber-600 hover:bg-amber-700'
-                      : 'bg-emerald-600 hover:bg-emerald-700'
-                  }`}
-                >
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>
-                    {isSubmitting
-                      ? lang === 'bn'
-                        ? 'ক্লাউডে স্মার্ট কার্ড তৈরি হচ্ছে...'
-                        : 'Saving Smart ID...'
-                      : accountRole === 'ADMIN'
-                      ? lang === 'bn'
-                        ? 'অ্যাডমিন স্মার্ট আইডি সম্পন্ন করুন'
-                        : 'Create Admin Smart ID'
-                      : lang === 'bn'
-                      ? 'ইউজার স্মার্ট আইডি সম্পন্ন করুন'
-                      : 'Create User Smart ID'}
-                  </span>
-                </button>
-              )}
+            {/* Single Clear Primary Save Button */}
+            <div className="flex items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={onClose}
+                className="min-h-[48px] px-4 py-2.5 rounded-xl btn-surface font-bold text-xs sm:text-sm cursor-pointer whitespace-nowrap"
+              >
+                {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+              </button>
+
+              <button
+                type="submit"
+                disabled={isSubmitting || isCompressingPhoto}
+                className="flex-1 min-h-[48px] px-5 py-2.5 rounded-xl btn-crimson font-black text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap disabled:opacity-60"
+              >
+                <Check className="w-4 h-4 shrink-0" />
+                <span>
+                  {isSubmitting
+                    ? lang === 'bn'
+                      ? 'সেভ হচ্ছে...'
+                      : 'Saving...'
+                    : lang === 'bn'
+                      ? 'প্রোফাইল সেভ করুন'
+                      : 'Save Profile'}
+                </span>
+              </button>
             </div>
           </form>
         )}

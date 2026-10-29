@@ -1,20 +1,22 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   Donor,
   BloodGroup,
   Language,
-  UrgencyLevel,
-  RequiredTimeWindow,
 } from '../types';
-import { DIVISIONS, DISTRICTS } from '../data/bangladeshGeo';
-import { ALL_BLOOD_GROUPS, getCompatibleDonors } from '../data/compatibility';
+import { DISTRICTS } from '../data/bangladeshGeo';
+import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { getTranslation } from '../utils/translations';
 import { auth, fetchUnmaskedDonorContactIfAuthorized } from '../firebase';
 import {
-  requestRealDeviceGPS,
+  requestRealDeviceGPSWithStatus,
   requestFreshHighAccuracyGPS,
   DEFAULT_BANGLADESH_COORDS,
   resolveBangladeshCoordinates,
+  resolvePlaceOrHospitalQuery,
+  findNearestDistrictFromCoords,
+  getInstantLocalPlaceSuggestions,
+  LivePlaceSuggestion,
   formatDistance,
   Coordinates,
 } from '../utils/geolocation';
@@ -38,19 +40,20 @@ import {
   UserPlus,
   Mic,
   MicOff,
-  Navigation,
+  LocateFixed,
   Moon,
   GraduationCap,
   Lock,
   SkipForward,
   Expand,
-  AlertTriangle,
   SlidersHorizontal,
   Bookmark,
   Copy,
   Check,
   ChevronDown,
   ChevronUp,
+  Hospital,
+  X,
 } from 'lucide-react';
 
 interface DonorSearchProps {
@@ -60,7 +63,11 @@ interface DonorSearchProps {
   presetDistrict?: string;
   presetNonce?: number;
   onRevealPhone: (donor: Donor) => void;
-  onOpenSOSModal: (context?: { bloodGroup?: BloodGroup; district?: string }) => void;
+  onOpenSOSModal: (context?: {
+    bloodGroup?: BloodGroup;
+    district?: string;
+    hospitalName?: string;
+  }) => void;
   onStartChatWithDonor?: (donor: Donor) => void;
   onOpenRegister?: () => void;
   unsuccessfulDonorIds?: string[];
@@ -70,25 +77,20 @@ interface DonorSearchProps {
 
 const PAGE_CHUNK = 24;
 
-function matchesSelectedUpazila(donor: Donor, selectedDistrict: string, selectedUpazila: string): boolean {
-  if (selectedUpazila === 'ALL') return true;
-  const distObj = DISTRICTS.find(
-    (d) =>
-      d.id === selectedDistrict.toLowerCase() ||
-      d.nameBn === selectedDistrict.trim() ||
-      d.nameEn.toLowerCase() === selectedDistrict.trim().toLowerCase()
-  );
-  const upzObj = distObj?.upazilas.find((u) => u.id === selectedUpazila);
-  const dUpz = (donor.upazila || '').trim().toLowerCase();
-  if (dUpz === selectedUpazila.toLowerCase()) return true;
-  if (upzObj) {
-    return (
-      donor.upazila.trim() === upzObj.nameBn ||
-      dUpz === upzObj.nameEn.toLowerCase()
-    );
-  }
-  return false;
-}
+const QUICK_HOSPITAL_CHIPS: Array<{
+  labelBn: string;
+  labelEn: string;
+  query: string;
+  districtId: string;
+}> = [
+  { labelBn: 'নিকেতন (Niketon)', labelEn: 'Niketon', query: 'Niketon', districtId: 'dhaka' },
+  { labelBn: 'Square Hospital', labelEn: 'Square Hospital', query: 'Square Hospital', districtId: 'dhaka' },
+  { labelBn: 'ঢাকা মেডিকেল (DMCH)', labelEn: 'DMCH', query: 'DMCH', districtId: 'dhaka' },
+  { labelBn: 'ধানমন্ডি', labelEn: 'Dhanmondi', query: 'Dhanmondi', districtId: 'dhaka' },
+  { labelBn: 'মিরপুর', labelEn: 'Mirpur', query: 'Mirpur', districtId: 'dhaka' },
+  { labelBn: 'উত্তরা', labelEn: 'Uttara', query: 'Uttara', districtId: 'dhaka' },
+  { labelBn: 'চট্টগ্রাম (CMCH)', labelEn: 'Chattogram', query: 'CMCH', districtId: 'chattogram' },
+];
 
 const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   donors,
@@ -110,19 +112,19 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     presetGroup || 'ALL'
   );
   const [includeCompatible, setIncludeCompatible] = useState<boolean>(true);
-  const [selectedDivision, setSelectedDivision] = useState<string>('ALL');
   const [selectedDistrict, setSelectedDistrict] = useState<string>(
     presetDistrict || 'ALL'
   );
-  const [selectedUpazila, setSelectedUpazila] = useState<string>('ALL');
-  const [urgency, setUrgency] = useState<UrgencyLevel>('CRITICAL');
-  const [requiredTimeWindow, setRequiredTimeWindow] =
-    useState<RequiredTimeWindow>('IMMEDIATE_2H');
-  const [includeNearbyDistricts, setIncludeNearbyDistricts] = useState<boolean>(false);
+  const [includeNearbyDistricts, setIncludeNearbyDistricts] = useState<boolean>(true);
 
-  // Progressive-disclosure advanced filters & saved shortlist
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState<boolean>(false);
+  // Simple collapsible optional filters
+  const [showMoreFilters, setShowMoreFilters] = useState<boolean>(false);
+  const [onlyAvailable, setOnlyAvailable] = useState<boolean>(false);
+  const [onlyVerified, setOnlyVerified] = useState<boolean>(false);
+  const [onlyNightReady, setOnlyNightReady] = useState<boolean>(false);
+  const [onlyCampusClub, setOnlyCampusClub] = useState<boolean>(false);
   const [onlyShortlisted, setOnlyShortlisted] = useState<boolean>(false);
+
   const [shortlistedIds, setShortlistedIds] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem('bloodsearch_shortlisted_donors');
@@ -135,15 +137,72 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   });
   const [copiedDonorId, setCopiedDonorId] = useState<string | null>(null);
 
+  // Smart Location / GPS State
+  const [locationMode, setLocationMode] = useState<'GPS' | 'PLACE' | 'MANUAL'>('GPS');
+  const [gpsAvailable, setGpsAvailable] = useState<boolean>(false);
+  const [isLocatingGps, setIsLocatingGps] = useState<boolean>(false);
+  const [gpsFeedback, setGpsFeedback] = useState<string | null>(null);
+  const [userCoords, setUserCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
+  const [customPlaceCoords, setCustomPlaceCoords] = useState<Coordinates | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showPlaceSuggestions, setShowPlaceSuggestions] = useState<boolean>(false);
+  const [visibleCount, setVisibleCount] = useState<number>(PAGE_CHUNK);
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [showVoiceQuickTray, setShowVoiceQuickTray] = useState<boolean>(false);
+  const speechRecRef = useRef<any>(null);
+
+  // Unsuccessful attempt tracking
+  const [localUnsuccessfulIds, setLocalUnsuccessfulIds] = useState<string[]>([]);
+  const [outcomeBanner, setOutcomeBanner] = useState<string | null>(null);
+
+  // Cache of authorized unmasked direct contacts for opted-in cloud donors
+  const [resolvedDirectContacts, setResolvedDirectContacts] = useState<
+    Record<
+      string,
+      {
+        phone: string;
+        whatsappPhone?: string;
+        allowCall?: boolean;
+        allowWhatsApp?: boolean;
+      }
+    >
+  >({});
+
+  const isVerifiedSeeker = Boolean(
+    auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
+  );
+
   useEffect(() => {
     if (presetGroup !== undefined) {
       setSelectedGroup(presetGroup);
     }
     if (presetDistrict !== undefined) {
       setSelectedDistrict(presetDistrict);
-      setSelectedUpazila('ALL');
     }
   }, [presetGroup, presetDistrict, presetNonce]);
+
+  // Attempt live GPS silently on load
+  useEffect(() => {
+    let active = true;
+    requestRealDeviceGPSWithStatus()
+      .then(({ coords, isRealGps }) => {
+        if (!active) return;
+        setUserCoords(coords);
+        setGpsAvailable(isRealGps);
+        setLocationMode(isRealGps ? 'GPS' : 'MANUAL');
+      })
+      .catch(() => {
+        if (active) {
+          setGpsAvailable(false);
+          setLocationMode('MANUAL');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const toggleShortlistDonor = useCallback((donorId: string) => {
     setShortlistedIds((prev) => {
@@ -167,95 +226,62 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     }
   }, []);
 
-  // Location Anchor (Live GPS vs Manual District Fallback when GPS is unavailable)
-  const [locationMode, setLocationMode] = useState<'GPS' | 'MANUAL'>('GPS');
-  const [gpsAvailable, setGpsAvailable] = useState<boolean>(false);
-  const [isLocatingGps, setIsLocatingGps] = useState<boolean>(false);
-  const [manualAnchorDistrict, setManualAnchorDistrict] = useState<string>('dhaka');
-  const [userCoords, setUserCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
-
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [onlyAvailable, setOnlyAvailable] = useState<boolean>(false);
-  const [onlyVerified, setOnlyVerified] = useState<boolean>(false);
-  const [onlyRareNegative, setOnlyRareNegative] = useState<boolean>(false);
-  const [onlyNightReady, setOnlyNightReady] = useState<boolean>(false);
-  const [onlyCampusClub, setOnlyCampusClub] = useState<boolean>(false);
-  const [visibleCount, setVisibleCount] = useState<number>(PAGE_CHUNK);
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
-
-  // Local unsuccessful attempt tracking (merged with parent prop if provided)
-  const [localUnsuccessfulIds, setLocalUnsuccessfulIds] = useState<string[]>([]);
-  const [outcomeBanner, setOutcomeBanner] = useState<string | null>(null);
-
-  // Cache of authorized unmasked direct contacts for opted-in cloud donors so 1-tap Call/WhatsApp works immediately
-  const [resolvedDirectContacts, setResolvedDirectContacts] = useState<
-    Record<
-      string,
-      {
-        phone: string;
-        whatsappPhone?: string;
-        allowCall?: boolean;
-        allowWhatsApp?: boolean;
-      }
-    >
-  >({});
-
-  const isVerifiedSeeker = Boolean(
-    auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
+  // Resolve typed hospital / area automatically (even with typos like "Squire hospital"!)
+  const resolvedTypedPlace = useMemo(
+    () => (searchQuery.trim() ? resolvePlaceOrHospitalQuery(searchQuery) : null),
+    [searchQuery]
   );
 
-  // Attempt live GPS on load; fall back cleanly to manual district selection if unavailable
-  useEffect(() => {
-    let active = true;
-    requestRealDeviceGPS()
-      .then((coords) => {
-        if (!active) return;
-        setUserCoords(coords);
-        const isDefaultFallback =
-          coords.latitude === DEFAULT_BANGLADESH_COORDS.latitude &&
-          coords.longitude === DEFAULT_BANGLADESH_COORDS.longitude;
-        setGpsAvailable(!isDefaultFallback);
-        if (isDefaultFallback) {
-          setLocationMode('MANUAL');
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setGpsAvailable(false);
-          setLocationMode('MANUAL');
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Sync manual anchor when user picks a specific filter district
-  useEffect(() => {
-    if (selectedDistrict !== 'ALL') {
-      setManualAnchorDistrict(selectedDistrict);
-    }
-  }, [selectedDistrict]);
+  const placeSuggestions = useMemo<LivePlaceSuggestion[]>(() => {
+    if (!searchQuery.trim()) return [];
+    return getInstantLocalPlaceSuggestions(searchQuery, lang).slice(0, 6);
+  }, [searchQuery, lang]);
 
   const effectiveOriginCoords = useMemo<Coordinates>(() => {
+    if (customPlaceCoords && locationMode === 'PLACE') {
+      return customPlaceCoords;
+    }
+    if (resolvedTypedPlace) {
+      return resolvedTypedPlace.coords;
+    }
     if (locationMode === 'GPS' && gpsAvailable) {
       return userCoords;
     }
-    const anchorDist = selectedDistrict !== 'ALL' ? selectedDistrict : manualAnchorDistrict;
-    return resolveBangladeshCoordinates({
-      district: anchorDist,
-      upazila: selectedUpazila !== 'ALL' ? selectedUpazila : undefined,
-    });
-  }, [locationMode, gpsAvailable, userCoords, selectedDistrict, manualAnchorDistrict, selectedUpazila]);
+    const anchorDist = selectedDistrict !== 'ALL' ? selectedDistrict : 'dhaka';
+    return resolveBangladeshCoordinates({ district: anchorDist });
+  }, [
+    customPlaceCoords,
+    locationMode,
+    resolvedTypedPlace,
+    gpsAvailable,
+    userCoords,
+    selectedDistrict,
+  ]);
 
   const handleLocateLiveGps = async () => {
     setIsLocatingGps(true);
+    setGpsFeedback(null);
     try {
       const res = await requestFreshHighAccuracyGPS();
       setUserCoords(res.coords);
       setGpsAvailable(res.isRealGps);
-      setLocationMode(res.isRealGps ? 'GPS' : 'MANUAL');
+      if (res.isRealGps) {
+        setLocationMode('GPS');
+        setCustomPlaceCoords(null);
+        const near = findNearestDistrictFromCoords(res.coords);
+        setGpsFeedback(
+          lang === 'bn'
+            ? `আপনার লাইভ GPS যুক্ত হয়েছে (${near.nameBn}) — সবচেয়ে কাছের ডোনার উপরে দেখানো হচ্ছে`
+            : `Live GPS locked (${near.nameEn}) — ranking nearest donors first`
+        );
+      } else {
+        setLocationMode('MANUAL');
+        setGpsFeedback(
+          lang === 'bn'
+            ? 'ব্রাউজারে GPS অনুমতি বন্ধ আছে — পাশের বক্সে হাসপাতালের নাম বা জেলা বেছে নিন।'
+            : 'Browser GPS permission is off — type your hospital or pick your district.'
+        );
+      }
     } finally {
       setIsLocatingGps(false);
     }
@@ -266,134 +292,108 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   }, [
     selectedGroup,
     includeCompatible,
-    selectedDivision,
     selectedDistrict,
-    selectedUpazila,
-    urgency,
-    requiredTimeWindow,
     includeNearbyDistricts,
     onlyAvailable,
     onlyVerified,
-    onlyRareNegative,
     onlyNightReady,
     onlyCampusClub,
+    onlyShortlisted,
     searchQuery,
     locationMode,
-    manualAnchorDistrict,
   ]);
 
   const handleToggleVoice = () => {
     if (typeof window === 'undefined') return;
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setVoiceNotice(
-        lang === 'bn'
-          ? 'আপনার ব্রাউজারে ভয়েস সার্চ সমর্থন করে না। লিখে বা ফিল্টার দিয়ে খুঁজুন।'
-          : 'Voice search is not supported in this browser. Please use filters or type your search.'
-      );
-      setTimeout(() => setVoiceNotice(null), 4000);
+
+    if (isListening) {
+      try {
+        speechRecRef.current?.stop();
+      } catch {}
+      setIsListening(false);
       return;
     }
 
-    if (isListening) {
-      setIsListening(false);
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setShowVoiceQuickTray((prev) => !prev);
+      setVoiceNotice(
+        lang === 'bn'
+          ? 'ব্রাউজারে মাইক্রোফোন সাপোর্ট বন্ধ — নিচের ১-ট্যাপ কুইক ভয়েস প্রিসেট ব্যবহার করুন।'
+          : 'Microphone unavailable in this view — use 1-tap Quick Voice Presets below.'
+      );
+      setTimeout(() => setVoiceNotice(null), 4500);
       return;
     }
 
     try {
       const recognition = new SpeechRecognition();
+      speechRecRef.current = recognition;
       recognition.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
       recognition.interimResults = false;
       recognition.maxAlternatives = 1;
 
-      recognition.onstart = () => setIsListening(true);
+      recognition.onstart = () => {
+        setIsListening(true);
+        setShowVoiceQuickTray(false);
+      };
       recognition.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
+        const transcript = event?.results?.[0]?.[0]?.transcript || '';
         if (transcript) {
           setSearchQuery(transcript);
           const lower = transcript.toLowerCase();
-          if (lower.includes('b+') || lower.includes('বি পজিটিভ')) setSelectedGroup('B+');
-          else if (lower.includes('o+') || lower.includes('ও পজিটিভ')) setSelectedGroup('O+');
-          else if (lower.includes('a+') || lower.includes('এ পজিটিভ')) setSelectedGroup('A+');
-          else if (lower.includes('ab+') || lower.includes('এবি পজিটিভ')) setSelectedGroup('AB+');
-          else if (lower.includes('o-') || lower.includes('ও নেগেটিভ')) setSelectedGroup('O-');
-          else if (lower.includes('b-') || lower.includes('বি নেগেটিভ')) setSelectedGroup('B-');
-          else if (lower.includes('a-') || lower.includes('এ নেগেটিভ')) setSelectedGroup('A-');
-          else if (lower.includes('ab-') || lower.includes('এবি নেগেটিভ')) setSelectedGroup('AB-');
+          if (lower.includes('b+') || lower.includes('b positive') || lower.includes('বি পজিটিভ')) setSelectedGroup('B+');
+          else if (lower.includes('o+') || lower.includes('o positive') || lower.includes('ও পজিটিভ')) setSelectedGroup('O+');
+          else if (lower.includes('a+') || lower.includes('a positive') || lower.includes('এ পজিটিভ')) setSelectedGroup('A+');
+          else if (lower.includes('ab+') || lower.includes('ab positive') || lower.includes('এবি পজিটিভ')) setSelectedGroup('AB+');
+          else if (lower.includes('o-') || lower.includes('o negative') || lower.includes('ও নেগেটিভ')) setSelectedGroup('O-');
+          else if (lower.includes('b-') || lower.includes('b negative') || lower.includes('বি নেগেটিভ')) setSelectedGroup('B-');
+          else if (lower.includes('a-') || lower.includes('a negative') || lower.includes('এ নেগেটিভ')) setSelectedGroup('A-');
+          else if (lower.includes('ab-') || lower.includes('ab negative') || lower.includes('এবি নেগেটিভ')) setSelectedGroup('AB-');
         }
         setIsListening(false);
       };
-      recognition.onerror = () => setIsListening(false);
+      recognition.onerror = () => {
+        setIsListening(false);
+        setShowVoiceQuickTray(true);
+        setVoiceNotice(
+          lang === 'bn'
+            ? 'মাইক্রোফোন অনুমতি বন্ধ আছে — নিচের ১-ট্যাপ কুইক ভয়েস সার্চ বাটন ট্যাপ করুন।'
+            : 'Microphone blocked by browser/preview — tap any Quick Voice Search preset below.'
+        );
+        setTimeout(() => setVoiceNotice(null), 5000);
+      };
       recognition.onend = () => setIsListening(false);
       recognition.start();
     } catch {
       setIsListening(false);
+      setShowVoiceQuickTray(true);
     }
-  };
-
-  const availableDistricts = useMemo(() => {
-    if (selectedDivision === 'ALL') return DISTRICTS;
-    return DISTRICTS.filter((d) => d.divisionId === selectedDivision);
-  }, [selectedDivision]);
-
-  const availableUpazilas = useMemo(() => {
-    if (selectedDistrict === 'ALL') return [];
-    const districtObj = DISTRICTS.find((d) => d.id === selectedDistrict);
-    return districtObj ? districtObj.upazilas : [];
-  }, [selectedDistrict]);
-
-  const handleDivisionChange = (divId: string) => {
-    setSelectedDivision(divId);
-    setSelectedDistrict('ALL');
-    setSelectedUpazila('ALL');
-    setIncludeNearbyDistricts(false);
-  };
-
-  const handleDistrictChange = (distId: string) => {
-    setSelectedDistrict(distId);
-    setSelectedUpazila('ALL');
-    setIncludeNearbyDistricts(false);
   };
 
   const handleResetFilters = () => {
     setSelectedGroup('ALL');
-    setSelectedDivision('ALL');
     setSelectedDistrict('ALL');
-    setSelectedUpazila('ALL');
-    setUrgency('CRITICAL');
-    setRequiredTimeWindow('IMMEDIATE_2H');
-    setIncludeNearbyDistricts(false);
+    setIncludeCompatible(true);
+    setIncludeNearbyDistricts(true);
     setSearchQuery('');
+    setCustomPlaceCoords(null);
     setOnlyAvailable(false);
     setOnlyVerified(false);
-    setOnlyRareNegative(false);
     setOnlyNightReady(false);
     setOnlyCampusClub(false);
     setOnlyShortlisted(false);
+    setGpsFeedback(null);
   };
 
-  const activeAdvancedFilterCount = useMemo(() => {
+  const activeMoreFilterCount = useMemo(() => {
     let count = 0;
-    if (selectedDivision !== 'ALL') count += 1;
-    if (selectedUpazila !== 'ALL') count += 1;
-    if (urgency !== 'CRITICAL') count += 1;
-    if (requiredTimeWindow !== 'IMMEDIATE_2H') count += 1;
     if (onlyVerified) count += 1;
-    if (onlyRareNegative) count += 1;
     if (onlyNightReady) count += 1;
     if (onlyCampusClub) count += 1;
     return count;
-  }, [
-    selectedDivision,
-    selectedUpazila,
-    urgency,
-    requiredTimeWindow,
-    onlyVerified,
-    onlyRareNegative,
-    onlyNightReady,
-    onlyCampusClub,
-  ]);
+  }, [onlyVerified, onlyNightReady, onlyCampusClub]);
 
   const combinedUnsuccessfulSet = useMemo(() => {
     const s = new Set<string>(localUnsuccessfulIds);
@@ -409,24 +409,20 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
       }
       setOutcomeBanner(
         lang === 'bn'
-          ? `${donor.name}-কে 'সাড়া পাওয়া যায়নি' হিসেবে নিচে সরানো হয়েছে — পরবর্তী সেরা রক্তদাতা তালিকায় উপরে আনা হয়েছে।`
-          : `Marked ${donor.name} as unreached and promoted the next best matching donor.`
+          ? `${donor.name}-কে নিচে সরানো হয়েছে — পরের রক্তদাতা উপরে এসেছে।`
+          : `Moved ${donor.name} down and promoted the next best donor.`
       );
-      window.setTimeout(() => setOutcomeBanner(null), 4000);
+      window.setTimeout(() => setOutcomeBanner(null), 3500);
     },
     [lang, onRecordContactOutcome]
   );
 
-  // Pre-filter secondary toggles, then run multi-factor emergency ranker (`rankDonorsForSeeker`)
-  const rankedResults = useMemo(() => {
+  // Run multi-factor matcher + automatic Zero-Dead-End fallback so typing an unknown clinic name never traps user on 0 results!
+  const { rankedResults, usedSmartNearbyFallback } = useMemo(() => {
     const shortlistSet = new Set(shortlistedIds);
     const prefiltered = donors.filter((donor) => {
       if (onlyShortlisted && !shortlistSet.has(donor.id)) return false;
-      if (!includeNearbyDistricts && !matchesSelectedUpazila(donor, selectedDistrict, selectedUpazila)) {
-        return false;
-      }
       if (onlyVerified && !donor.verifiedBadge) return false;
-      if (onlyRareNegative && !donor.bloodGroup.endsWith('-')) return false;
       if (onlyNightReady) {
         const bioLower = `${donor.bio || ''} ${donor.hospitalAffiliation || ''}`.toLowerCase();
         const isNightVolunteer =
@@ -462,14 +458,13 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
       return true;
     });
 
-    return rankDonorsForSeeker(prefiltered, {
+    const primary = rankDonorsForSeeker(prefiltered, {
       bloodGroup: selectedGroup,
       compatibleMatchEnabled: includeCompatible,
-      division: selectedDivision,
       district: selectedDistrict,
       areaQuery: searchQuery,
-      urgency,
-      requiredTimeWindow,
+      urgency: 'CRITICAL',
+      requiredTimeWindow: 'IMMEDIATE_2H',
       originCoords: effectiveOriginCoords,
       includeNearbyDistricts,
       onlyConfirmedOrAvailable: onlyAvailable,
@@ -477,22 +472,40 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
       unsuccessfulDonorIds: combinedUnsuccessfulSet,
       lang,
     });
+
+    // Smart forgiving fallback: if user typed a custom hospital/clinic string that matched 0 donor names,
+    // show nearby compatible donors sorted by distance instead of an empty dead-end screen!
+    if (primary.length === 0 && searchQuery.trim().length > 0 && prefiltered.length > 0 && !onlyShortlisted) {
+      const nearbyFallback = rankDonorsForSeeker(prefiltered, {
+        bloodGroup: selectedGroup,
+        compatibleMatchEnabled: includeCompatible,
+        district: selectedDistrict,
+        urgency: 'CRITICAL',
+        requiredTimeWindow: 'IMMEDIATE_2H',
+        originCoords: effectiveOriginCoords,
+        includeNearbyDistricts: true,
+        onlyConfirmedOrAvailable: onlyAvailable,
+        seekerIsVerifiedUser: isVerifiedSeeker,
+        unsuccessfulDonorIds: combinedUnsuccessfulSet,
+        lang,
+      });
+      if (nearbyFallback.length > 0) {
+        return { rankedResults: nearbyFallback, usedSmartNearbyFallback: true };
+      }
+    }
+
+    return { rankedResults: primary, usedSmartNearbyFallback: false };
   }, [
     donors,
     onlyShortlisted,
     shortlistedIds,
     selectedGroup,
     includeCompatible,
-    selectedDivision,
     selectedDistrict,
-    selectedUpazila,
-    urgency,
-    requiredTimeWindow,
     effectiveOriginCoords,
     includeNearbyDistricts,
     onlyAvailable,
     onlyVerified,
-    onlyRareNegative,
     onlyNightReady,
     onlyCampusClub,
     searchQuery,
@@ -506,7 +519,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     [rankedResults, visibleCount]
   );
 
-  // Pre-resolve authorized direct contacts for visible opted-in cloud donors so 1-tap Call/WhatsApp works without extra steps
+  // Pre-resolve authorized direct contacts for visible opted-in cloud donors
   useEffect(() => {
     let cancelled = false;
     const toResolve = visibleRanked
@@ -557,34 +570,27 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   );
 
   return (
-    <div className="space-y-4 text-left">
-      {/* Medical Emergency Service Disclaimer */}
-      <div className="p-3 sm:p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/35 border border-amber-300/80 dark:border-amber-800/70 flex items-start gap-2.5 text-xs text-amber-950 dark:text-amber-200">
-        <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-        <p className="leading-relaxed">
-          {lang === 'bn'
-            ? 'চিকিৎসা জরুরি বিজ্ঞপ্তি: BloodSearch একটি স্বেচ্ছাসেবী ডোনার যোগাযোগ মাধ্যম—এটি কোনো জরুরি মেডিকেল সার্ভিস নয় এবং রক্তের নিশ্চয়তা প্রদান করে না। জীবন-মরণ পরিস্থিতিতে অবিলম্বে হাসপাতালের ব্লাড ব্যাংক, চিকিৎসক অথবা জাতীয় জরুরি সেবা ৯৯৯ / স্বাস্থ্য বাতায়ন ১৬২৬৩-এ যোগাযোগ করুন।'
-            : 'Medical Disclaimer: BloodSearch is a voluntary donor directory, not an emergency medical service, and cannot guarantee blood availability. Always contact your hospital blood bank, attending physician, or emergency helpline 999 / 16263 immediately.'}
-        </p>
-      </div>
-
+    <div
+      className="space-y-4 text-left"
+      onClick={() => showPlaceSuggestions && setShowPlaceSuggestions(false)}
+    >
       {outcomeBanner && (
         <div className="p-3 rounded-xl bg-slate-900 dark:bg-slate-800 text-white text-xs font-semibold">
           {outcomeBanner}
         </div>
       )}
 
-      {/* Search & Emergency Matching Panel (Clean Progressive Disclosure) */}
-      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-4 sm:p-5 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3.5 border-b border-slate-100 dark:border-slate-800">
+      {/* CLEAN 2-STEP EASY DONOR FINDER CARD */}
+      <div className="surface-card rounded-3xl overflow-hidden transition-colors">
+        <div className="banner-brand-strip text-white px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-              {t.searchTitle}
+            <h1 className="text-lg sm:text-xl font-black tracking-tight text-white">
+              {lang === 'bn' ? 'রক্তদাতা খুঁজুন (সহজ সার্চ)' : 'Find Blood Donors Easily'}
             </h1>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+            <p className="text-xs text-slate-200 mt-0.5">
               {lang === 'bn'
-                ? 'রক্তের গ্রুপ ও জেলা নির্বাচন করলেই সবচেয়ে নিকটস্থ প্রস্তুত ডোনার সবার উপরে দেখাবে'
-                : 'Select blood group & district to see closest confirmed donors first'}
+                ? '১) রক্তের গ্রুপ চাপুন · ২) হাসপাতালের নাম বা এলাকা লিখলেই সবচেয়ে কাছের ডোনার পাবেন'
+                : '1) Tap blood group · 2) Type hospital or area to see closest ready donors'}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -595,38 +601,38 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 className="min-h-[42px] flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl btn-emerald cursor-pointer whitespace-nowrap shrink-0"
               >
                 <UserPlus className="w-4 h-4 shrink-0" />
-                <span>{lang === 'bn' ? '+ ডোনার হোন' : '+ Register Donor'}</span>
+                <span>{lang === 'bn' ? '+ ডোনার হোন' : '+ Become Donor'}</span>
               </button>
             )}
-            <button
-              type="button"
-              onClick={handleResetFilters}
-              className="min-h-[42px] flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl btn-surface cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-              <span>{lang === 'bn' ? 'রিসেট' : 'Reset'}</span>
-            </button>
             <button
               type="button"
               onClick={() =>
                 onOpenSOSModal({
                   bloodGroup: selectedGroup !== 'ALL' ? selectedGroup : undefined,
-                  district: selectedDistrict !== 'ALL' ? selectedDistrict : undefined,
+                  district:
+                    resolvedTypedPlace?.districtId ||
+                    (selectedDistrict !== 'ALL' ? selectedDistrict : undefined),
+                  hospitalName: resolvedTypedPlace
+                    ? lang === 'bn'
+                      ? resolvedTypedPlace.labelBn
+                      : resolvedTypedPlace.labelEn
+                    : searchQuery.trim() || undefined,
                 })
               }
               className="min-h-[42px] flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl btn-crimson cursor-pointer whitespace-nowrap shrink-0"
             >
               <Heart className="w-3.5 h-3.5 fill-white shrink-0" />
-              <span>{lang === 'bn' ? 'জরুরি ব্রডকাস্ট (SOS)' : 'Emergency Broadcast'}</span>
+              <span>{lang === 'bn' ? 'রক্তের রিকোয়েস্ট দিন' : 'Request Blood'}</span>
             </button>
           </div>
         </div>
 
-        {/* Step 1: 1-Tap Blood Group Segmented Selector */}
-        <div className="pt-3.5 space-y-2">
+        <div className="p-4 sm:p-5 space-y-4">
+        {/* STEP 1: 1-TAP BLOOD GROUP SELECTOR */}
+        <div className="space-y-2">
           <div className="flex items-center justify-between flex-wrap gap-2">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              {t.selectBloodGroup}
+            <label className="text-xs font-bold text-[#0b2239] dark:text-slate-200">
+              {lang === 'bn' ? '১. কোন গ্রুপের রক্ত লাগবে?' : '1. Which blood group is needed?'}
             </label>
             {selectedGroup !== 'ALL' && (
               <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300 cursor-pointer">
@@ -637,12 +643,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                   className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4"
                 />
                 <span>
-                  {t.includeCompatible}
-                  {includeCompatible && (
-                    <span className="text-rose-600 dark:text-rose-400 ml-1 font-semibold">
-                      ({getCompatibleDonors(selectedGroup).join(', ')})
-                    </span>
-                  )}
+                  {lang === 'bn' ? 'বিকল্প ম্যাচিং গ্রুপসহ' : 'Include compatible groups'}
                 </span>
               </label>
             )}
@@ -656,7 +657,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 selectedGroup === 'ALL' ? 'btn-crimson' : 'btn-surface'
               }`}
             >
-              {t.allBloodGroups}
+              {lang === 'bn' ? 'সব গ্রুপ' : 'All'}
             </button>
 
             {ALL_BLOOD_GROUPS.map((group) => {
@@ -666,7 +667,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                   type="button"
                   key={group}
                   onClick={() => setSelectedGroup(group)}
-                  className={`min-h-[44px] min-w-[50px] px-3 py-2 text-xs sm:text-sm font-bold rounded-xl cursor-pointer whitespace-nowrap shrink-0 ${
+                  className={`min-h-[44px] min-w-[50px] px-3 py-2 text-xs sm:text-sm font-black rounded-xl cursor-pointer whitespace-nowrap shrink-0 ${
                     isSelected ? 'btn-crimson' : 'btn-surface'
                   }`}
                 >
@@ -677,270 +678,287 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
           </div>
         </div>
 
-        {/* Step 2: Essential Primary Filter Bar (District + Area/Voice + GPS + Advanced Toggle) */}
-        <div className="pt-3 grid grid-cols-1 @md:grid-cols-12 gap-2.5 items-end">
-          <div className="@md:col-span-4">
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {t.selectDistrict}
-            </label>
-            <select
-              value={selectedDistrict}
-              onChange={(e) => handleDistrictChange(e.target.value)}
-              className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-            >
-              <option value="ALL">{t.allDistricts}</option>
-              {availableDistricts.map((dist) => (
-                <option key={dist.id} value={dist.id}>
-                  {lang === 'bn' ? dist.nameBn : dist.nameEn}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* STEP 2: HOSPITAL / AREA SMART INPUT + DISTRICT + 1-TAP GPS */}
+        <div className="space-y-2.5">
+          <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+            {lang === 'bn'
+              ? '২. কোন হাসপাতালে বা এলাকায় রক্ত লাগবে?'
+              : '2. Which hospital or area?'}
+          </label>
 
-          <div className="@md:col-span-5">
-            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {lang === 'bn' ? 'এলাকা, হাসপাতাল বা নাম (ভয়েস সহ)' : 'Area, Hospital or Name'}
-            </label>
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-3.5 text-slate-400" />
+          <div className="grid grid-cols-1 @md:grid-cols-12 gap-2.5">
+            {/* Smart Hospital / Area Autocomplete Box */}
+            <div
+              className="@md:col-span-6 relative"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-rose-500 pointer-events-none" />
               <input
                 type="text"
                 placeholder={
                   isListening
                     ? lang === 'bn'
                       ? 'শুনছি... মুখে বলুন'
-                      : 'Listening... Speak now'
-                    : t.searchPlaceholder
+                      : 'Listening...'
+                    : lang === 'bn'
+                      ? 'হাসপাতাল বা এলাকা লিখুন (যেমন: Square Hospital, DMCH, ধানমন্ডি)...'
+                      : 'Type hospital or area (e.g. Square Hospital, DMCH, Dhanmondi)...'
                 }
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className={`w-full h-11 pl-9 pr-11 text-xs sm:text-sm rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white placeholder:text-slate-400 border transition-colors focus:outline-none focus:ring-2 focus:ring-rose-500 ${
+                onFocus={() => setShowPlaceSuggestions(true)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setCustomPlaceCoords(null);
+                  setShowPlaceSuggestions(true);
+                }}
+                className={`w-full h-11 pl-10 pr-16 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0d1322] text-slate-900 dark:text-white placeholder:text-slate-400 border transition-colors focus:outline-none focus:ring-2 focus:ring-rose-500 ${
                   isListening
                     ? 'border-rose-500 ring-2 ring-rose-500/30'
                     : 'border-slate-300 dark:border-slate-700'
                 }`}
               />
+              <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setCustomPlaceCoords(null);
+                      setShowPlaceSuggestions(false);
+                    }}
+                    className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                    aria-label="Clear search"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleToggleVoice}
+                  className={`min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${
+                    isListening
+                      ? 'bg-rose-600 text-white'
+                      : 'text-slate-400 hover:text-rose-600 hover:bg-slate-200/70 dark:hover:bg-slate-800'
+                  }`}
+                  title={lang === 'bn' ? 'ভয়েস সার্চ' : 'Voice Search'}
+                >
+                  {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {showPlaceSuggestions && placeSuggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-12 z-40 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 shadow-xl max-h-60 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+                  {placeSuggestions.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery(item.title);
+                        setCustomPlaceCoords(item.coords);
+                        setLocationMode('PLACE');
+                        setShowPlaceSuggestions(false);
+                      }}
+                      className="w-full px-3.5 py-2.5 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800/80 flex items-center justify-between gap-2 cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Hospital className="w-4 h-4 text-rose-500 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                            {item.title}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            {item.subtitle}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 shrink-0">
+                        {lang === 'bn' ? 'নির্বাচন' : 'Select'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Simple District Dropdown */}
+            <div className="@md:col-span-3">
+              <select
+                value={selectedDistrict}
+                onChange={(e) => setSelectedDistrict(e.target.value)}
+                aria-label="Select District"
+                className="w-full h-11 px-3 text-xs sm:text-sm font-semibold rounded-xl bg-slate-50 dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+              >
+                <option value="ALL">
+                  {lang === 'bn' ? 'সকল জেলা (All BD)' : 'All 64 Districts'}
+                </option>
+                {DISTRICTS.map((dist) => (
+                  <option key={dist.id} value={dist.id}>
+                    {lang === 'bn' ? dist.nameBn : dist.nameEn}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 1-Tap Live GPS + Reset */}
+            <div className="@md:col-span-3 flex items-center gap-2">
               <button
                 type="button"
-                onClick={handleToggleVoice}
-                className={`absolute right-1.5 top-1.5 min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${
-                  isListening
-                    ? 'bg-rose-600 text-white'
-                    : 'text-slate-400 hover:text-rose-600 hover:bg-slate-100 dark:hover:bg-slate-800'
+                onClick={handleLocateLiveGps}
+                disabled={isLocatingGps}
+                className={`flex-1 min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  locationMode === 'GPS' && gpsAvailable ? 'btn-emerald' : 'btn-surface'
                 }`}
-                title={lang === 'bn' ? 'ভয়েস সার্চ' : 'Voice Search'}
               >
-                {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                <LocateFixed className={`w-3.5 h-3.5 shrink-0 ${isLocatingGps ? 'animate-spin' : ''}`} />
+                <span>
+                  {isLocatingGps
+                    ? lang === 'bn'
+                      ? 'খোঁজা হচ্ছে...'
+                      : 'Locating...'
+                    : locationMode === 'GPS' && gpsAvailable
+                      ? lang === 'bn'
+                        ? 'GPS চালু'
+                        : 'GPS On'
+                      : lang === 'bn'
+                        ? 'আমার GPS'
+                        : 'My GPS'}
+                </span>
               </button>
-            </div>
-            {voiceNotice && (
-              <p className="mt-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-                {voiceNotice}
-              </p>
-            )}
-          </div>
 
-          <div className="@md:col-span-3 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleLocateLiveGps}
-              disabled={isLocatingGps}
-              className={`flex-1 min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                locationMode === 'GPS' && gpsAvailable ? 'btn-emerald' : 'btn-surface'
-              }`}
-              title={lang === 'bn' ? 'লাইভ GPS দূরত্ব গণনা' : 'Calculate live GPS distance'}
-            >
-              <Navigation className="w-3.5 h-3.5 shrink-0" />
-              <span>
-                {isLocatingGps
-                  ? '...'
-                  : locationMode === 'GPS' && gpsAvailable
-                  ? lang === 'bn'
-                    ? 'GPS সক্রিয়'
-                    : 'GPS On'
-                  : 'GPS'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowAdvancedFilters((v) => !v)}
-              className={`flex-1 min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                showAdvancedFilters || activeAdvancedFilterCount > 0
-                  ? 'btn-obsidian'
-                  : 'btn-surface'
-              }`}
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
-              <span>
-                {lang === 'bn' ? 'ফিল্টার' : 'Filters'}
-                {activeAdvancedFilterCount > 0 ? ` (${activeAdvancedFilterCount})` : ''}
-              </span>
-              {showAdvancedFilters ? (
-                <ChevronUp className="w-3.5 h-3.5 shrink-0" />
-              ) : (
-                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              {(selectedGroup !== 'ALL' ||
+                selectedDistrict !== 'ALL' ||
+                searchQuery.trim() !== '' ||
+                onlyAvailable ||
+                activeMoreFilterCount > 0) && (
+                <button
+                  type="button"
+                  onClick={handleResetFilters}
+                  className="min-h-[44px] px-3 rounded-xl btn-surface text-xs font-bold inline-flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                  title={lang === 'bn' ? 'সব রিসেট করুন' : 'Reset'}
+                >
+                  <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden sm:inline">{lang === 'bn' ? 'রিসেট' : 'Reset'}</span>
+                </button>
               )}
-            </button>
+            </div>
           </div>
+
+          {/* 1-Tap Popular Hospital & Area Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 shrink-0 mr-1">
+              {lang === 'bn' ? 'দ্রুত বাছাই:' : 'Quick pick:'}
+            </span>
+            {QUICK_HOSPITAL_CHIPS.map((chip) => {
+              const active = searchQuery.toLowerCase() === chip.query.toLowerCase();
+              return (
+                <button
+                  key={chip.query}
+                  type="button"
+                  onClick={() => {
+                    if (active) {
+                      setSearchQuery('');
+                      setCustomPlaceCoords(null);
+                    } else {
+                      setSearchQuery(chip.query);
+                      setSelectedDistrict('ALL');
+                    }
+                  }}
+                  className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
+                    active
+                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                      : 'bg-slate-100 hover:bg-slate-200/80 dark:bg-[#0d1322] dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-800'
+                  }`}
+                >
+                  {lang === 'bn' ? chip.labelBn : chip.labelEn}
+                </button>
+              );
+            })}
+          </div>
+
+          {voiceNotice && (
+            <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+              {voiceNotice}
+            </p>
+          )}
+
+          {showVoiceQuickTray && (
+            <div className="p-3 rounded-xl bg-rose-50/70 dark:bg-rose-950/25 border border-rose-200/80 dark:border-rose-900/50 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-rose-800 dark:text-rose-200">
+                  {lang === 'bn'
+                    ? '🎙️ কুইক ভয়েস সার্চ প্রিসেট (১-ট্যাপে গ্রুপ + এলাকা বেছে নিন):'
+                    : '🎙️ Quick Voice Search Presets (1-tap Blood Group + Area):'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowVoiceQuickTray(false)}
+                  className="text-[11px] font-bold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white cursor-pointer"
+                >
+                  {lang === 'bn' ? 'বন্ধ করুন ✕' : 'Close ✕'}
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    { group: 'O+' as BloodGroup, query: 'Niketon', label: 'O+ Niketon' },
+                    { group: 'A+' as BloodGroup, query: 'Dhanmondi', label: 'A+ Dhanmondi' },
+                    { group: 'B+' as BloodGroup, query: 'Mirpur', label: 'B+ Mirpur' },
+                    { group: 'O-' as BloodGroup, query: 'Uttara', label: 'O- Uttara' },
+                    { group: 'AB+' as BloodGroup, query: 'Gulshan', label: 'AB+ Gulshan' },
+                    { group: 'O+' as BloodGroup, query: 'LabAid Hospital', label: 'O+ LabAid Hospital' },
+                    { group: 'A-' as BloodGroup, query: 'Square Hospital', label: 'A- Square Hospital' },
+                    { group: 'B-' as BloodGroup, query: 'DMCH', label: 'B- DMCH' },
+                  ] as const
+                ).map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => {
+                      setSelectedGroup(preset.group);
+                      setSearchQuery(preset.query);
+                      setSelectedDistrict('ALL');
+                      setShowVoiceQuickTray(false);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#0d1322] hover:bg-rose-600 hover:text-white dark:hover:bg-rose-600 text-slate-800 dark:text-slate-200 border border-rose-200 dark:border-rose-800/70 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {gpsFeedback && (
+            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+              {gpsFeedback}
+            </p>
+          )}
+
+          {/* Helpful Resolved Hospital / Location Banner */}
+          {resolvedTypedPlace && (
+            <div className="p-2.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/70 text-xs text-emerald-900 dark:text-emerald-200 flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 font-semibold">
+                <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>
+                  {lang === 'bn'
+                    ? `${resolvedTypedPlace.labelBn}-এর সবচেয়ে কাছের ডোনারদের দূরত্ব অনুযায়ী দেখানো হচ্ছে`
+                    : `Showing compatible donors closest to ${resolvedTypedPlace.labelEn}`}
+                </span>
+              </span>
+            </div>
+          )}
+
+          {usedSmartNearbyFallback && !resolvedTypedPlace && (
+            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/70 text-xs text-amber-950 dark:text-amber-200">
+              {lang === 'bn'
+                ? `"${searchQuery}" নামে সরাসরি কোনো প্রোফাইল নেই — তাই আপনার এলাকার সবচেয়ে কাছের সামঞ্জস্যপূর্ণ রক্তদাতাদের দেখানো হচ্ছে।`
+                : `No exact profile text matched "${searchQuery}" — showing nearest compatible donors instead.`}
+            </div>
+          )}
         </div>
 
-        {/* Progressive-Disclosure Collapsible Advanced Filters */}
-        {showAdvancedFilters && (
-          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
-            <div className="grid grid-cols-1 @md:grid-cols-2 @xl:grid-cols-5 gap-2.5">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                  {t.selectDivision}
-                </label>
-                <select
-                  value={selectedDivision}
-                  onChange={(e) => handleDivisionChange(e.target.value)}
-                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-                >
-                  <option value="ALL">{t.allDivisions}</option>
-                  {DIVISIONS.map((div) => (
-                    <option key={div.id} value={div.id}>
-                      {lang === 'bn' ? div.nameBn : div.nameEn}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                  {t.selectUpazila}
-                </label>
-                <select
-                  value={selectedUpazila}
-                  disabled={selectedDistrict === 'ALL' || availableUpazilas.length === 0}
-                  onChange={(e) => setSelectedUpazila(e.target.value)}
-                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-50 cursor-pointer"
-                >
-                  <option value="ALL">{t.allUpazilas}</option>
-                  {availableUpazilas.map((upz) => (
-                    <option key={upz.id} value={upz.id}>
-                      {lang === 'bn' ? upz.nameBn : upz.nameEn}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                  {lang === 'bn' ? 'জরুরিতার মাত্রা' : 'Urgency Level'}
-                </label>
-                <select
-                  value={urgency}
-                  onChange={(e) => setUrgency(e.target.value as UrgencyLevel)}
-                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-                >
-                  <option value="CRITICAL">
-                    {lang === 'bn' ? 'জীবন-মরণ জরুরি (Critical)' : 'Critical (Immediate)'}
-                  </option>
-                  <option value="URGENT">
-                    {lang === 'bn' ? 'জরুরি (Urgent)' : 'Urgent (Today)'}
-                  </option>
-                  <option value="STANDARD">
-                    {lang === 'bn' ? 'সাধারণ / নির্ধারিত' : 'Standard / Scheduled'}
-                  </option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                  {lang === 'bn' ? 'কখন রক্ত প্রয়োজন' : 'Required Time'}
-                </label>
-                <select
-                  value={requiredTimeWindow}
-                  onChange={(e) => setRequiredTimeWindow(e.target.value as RequiredTimeWindow)}
-                  className="w-full h-11 px-3 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-                >
-                  <option value="IMMEDIATE_2H">
-                    {lang === 'bn' ? 'এখনই / ২ ঘণ্টার মধ্যে' : 'Immediate (Within 2h)'}
-                  </option>
-                  <option value="TODAY_6H">
-                    {lang === 'bn' ? 'আজ ৬ ঘণ্টার মধ্যে' : 'Today (Within 6h)'}
-                  </option>
-                  <option value="WITHIN_24H">
-                    {lang === 'bn' ? '২৪ ঘণ্টার মধ্যে' : 'Within 24 hours'}
-                  </option>
-                  <option value="SCHEDULED">
-                    {lang === 'bn' ? 'নির্ধারিত তারিখ' : 'Scheduled Later'}
-                  </option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                  {lang === 'bn' ? 'ম্যানুয়াল দূরত্ব কেন্দ্র' : 'Manual Distance Origin'}
-                </label>
-                <select
-                  value={selectedDistrict !== 'ALL' ? selectedDistrict : manualAnchorDistrict}
-                  onChange={(e) => {
-                    setLocationMode('MANUAL');
-                    setManualAnchorDistrict(e.target.value);
-                  }}
-                  aria-label="Manual Location Anchor District"
-                  className="w-full h-11 px-2.5 text-xs rounded-xl bg-white dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-                >
-                  {DISTRICTS.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {lang === 'bn' ? `কেন্দ্র: ${d.nameBn}` : `Origin: ${d.nameEn}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-slate-300 min-h-[38px] px-2.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800">
-                <input
-                  type="checkbox"
-                  checked={onlyVerified}
-                  onChange={(e) => setOnlyVerified(e.target.checked)}
-                  className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4"
-                />
-                <span>{t.verifiedOnly}</span>
-              </label>
-
-              <button
-                type="button"
-                onClick={() => setOnlyRareNegative((v) => !v)}
-                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  onlyRareNegative ? 'btn-crimson' : 'btn-surface'
-                }`}
-              >
-                <span>{lang === 'bn' ? 'নেগেটিভ গ্রুপ' : 'Rare Negative'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setOnlyNightReady((v) => !v)}
-                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  onlyNightReady ? 'btn-obsidian' : 'btn-surface'
-                }`}
-              >
-                <Moon className="w-3.5 h-3.5" />
-                <span>{lang === 'bn' ? 'গভীর রাতে প্রস্তুত' : 'Night Ready'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setOnlyCampusClub((v) => !v)}
-                className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  onlyCampusClub ? 'btn-obsidian' : 'btn-surface'
-                }`}
-              >
-                <GraduationCap className="w-3.5 h-3.5" />
-                <span>{lang === 'bn' ? 'ক্যাম্পাস ক্লাব' : 'Campus & Clubs'}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Essential Quick Status Bar: Available Only + Saved Shortlist + Expand Nearby + Live Count */}
-        <div className="pt-3 mt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+        {/* Minimal Footer Bar: Available Toggle + Saved + Optional More Filters + Count */}
+        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2.5 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -950,7 +968,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               }`}
             >
               <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-              <span>{t.availableOnly}</span>
+              <span>{lang === 'bn' ? 'শুধু প্রস্তুত ডোনার' : 'Ready Now Only'}</span>
             </button>
 
             <button
@@ -959,20 +977,89 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                 onlyShortlisted ? 'btn-crimson' : 'btn-surface'
               }`}
-              title={
-                lang === 'bn'
-                  ? 'বুকমার্ক করে রাখা ডোনারদের তালিকা'
-                  : 'View bookmarked/shortlisted donors'
-              }
             >
               <Bookmark
                 className={`w-3.5 h-3.5 shrink-0 ${onlyShortlisted ? 'fill-white' : ''}`}
               />
               <span className="tabular-nums">
                 {lang === 'bn'
-                  ? `সংরক্ষিত (${shortlistedIds.length})`
+                  ? `সেভ করা (${shortlistedIds.length})`
                   : `Saved (${shortlistedIds.length})`}
               </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowMoreFilters((v) => !v)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                showMoreFilters || activeMoreFilterCount > 0 ? 'btn-obsidian' : 'btn-surface'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {lang === 'bn' ? 'আরও অপশন' : 'More'}
+                {activeMoreFilterCount > 0 ? ` (${activeMoreFilterCount})` : ''}
+              </span>
+              {showMoreFilters ? (
+                <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              )}
+            </button>
+          </div>
+
+          {/* Clean Tabular Count Summary */}
+          <div className="text-xs text-slate-600 dark:text-slate-300 tabular-nums">
+            <span className="text-rose-600 dark:text-rose-400 font-bold text-sm">
+              {rankedResults.length}
+            </span>{' '}
+            {t.donorsFound}
+            {confirmedRecentCount > 0 && (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
+                  {confirmedRecentCount}{' '}
+                  {lang === 'bn' ? 'জন প্রস্তুত' : 'confirmed'}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Clean Optional More Filters (Collapsed by Default) */}
+        {showMoreFilters && (
+          <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setOnlyVerified((v) => !v)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                onlyVerified ? 'btn-obsidian' : 'btn-surface'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>{t.verifiedOnly}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setOnlyNightReady((v) => !v)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                onlyNightReady ? 'btn-obsidian' : 'btn-surface'
+              }`}
+            >
+              <Moon className="w-3.5 h-3.5" />
+              <span>{lang === 'bn' ? 'রাতে রক্তদানে প্রস্তুত' : 'Night Ready'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setOnlyCampusClub((v) => !v)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                onlyCampusClub ? 'btn-obsidian' : 'btn-surface'
+              }`}
+            >
+              <GraduationCap className="w-3.5 h-3.5" />
+              <span>{lang === 'bn' ? 'সন্ধানী / বাঁধন / ক্লাব' : 'Campus & Clubs'}</span>
             </button>
 
             {selectedDistrict !== 'ALL' && (
@@ -985,36 +1072,18 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               >
                 <Expand className="w-3.5 h-3.5 shrink-0" />
                 <span>
-                  {lang === 'bn'
-                    ? includeNearbyDistricts
-                      ? '✓ পার্শ্ববর্তী জেলা যুক্ত'
-                      : '+ পার্শ্ববর্তী জেলা যুক্ত করুন'
-                    : includeNearbyDistricts
-                    ? '✓ Nearby Districts Included'
-                    : '+ Nearby Districts'}
+                  {lang === 'bn' ? 'আশেপাশের জেলা যুক্ত' : 'Nearby Districts On'}
                 </span>
               </button>
             )}
           </div>
-
-          {/* Clean Tabular Count Summary */}
-          <div className="text-xs text-slate-600 dark:text-slate-300 tabular-nums">
-            <span className="text-rose-600 dark:text-rose-400 font-bold text-sm">
-              {rankedResults.length}
-            </span>{' '}
-            {t.donorsFound}
-            <span aria-hidden="true"> · </span>
-            <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
-              {confirmedRecentCount}{' '}
-              {lang === 'bn' ? 'সাম্প্রতিক নিশ্চিতকৃত' : 'recently confirmed'}
-            </span>
-          </div>
+        )}
         </div>
       </div>
 
-      {/* Donors Card Grid */}
+      {/* DONORS CARD GRID */}
       {rankedResults.length === 0 ? (
-        <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-8 sm:p-12 text-center space-y-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+        <div className="surface-card rounded-2xl p-8 sm:p-10 text-center space-y-4">
           <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 dark:bg-rose-950/40 flex items-center justify-center text-rose-600">
             <Search className="w-6 h-6" />
           </div>
@@ -1024,51 +1093,28 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 ? lang === 'bn'
                   ? 'এখনো কোনো নিবন্ধিত রক্তদাতা যুক্ত হননি'
                   : 'No Registered Donors Yet'
-                : t.noDonorsFound}
+                : lang === 'bn'
+                  ? 'এই মুহূর্তে কোনো ম্যাচিং ডোনার পাওয়া যায়নি'
+                  : 'No matching donors in this filter'}
             </h3>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto mt-1 leading-relaxed">
-              {donors.length === 0
-                ? lang === 'bn'
-                  ? 'সব ফেইক ডাটা মুছে ১০০% রিয়েল-ইউজার মোড চালু আছে। নতুন রক্তদাতা লগইন বা রেজিস্ট্রেশন করলেই অটোমেটিক এখানে সেভ হয়ে দেখাবে।'
-                  : '100% real-user mode is active. Every new donor who signs in or registers will automatically save and appear here.'
-                : lang === 'bn'
-                  ? 'এই ফিল্টারে কোনো রক্তদাতা পাওয়া যায়নি। এক ক্লিকে পার্শ্ববর্তী জেলা যুক্ত করুন অথবা জরুরি ব্রডকাস্ট পাঠান।'
-                  : 'No matching donors in this narrow area. Expand your search radius in one click or send an emergency broadcast.'}
+              {lang === 'bn'
+                ? 'নিচের বাটনে চাপ দিয়ে সব এলাকার ডোনার দেখুন অথবা ১৫ সেকেন্ডে জরুরি রক্তের রিকোয়েস্ট পোস্ট করুন।'
+                : 'Show all nearby donors in one tap or post a quick 15-second blood request below.'}
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
-            {(selectedDistrict !== 'ALL' || selectedDivision !== 'ALL' || onlyAvailable) && (
+            {donors.length > 0 && (
               <button
                 type="button"
-                onClick={() => {
-                  if (selectedDistrict !== 'ALL' && !includeNearbyDistricts) {
-                    setIncludeNearbyDistricts(true);
-                  } else {
-                    setSelectedUpazila('ALL');
-                    setSelectedDistrict('ALL');
-                    setSelectedDivision('ALL');
-                    setOnlyAvailable(false);
-                  }
-                }}
+                onClick={handleResetFilters}
                 className="min-h-[44px] px-4 py-2.5 btn-obsidian font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
               >
                 <Expand className="w-4 h-4 shrink-0" />
                 <span>
                   {lang === 'bn'
-                    ? 'সার্চ পরিধি ও পার্শ্ববর্তী জেলা প্রসারিত করুন'
-                    : 'Expand Search Radius & Nearby Districts'}
-                </span>
-              </button>
-            )}
-            {onOpenRegister && (
-              <button
-                type="button"
-                onClick={onOpenRegister}
-                className="min-h-[44px] px-4 py-2.5 btn-emerald font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
-              >
-                <UserPlus className="w-4 h-4 shrink-0" />
-                <span>
-                  {lang === 'bn' ? '+ ডোনার হিসেবে নাম যুক্ত করুন' : '+ Register as Donor'}
+                    ? 'সকল রক্তদাতা দেখুন'
+                    : 'Show All Available Donors'}
                 </span>
               </button>
             )}
@@ -1078,12 +1124,15 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 onOpenSOSModal({
                   bloodGroup: selectedGroup !== 'ALL' ? selectedGroup : undefined,
                   district: selectedDistrict !== 'ALL' ? selectedDistrict : undefined,
+                  hospitalName: searchQuery.trim() || undefined,
                 })
               }
               className="min-h-[44px] px-4 py-2.5 btn-crimson font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
             >
               <Heart className="w-4 h-4 fill-white shrink-0" />
-              <span>{t.createSosTitle}</span>
+              <span>
+                {lang === 'bn' ? 'রক্তের রিকোয়েস্ট পোস্ট করুন' : 'Post Blood Request'}
+              </span>
             </button>
           </div>
         </div>
@@ -1160,16 +1209,16 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               return (
                 <div
                   key={donor.id}
-                  className={`cv-auto bg-white dark:bg-[#111827] border rounded-2xl p-4 sm:p-5 transition-colors shadow-[0_1px_3px_rgba(15,23,42,0.04)] flex flex-col justify-between ${
+                  className={`cv-auto surface-card rounded-2xl p-4 sm:p-5 transition-colors flex flex-col justify-between ${
                     isConfirmedMatch
                       ? 'border-emerald-500 ring-1 ring-emerald-500'
                       : wasAttemptedUnsuccessfully
-                      ? 'border-slate-200 dark:border-slate-800 opacity-75'
-                      : 'border-slate-200/90 dark:border-slate-800/90 hover:border-rose-400 dark:hover:border-rose-600'
+                        ? 'opacity-75'
+                        : 'hover:border-rose-400 dark:hover:border-rose-600'
                   }`}
                 >
                   <div>
-                    {/* Top Row: Blood Group, Name & Clear Availability Confidence */}
+                    {/* Top Row: Blood Group, Name & Clear Distance */}
                     <div className="flex items-start justify-between gap-3 mb-2.5">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         <div className="w-12 h-12 rounded-2xl btn-crimson flex flex-col items-center justify-center font-black text-lg tracking-tight shrink-0">
@@ -1189,7 +1238,6 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                               </span>
                             )}
                           </div>
-                          {/* Unboxed metadata line: Blood match type & affiliation */}
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
                             {selectedGroup !== 'ALL' && (
                               <>
@@ -1199,8 +1247,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                                       ? 'সরাসরি গ্রুপ ম্যাচ'
                                       : 'Exact Match'
                                     : lang === 'bn'
-                                    ? 'সামঞ্জস্যপূর্ণ ডোনার'
-                                    : 'Compatible Match'}
+                                      ? 'বিকল্প ম্যাচিং গ্রুপ'
+                                      : 'Compatible'}
                                 </span>
                                 {donor.hospitalAffiliation ? <span aria-hidden="true"> · </span> : null}
                               </>
@@ -1210,27 +1258,22 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                         </div>
                       </div>
 
-                      {/* Availability Confidence + Distance + 1-Tap Bookmark */}
                       <div className="shrink-0 flex items-start gap-2">
                         <div className="text-right">
                           {availabilityConfidence === 'CONFIRMED_RECENT' ? (
                             <div className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
-                              {lang === 'bn' ? 'প্রস্তুতি নিশ্চিত' : 'Confirmed Available'}
+                              {lang === 'bn' ? 'প্রস্তুত' : 'Available'}
                             </div>
                           ) : availabilityConfidence === 'UNKNOWN_UNCONFIRMED' ? (
-                            <div className="text-xs font-bold text-amber-700 dark:text-amber-400">
-                              {lang === 'bn' ? 'স্ট্যাটাস অজানা' : 'Status Unknown'}
-                            </div>
-                          ) : availabilityConfidence === 'DND' ? (
-                            <div className="text-xs font-bold text-slate-500">
-                              {lang === 'bn' ? 'সাময়িক বিরতি' : 'Paused'}
+                            <div className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                              {lang === 'bn' ? 'সক্রিয়' : 'Active'}
                             </div>
                           ) : (
-                            <div className="text-xs font-bold text-slate-500">
-                              {lang === 'bn' ? 'সাময়িক অনুপস্থিত' : 'Unavailable'}
+                            <div className="text-xs font-bold text-slate-400">
+                              {lang === 'bn' ? 'বিরতিতে' : 'Paused'}
                             </div>
                           )}
-                          <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
+                          <div className="text-[11px] font-mono tabular-nums text-emerald-700 dark:text-emerald-400 font-bold mt-0.5">
                             ~{formatDistance(distanceKm, lang)}
                           </div>
                         </div>
@@ -1243,19 +1286,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                               ? 'Remove from shortlist'
                               : 'Save donor to shortlist'
                           }
-                          title={
-                            lang === 'bn'
-                              ? shortlistedIds.includes(donor.id)
-                                ? 'সংরক্ষিত তালিকা থেকে সরান'
-                                : 'ডোনার সংরক্ষণ (শর্টলিস্ট) করুন'
-                              : shortlistedIds.includes(donor.id)
-                              ? 'Saved in shortlist'
-                              : 'Save to shortlist'
-                          }
-                          className={`min-h-[38px] min-w-[38px] rounded-xl flex items-center justify-center cursor-pointer shrink-0 ${
-                            shortlistedIds.includes(donor.id)
-                              ? 'btn-soft-rose'
-                              : 'btn-surface'
+                          className={`min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center cursor-pointer shrink-0 ${
+                            shortlistedIds.includes(donor.id) ? 'btn-soft-rose' : 'btn-surface'
                           }`}
                         >
                           <Bookmark
@@ -1269,7 +1301,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                       </div>
                     </div>
 
-                    {/* Last Availability Update & Location Metadata (Zero-Pill Unboxed Text) */}
+                    {/* Unboxed Location & Freshness Metadata */}
                     <div className="py-2 border-t border-slate-100 dark:border-slate-800/80 space-y-1 text-xs text-slate-600 dark:text-slate-300">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-1 font-medium text-slate-700 dark:text-slate-200 truncate">
@@ -1306,170 +1338,121 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                                 ? `বিরতি বাকি: ${recoveryDaysLeft} দিন`
                                 : `Cooldown: ${recoveryDaysLeft}d left`}
                             </span>
-                          ) : donor.lastDonatedDate ? (
-                            <span className="tabular-nums">
-                              {t.lastDonation}: {donor.lastDonatedDate}
-                            </span>
                           ) : (
                             <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
-                              {t.notDonatedYet}
+                              {lang === 'bn' ? 'রক্তদানে উপযুক্ত' : 'Eligible now'}
                             </span>
                           )}
                         </span>
                       </div>
                     </div>
-
-                    {wasAttemptedUnsuccessfully && (
-                      <div className="mt-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-                        {lang === 'bn'
-                          ? 'পূর্বে কল করা হয়েছে (সাড়া মেলেনি)'
-                          : 'Previously attempted (no response yet)'}
-                      </div>
-                    )}
                   </div>
 
-                  {/* Direct Low-Friction Contact Actions */}
-                  <div className="pt-3 mt-2.5 border-t border-slate-100 dark:border-slate-800/80 space-y-2">
+                  {/* Direct 1-Tap Contact Actions */}
+                  <div className="pt-3 mt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-2">
                     <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                      {consentCheck.allowed ? (
-                        <span className="text-emerald-700 dark:text-emerald-400 font-semibold truncate">
-                          {lang === 'bn'
-                            ? 'সরাসরি কল ও WhatsApp করা যাবে'
-                            : 'Direct Call & WhatsApp available'}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-slate-500 truncate">
-                          <Lock className="w-3 h-3 shrink-0" />
-                          <span className="truncate">
-                            {availabilityConfidence === 'DND'
-                              ? lang === 'bn'
-                                ? 'ডু নট ডিস্টার্ব সক্রিয়'
-                                : 'Do Not Disturb active'
-                              : lang === 'bn'
-                              ? 'অনুমতি সাপেক্ষে নম্বর / চ্যাট'
-                              : 'Consent request or In-App Chat'}
-                          </span>
-                        </span>
-                      )}
+                      <span className="truncate">
+                        {consentCheck.allowed
+                          ? lang === 'bn'
+                            ? 'সরাসরি কল ও WhatsApp খোলা আছে'
+                            : 'Direct Call & WhatsApp ready'
+                          : lang === 'bn'
+                            ? 'ইন-অ্যাপ চ্যাট বা অনুমতির মাধ্যমে যোগাযোগ'
+                            : 'Chat or request contact'}
+                      </span>
 
                       {!wasAttemptedUnsuccessfully && availabilityConfidence !== 'DND' && (
                         <button
                           type="button"
                           onClick={() => handleMarkUnsuccessfulAndNext(donor)}
                           className="text-[11px] font-semibold text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
-                          title={
-                            lang === 'bn'
-                              ? 'ফোন না ধরলে পরের ডোনারে যান'
-                              : 'Record no answer and move to next donor'
-                          }
                         >
                           <SkipForward className="w-3 h-3" />
-                          <span>{lang === 'bn' ? 'সাড়া নেই? পরের জন' : 'No Answer? Next'}</span>
+                          <span>{lang === 'bn' ? 'ফোন ধরেনি? পরের জন' : 'No Answer? Next'}</span>
                         </button>
                       )}
                     </div>
 
-                    {/* Primary Contact Buttons */}
                     {consentCheck.allowed ? (
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-3 gap-2">
-                          {directCallHref ? (
-                            <a
-                              href={directCallHref}
-                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                              title={lang === 'bn' ? 'ফোন ডায়ালার খুলবে' : 'Opens Phone Dialer'}
-                            >
-                              <Phone className="w-3.5 h-3.5 shrink-0" />
-                              <span className="truncate">
-                                {lang === 'bn' ? 'কল করুন' : 'Call'}
-                              </span>
-                            </a>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onRevealPhone(donor)}
-                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                            >
-                              <Phone className="w-3.5 h-3.5 shrink-0" />
-                              <span className="truncate">{t.callDonor}</span>
-                            </button>
-                          )}
+                      <div className="grid grid-cols-3 gap-2">
+                        {directCallHref ? (
+                          <a
+                            href={directCallHref}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          >
+                            <Phone className="w-3.5 h-3.5 shrink-0" />
+                            <span>{lang === 'bn' ? 'কল করুন' : 'Call'}</span>
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onRevealPhone(donor)}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          >
+                            <Phone className="w-3.5 h-3.5 shrink-0" />
+                            <span>{t.callDonor}</span>
+                          </button>
+                        )}
 
-                          {directWaHref ? (
-                            <a
-                              href={directWaHref}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
-                              title={lang === 'bn' ? 'WhatsApp খুলবে' : 'Opens WhatsApp'}
-                            >
-                              <span className="truncate">WhatsApp</span>
-                            </a>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onRevealPhone(donor)}
-                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
-                            >
-                              <span className="truncate">WhatsApp</span>
-                            </button>
-                          )}
+                        {directWaHref ? (
+                          <a
+                            href={directWaHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                          >
+                            <span>WhatsApp</span>
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onRevealPhone(donor)}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                          >
+                            <span>WhatsApp</span>
+                          </button>
+                        )}
 
-                          {effectiveRawPhone ? (
-                            <button
-                              type="button"
-                              onClick={() => handleCopyDirectPhone(donor.id, effectiveRawPhone)}
-                              className={`w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                                copiedDonorId === donor.id ? 'btn-soft-emerald' : 'btn-obsidian'
-                              }`}
-                              title={
-                                lang === 'bn'
-                                  ? 'অন্য ফোন থেকে কল করতে নম্বর কপি করুন'
-                                  : 'Copy phone number'
-                              }
-                            >
-                              {copiedDonorId === donor.id ? (
-                                <>
-                                  <Check className="w-3.5 h-3.5 shrink-0" />
-                                  <span className="truncate">
-                                    {lang === 'bn' ? 'কপি হয়েছে' : 'Copied'}
-                                  </span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3.5 h-3.5 shrink-0" />
-                                  <span className="truncate">
-                                    {lang === 'bn' ? 'নম্বর কপি' : 'Copy No.'}
-                                  </span>
-                                </>
-                              )}
-                            </button>
-                          ) : onStartChatWithDonor ? (
-                            <button
-                              type="button"
-                              onClick={() => onStartChatWithDonor(donor)}
-                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                              <span className="truncate">
-                                {lang === 'bn' ? 'চ্যাট / SMS' : 'Chat'}
-                              </span>
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onRevealPhone(donor)}
-                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                            >
-                              <span className="truncate">
-                                {lang === 'bn' ? 'বিস্তারিত' : 'Options'}
-                              </span>
-                            </button>
-                          )}
-                        </div>
+                        {effectiveRawPhone ? (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyDirectPhone(donor.id, effectiveRawPhone)}
+                            className={`w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                              copiedDonorId === donor.id ? 'btn-soft-emerald' : 'btn-obsidian'
+                            }`}
+                          >
+                            {copiedDonorId === donor.id ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 shrink-0" />
+                                <span>{lang === 'bn' ? 'কপি হয়েছে' : 'Copied'}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5 shrink-0" />
+                                <span>{lang === 'bn' ? 'নম্বর কপি' : 'Copy No.'}</span>
+                              </>
+                            )}
+                          </button>
+                        ) : onStartChatWithDonor ? (
+                          <button
+                            type="button"
+                            onClick={() => onStartChatWithDonor(donor)}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                            <span>{lang === 'bn' ? 'চ্যাট' : 'Chat'}</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onRevealPhone(donor)}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          >
+                            <span>{lang === 'bn' ? 'বিস্তারিত' : 'Details'}</span>
+                          </button>
+                        )}
                       </div>
                     ) : (
-                      /* Non-Opted-In / Request-Only / DND Fallback Actions (Never broken masked links!) */
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
@@ -1478,14 +1461,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                         >
                           <Lock className="w-3.5 h-3.5 shrink-0" />
-                          <span className="truncate">
-                            {availabilityConfidence === 'DND'
-                              ? lang === 'bn'
-                                ? 'বিরত (DND)'
-                                : 'DND Active'
-                              : lang === 'bn'
-                              ? 'নম্বরের অনুমতি চান'
-                              : 'Request Contact'}
+                          <span>
+                            {lang === 'bn' ? 'নম্বর দেখুন' : 'Request Contact'}
                           </span>
                         </button>
                         {onStartChatWithDonor && (
@@ -1495,9 +1472,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">
-                              {lang === 'bn' ? 'ইন-অ্যাপ চ্যাট' : 'In-App Chat'}
-                            </span>
+                            <span>{lang === 'bn' ? 'মেসেজ দিন' : 'Chat'}</span>
                           </button>
                         )}
                       </div>

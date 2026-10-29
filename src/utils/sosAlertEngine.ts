@@ -481,11 +481,24 @@ export function downloadSmartDonorIdCardPng(params: {
   ctx.font = 'bold 44px sans-serif';
   ctx.fillText(params.donorName.slice(0, 32), 48, 288);
 
+  const cleanCardPhone =
+    params.phone && params.phone !== '01700000000' && params.phone !== '—'
+      ? params.phone
+      : 'Verified on App';
+
   const fields = [
     { label: 'SMART CARD ID', value: params.idCardNumber },
     { label: 'DISTRICT / ZONE', value: params.district || 'Bangladesh' },
-    { label: 'CONTACT PHONE', value: params.phone || 'Verified on App' },
-    { label: 'DONATION RECORD', value: `${params.totalDonations} Verified Bag(s)` },
+    { label: 'CONTACT PHONE', value: cleanCardPhone },
+    {
+      label: 'DONATION STATUS',
+      value:
+        params.totalDonations > 0
+          ? `${params.totalDonations} Time(s) Donated`
+          : params.isAvailable
+          ? 'Ready Donor'
+          : 'Registered Donor',
+    },
   ];
 
   fields.forEach((f, idx) => {
