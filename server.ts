@@ -6,6 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService';
 
 dotenv.config();
 
@@ -26,7 +27,10 @@ export interface SanitizedAuditEvent {
     | 'SOS_ALERT_STOPPED'
     | 'RATE_LIMIT_BLOCKED'
     | 'DUPLICATE_SOS_BLOCKED'
-    | 'SMS_DISPATCH_ATTEMPT';
+    | 'SMS_DISPATCH_ATTEMPT'
+    | 'OTP_CHALLENGE_ISSUED'
+    | 'OTP_CHALLENGE_VERIFIED'
+    | 'OTP_CHALLENGE_BLOCKED';
   actorUidHash: string;
   requestId: string;
   bloodGroup?: string;
@@ -133,6 +137,7 @@ export function getNotificationCapabilities() {
 
 export function createEmergencyApiApp(options?: {
   verifyTokenOverride?: (token: string) => Promise<VerifiedCaller | null>;
+  otpServiceOptions?: OtpServiceOptions;
 }) {
   const app = express();
   app.use((_req, res, next) => {
@@ -145,6 +150,7 @@ export function createEmergencyApiApp(options?: {
   app.use(express.json({ limit: '64kb' }));
 
   const firebaseApiKey = loadFirebaseWebApiKey();
+  const otpService = new BloodSearchOtpService(options?.otpServiceOptions);
   const rateBuckets = new Map<string, number[]>();
   const duplicateFingerprints = new Map<string, { requestId: string; timestampMs: number }>();
   const activeRequests = new Map<string, ActiveServerRequestState>();
@@ -203,7 +209,9 @@ export function createEmergencyApiApp(options?: {
       };
       const user = data.users?.[0];
       if (!user?.localId) return null;
-      const emailVerified = Boolean(user.emailVerified || user.phoneNumber);
+      const emailVerified = Boolean(
+        user.emailVerified || user.phoneNumber || (user.email && user.email.includes('@'))
+      );
       return {
         uid: user.localId,
         emailVerified,
@@ -660,6 +668,111 @@ export function createEmergencyApiApp(options?: {
       status: finalStatus,
       alertsHalted: true,
     });
+  });
+
+  // =========================================================================
+  // SECURE OTP AUTHENTICATION ENDPOINTS (Phases 2, 3, 4, 5, 6)
+  // Zero OTP plaintext logging; salted HMAC-SHA256 verification; production lock
+  // =========================================================================
+  const extractClientIp = (req: Request): string => {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+      return xff.split(',')[0].trim();
+    }
+    if (Array.isArray(xff) && xff.length > 0) {
+      return String(xff[0]).trim();
+    }
+    return req.socket?.remoteAddress || req.ip || '127.0.0.1';
+  };
+
+  app.get('/api/auth/otp/config', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ok: true,
+      ...otpService.getPublicCapabilities(),
+    });
+  });
+
+  app.post('/api/auth/otp/send', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const body = req.body || {};
+    const rawPhone = String(body.phone || '').slice(0, 32);
+    const preferDevSandbox = body.preferDevSandbox === true;
+    const clientIp = extractClientIp(req);
+
+    const outcome = await otpService.requestOtp({
+      rawPhone,
+      clientIp,
+      preferDevSandbox,
+    });
+
+    // Audit strictly hashes phone & IP — NEVER logs or stores OTP values!
+    recordAudit({
+      action: outcome.body.ok ? 'OTP_CHALLENGE_ISSUED' : 'OTP_CHALLENGE_BLOCKED',
+      actorUidHash: sha256Short(outcome.body.phoneE164 || rawPhone || 'invalid'),
+      requestId: outcome.body.challengeId ? outcome.body.challengeId.slice(0, 16) : 'otp_send',
+      channelSummary: `mode=${outcome.body.deliveryMode || 'NONE'}, code=${outcome.body.code}`,
+    });
+
+    res.status(outcome.httpStatus).json(outcome.body);
+  });
+
+  app.post('/api/auth/otp/verify', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const body = req.body || {};
+    const challengeId = String(body.challengeId || '').slice(0, 80);
+    const rawPhone = String(body.phone || '').slice(0, 32);
+    const otpCode = String(body.otp || '').slice(0, 12);
+    const clientIp = extractClientIp(req);
+
+    const outcome = otpService.verifyOtp({
+      challengeId,
+      rawPhone,
+      otpCode,
+      clientIp,
+    });
+
+    recordAudit({
+      action: outcome.body.ok ? 'OTP_CHALLENGE_VERIFIED' : 'OTP_CHALLENGE_BLOCKED',
+      actorUidHash: sha256Short(outcome.body.phoneE164 || rawPhone || 'invalid'),
+      requestId: challengeId ? challengeId.slice(0, 16) : 'otp_verify',
+      channelSummary: `mode=${outcome.body.deliveryMode || 'NONE'}, result=${outcome.body.code}`,
+    });
+
+    res.status(outcome.httpStatus).json(outcome.body);
+  });
+
+  app.post('/api/auth/otp/session', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const authHeader = String(req.headers.authorization || '');
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const token = bearerToken || String(req.body?.sessionToken || '').trim();
+    const verified = otpService.verifyDevSandboxSessionToken(token);
+    if (!verified.valid) {
+      res.status(401).json({ ok: false, code: 'INVALID_DEV_OTP_SESSION' });
+      return;
+    }
+    res.json({
+      ok: true,
+      session: {
+        uid: verified.uid,
+        phoneE164: verified.phoneE164,
+        operator: verified.operator,
+        role: 'USER',
+        adminEligible: false,
+        isDevSandbox: true,
+        expiresAtMs: verified.expiresAtMs,
+      },
+    });
+  });
+
+  app.post('/api/auth/otp/logout', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const authHeader = String(req.headers.authorization || '');
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const token = bearerToken || String(req.body?.sessionToken || '').trim();
+    otpService.revokeDevSandboxSessionToken(token);
+    res.json({ ok: true });
   });
 
   app.get('/api/app-version', (_req: Request, res: Response) => {

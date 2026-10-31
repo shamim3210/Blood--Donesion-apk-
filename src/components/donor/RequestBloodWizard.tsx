@@ -11,6 +11,8 @@ import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
 import { DISTRICTS } from '../../data/bangladeshGeo';
 import {
   auth,
+  isUserVerifiedForWrites,
+  getStoredDevOtpSandboxSession,
   checkActionCooldownGuard,
   dispatchEmergencyBroadcastClient,
   EmergencyBroadcastDispatchResult,
@@ -105,8 +107,10 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     useState<EmergencyBroadcastDispatchResult | null>(null);
   const [copiedFallbackSms, setCopiedFallbackSms] = useState(false);
 
+  const devOtpSession = getStoredDevOtpSandboxSession();
+  const activeAuthorUid = auth.currentUser?.uid || devOtpSession?.uid;
   const isVerifiedSeeker = Boolean(
-    auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
+    isUserVerifiedForWrites(auth.currentUser) || devOtpSession
   );
 
   // Prefill seeker phone, blood group, hospital & district from context or real logged-in profile
@@ -131,7 +135,9 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
       const raw = localStorage.getItem('bloodsearch_current_user');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed?.phone && !contactPhone) setContactPhone(parsed.phone);
+        if (parsed?.phone && parsed.phone !== '01700000000' && !contactPhone) {
+          setContactPhone(parsed.phone);
+        }
         if (!initialDistrict && !initialHospitalName && parsed?.district) {
           const matched = DISTRICTS.find(
             (d) =>
@@ -198,10 +204,10 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
       originCoords: origin,
       allDonors: donors,
       alreadyNotifiedDonorIds: [],
-      excludeUid: auth.currentUser?.uid,
+      excludeUid: activeAuthorUid,
       exchangeAllowed,
     });
-  }, [bloodGroup, district, hospitalName, donors, exchangeAllowed]);
+  }, [bloodGroup, district, hospitalName, donors, exchangeAllowed, activeAuthorUid]);
 
   // Top opted-in donors seeker can call immediately in parallel while alerts run
   const immediateDirectDonors = useMemo(() => {
@@ -309,21 +315,30 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
       const candidateIds = initialEscalationPlan.eligibleDonorsToNotify.map((d) => d.id);
       const reqId = `sos_${nowMs}`;
 
+      let seekerSavedName = '';
+      try {
+        const savedRaw = localStorage.getItem('bloodsearch_current_user');
+        const savedParsed = savedRaw ? JSON.parse(savedRaw) : null;
+        if (savedParsed?.name && String(savedParsed.name).trim().length >= 2) {
+          seekerSavedName = String(savedParsed.name).trim().slice(0, 80);
+        }
+      } catch {}
+
       const newReq: BloodRequest = {
         id: reqId,
-        authorUid: auth.currentUser?.uid,
-        patientName: cleanPatient,
+        authorUid: activeAuthorUid,
+        patientName: cleanPatient.slice(0, 80),
         patientAge: 30,
         bloodGroup,
         unitsNeeded: Number(unitsNeeded) || 1,
         unitsCollected: 0,
-        hospitalName: cleanHospital,
+        hospitalName: cleanHospital.slice(0, 120),
         division: distObj?.divisionId || 'dhaka',
         district,
-        upazila: distObj?.upazilas?.[0]?.id || 'sadar',
+        upazila: cleanHospital.slice(0, 120) || distObj?.upazilas?.[0]?.id || 'sadar',
         urgency,
         requiredTimeWindow,
-        contactName: cleanPatient,
+        contactName: seekerSavedName || cleanPatient.slice(0, 80),
         contactPhone: normalizedPhone,
         requiredDate: requiredTimeLabel,
         reason: finalReason,
@@ -387,24 +402,24 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
       className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain"
       onClick={() => showHospitalSuggestions && setShowHospitalSuggestions(false)}
     >
-      <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white p-4 sm:p-6 shadow-2xl border border-slate-300 dark:border-slate-700 transition-colors flex flex-col justify-between text-left">
-        {/* Clean Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-700">
+      <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#1e293b] text-slate-900 dark:text-white overflow-hidden shadow-2xl border border-slate-300 dark:border-slate-700 transition-colors flex flex-col justify-between text-left">
+        {/* Jewel Header */}
+        <div className="section-jewel-ruby text-white px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+            <h2 className="text-base sm:text-lg font-black text-white">
               {submittedState === 'FORM'
                 ? lang === 'bn'
-                  ? 'সহজ রক্তের রিকোয়েস্ট (১৫ সেকেন্ডে)'
-                  : 'Quick Blood Request (15 Seconds)'
+                  ? 'জরুরি রক্তের রিকোয়েস্ট দিন'
+                  : 'Post Blood Request'
                 : lang === 'bn'
                   ? 'রিকোয়েস্ট লাইভ হয়েছে!'
                   : 'Request Is Now Live!'}
             </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
+            <p className="text-xs text-rose-100/90 mt-0.5">
               {submittedState === 'FORM'
                 ? lang === 'bn'
-                  ? 'শুধু রক্তের গ্রুপ, হাসপাতাল ও মোবাইল নম্বর দিলেই কাছাকাছি ডোনাররা অ্যালার্ট পাবেন'
-                  : 'Just pick blood group, hospital & phone to alert nearby ready donors'
+                  ? 'নিজের মতো রোগীর নাম, গ্রুপ, হাসপাতাল ও মোবাইল নম্বর দিন'
+                  : 'Enter your blood group, patient/contact name, hospital & mobile number'
                 : lang === 'bn'
                   ? 'নিচের প্রস্তুত রক্তদাতাদের এখনই সরাসরি কল করতে পারেন'
                   : 'You can also call ready donors directly below right now'}
@@ -414,16 +429,17 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
           <button
             type="button"
             onClick={handleFinish}
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/20 cursor-pointer shrink-0 transition-colors"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
+        <div className="p-4 sm:p-6">
         {submittedState === 'FORM' ? (
           /* 1-SCREEN EFFORTLESS REQUEST FORM */
-          <form onSubmit={handlePublishRequest} className="pt-4 space-y-4">
+          <form onSubmit={handlePublishRequest} className="space-y-4">
             {/* 1. Blood Group Buttons */}
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
@@ -539,11 +555,24 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
               </div>
             </div>
 
-            {/* 3. Phone Number, District & 1-Tap Bag Selector */}
+            {/* 3. Patient / Contact Name, Callback Phone & District */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn' ? '৩. আপনার মোবাইল নম্বর *' : '3. Callback Mobile Number *'}
+                  {lang === 'bn' ? '৩. রোগী বা যোগাযোগকারীর নাম' : '3. Patient / Contact Name'}
+                </label>
+                <input
+                  type="text"
+                  placeholder={lang === 'bn' ? 'নিজের বা রোগীর নাম লিখুন' : 'Enter patient or contact name'}
+                  value={patientName}
+                  onChange={(e) => setPatientName(e.target.value)}
+                  className="w-full h-11 px-3.5 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? '৪. মোবাইল নম্বর *' : '4. Callback Mobile Number *'}
                 </label>
                 <input
                   type="tel"
@@ -554,7 +583,9 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   className="w-full h-11 px-3.5 text-sm rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono tabular-nums"
                 />
               </div>
+            </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? 'জেলা' : 'District'}
@@ -571,33 +602,32 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   ))}
                 </select>
               </div>
-            </div>
 
-            {/* 1-Tap Bag Counter */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
-                {lang === 'bn' ? 'কত ব্যাগ রক্ত লাগবে?' : 'How many bags needed?'}
-              </label>
-              <div className="grid grid-cols-4 gap-2">
-                {[1, 2, 3, 4].map((num) => {
-                  const active = unitsNeeded === num;
-                  return (
-                    <button
-                      key={num}
-                      type="button"
-                      onClick={() => setUnitsNeeded(num)}
-                      className={`min-h-[42px] rounded-xl text-xs font-bold cursor-pointer tabular-nums ${
-                        active
-                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-                          : 'bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      {lang === 'bn'
-                        ? `${num === 4 ? '৪+' : num} ব্যাগ`
-                        : `${num === 4 ? '4+' : num} Bag${num > 1 ? 's' : ''}`}
-                    </button>
-                  );
-                })}
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? 'কত ব্যাগ রক্ত লাগবে?' : 'How many bags needed?'}
+                </label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[1, 2, 3, 4].map((num) => {
+                    const active = unitsNeeded === num;
+                    return (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() => setUnitsNeeded(num)}
+                        className={`min-h-[44px] rounded-lg text-xs font-bold cursor-pointer tabular-nums transition-colors ${
+                          active
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        {lang === 'bn'
+                          ? `${num === 4 ? '৪+' : num}`
+                          : `${num === 4 ? '4+' : num}B`}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
@@ -610,8 +640,8 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
               >
                 <span>
                   {lang === 'bn'
-                    ? 'অতিরিক্ত তথ্য যোগ করুন (রোগীর নাম, কারণ, সময় — ঐচ্ছিক)'
-                    : 'Add Optional Details (Patient name, time, reason)'}
+                    ? 'অতিরিক্ত তথ্য যোগ করুন (সময় ও কারণ — ঐচ্ছিক)'
+                    : 'Add Optional Details (Time window & reason)'}
                 </span>
                 {showOptionalDetails ? (
                   <ChevronUp className="w-4 h-4 shrink-0" />
@@ -622,20 +652,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
               {showOptionalDetails && (
                 <div className="pt-3 space-y-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                        {lang === 'bn' ? 'রোগীর নাম (ঐচ্ছিক)' : 'Patient Name (Optional)'}
-                      </label>
-                      <input
-                        type="text"
-                        placeholder={lang === 'bn' ? 'রোগীর নাম' : 'Patient Name'}
-                        value={patientName}
-                        onChange={(e) => setPatientName(e.target.value)}
-                        className="w-full h-10 px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700"
-                      />
-                    </div>
-
+                  <div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                         {lang === 'bn' ? 'কখন লাগবে?' : 'When needed?'}
@@ -872,6 +889,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
             </button>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

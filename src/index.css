@@ -106,6 +106,47 @@
     linear-gradient(125deg, #091b30 0%, #112b4a 58%, #4c0d21 100%);
 }
 
+/* Distinct Jewel-Toned Section Surfaces (Every section gets its own rich signature color) */
+.section-jewel-ruby {
+  background-image:
+    radial-gradient(580px 260px at 94% 8%, rgba(251, 113, 133, 0.24), transparent 65%),
+    linear-gradient(132deg, #260814 0%, #4c0d22 54%, #7f1d1d 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 14px 32px -10px rgba(76, 13, 34, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.section-jewel-ocean {
+  background-image:
+    radial-gradient(560px 250px at 92% 10%, rgba(56, 189, 248, 0.24), transparent 65%),
+    linear-gradient(132deg, #07192e 0%, #0d3252 54%, #0f525e 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 14px 32px -10px rgba(7, 25, 46, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.section-jewel-emerald {
+  background-image:
+    radial-gradient(560px 250px at 92% 10%, rgba(52, 211, 153, 0.24), transparent 65%),
+    linear-gradient(132deg, #06211a 0%, #0a3c2f 54%, #065f46 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 14px 32px -10px rgba(6, 33, 26, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.section-jewel-indigo {
+  background-image:
+    radial-gradient(580px 260px at 92% 10%, rgba(167, 139, 250, 0.24), transparent 65%),
+    linear-gradient(132deg, #111336 0%, #221c54 54%, #451646 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 14px 32px -10px rgba(17, 19, 54, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
 .surface-card {
   background-color: #ffffff;
   border: 1px solid rgba(203, 213, 225, 0.82);

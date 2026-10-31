@@ -10,6 +10,7 @@ import {
 import { BrandLogo } from './BrandLogo';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { DISTRICTS } from '../data/bangladeshGeo';
+import { isFakePersonName } from '../data/mockDonors';
 import {
   auth,
   onAuthStateChanged,
@@ -18,7 +19,9 @@ import {
   verifyAdminInviteCodeInCloud,
   isBootstrappedAdminUser,
   registerSmartAccountInFirestore,
+  normalizeFacebookProfileUrl,
   isUserVerifiedForWrites,
+  getStoredDevOtpSandboxSession,
   parseFirebaseAuthError,
   compressAvatarIfNeeded,
   DEFAULT_AVATAR_DATA_URI,
@@ -45,6 +48,8 @@ import {
   KeyRound,
   ChevronDown,
   ChevronUp,
+  MessageCircle,
+  Globe,
 } from 'lucide-react';
 
 interface RegisterDonorModalProps {
@@ -55,6 +60,7 @@ interface RegisterDonorModalProps {
   onRegisterDonor: (newDonor: Donor, newAccount?: UserAccount) => void;
   onLogAudit: (action: any, details: string) => void;
   onNavigateTab?: (tab: any) => void;
+  onOpenAuthModal?: () => void;
 }
 
 const DHAKA_POPULAR_AREAS = [
@@ -89,6 +95,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   onRegisterDonor,
   onLogAudit,
   onNavigateTab,
+  onOpenAuthModal,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -98,10 +105,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   const [isLocatingGps, setIsLocatingGps] = useState(false);
   const [gpsStatusNote, setGpsStatusNote] = useState<string | null>(null);
 
-  // Simple 1-screen core fields
+  // Simple 1-screen core fields (including mandatory WhatsApp & Facebook)
   const [name, setName] = useState('');
   const [bloodGroup, setBloodGroup] = useState<BloodGroup>('O+');
   const [phone, setPhone] = useState('');
+  const [whatsappPhone, setWhatsappPhone] = useState('');
+  const [facebookUrl, setFacebookUrl] = useState('');
   const [district, setDistrict] = useState('dhaka');
   const [areaAddress, setAreaAddress] = useState('');
   const [showAreaSuggestions, setShowAreaSuggestions] = useState(false);
@@ -110,50 +119,87 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   const [gender, setGender] = useState<'MALE' | 'FEMALE' | 'OTHER'>('MALE');
   const [photoUrl, setPhotoUrl] = useState<string>(DEFAULT_AVATAR_DATA_URI);
 
-  // Optional Admin Invite Mode (hidden by default unless initialRole === 'ADMIN')
-  const [showAdminInviteBox, setShowAdminInviteBox] = useState(initialRole === 'ADMIN');
-  const [accountRole, setAccountRole] = useState<'USER' | 'ADMIN'>(initialRole);
-  const [adminSecretCode, setAdminSecretCode] = useState('');
+  const [accountRole, setAccountRole] = useState<'USER' | 'ADMIN'>('USER');
+  const [adminSecretCode] = useState('');
 
   const [formError, setFormError] = useState<string | null>(null);
   const [savedAccount, setSavedAccount] = useState<UserAccount | null>(null);
 
   useEffect(() => {
-    setAccountRole(initialRole);
-    setShowAdminInviteBox(initialRole === 'ADMIN');
+    setAccountRole('USER');
     if (isOpen) {
       setSavedAccount(null);
       setFormError(null);
       setGpsStatusNote(null);
       try {
-        const raw = localStorage.getItem('bloodsearch_current_user');
-        if (raw) {
-          const saved = JSON.parse(raw) as Partial<UserAccount>;
-          if (saved.name) setName(saved.name);
-          if (saved.bloodGroup) setBloodGroup(saved.bloodGroup);
-          if (saved.phone && saved.phone !== '01700000000') setPhone(saved.phone);
-          if (saved.district) {
+        const rawDraft = localStorage.getItem('bloodsearch_pending_profile_draft');
+        const rawSaved = localStorage.getItem('bloodsearch_current_user');
+        let source: Partial<UserAccount> | null = null;
+        if (rawDraft) {
+          const d = JSON.parse(rawDraft);
+          if (d && !isFakePersonName(d.name) && d.phone && d.phone !== '01700000000') {
+            source = d;
+          }
+        }
+        if (!source && rawSaved) {
+          const s = JSON.parse(rawSaved);
+          if (
+            s &&
+            !isFakePersonName(s.name) &&
+            s.phone &&
+            s.phone !== '01700000000' &&
+            (!auth.currentUser || !s.id || s.id === auth.currentUser.uid)
+          ) {
+            source = s;
+          }
+        }
+        if (source) {
+          setName(source.name && !isFakePersonName(source.name) ? source.name : '');
+          setBloodGroup(source.bloodGroup || 'O+');
+          const cleanSavedPhone =
+            source.phone && source.phone !== '01700000000' ? source.phone : '';
+          setPhone(cleanSavedPhone);
+          setWhatsappPhone(
+            source.whatsappPhone && source.whatsappPhone !== '01700000000'
+              ? source.whatsappPhone
+              : cleanSavedPhone
+          );
+          setFacebookUrl(normalizeFacebookProfileUrl(source.facebookUrl) || '');
+          if (source.district) {
             const matched = DISTRICTS.find(
               (d) =>
-                d.id === String(saved.district).toLowerCase() ||
-                d.nameBn === saved.district ||
-                d.nameEn.toLowerCase() === String(saved.district).toLowerCase()
+                d.id === String(source!.district).toLowerCase() ||
+                d.nameBn === source!.district ||
+                d.nameEn.toLowerCase() === String(source!.district).toLowerCase()
             );
-            if (matched) setDistrict(matched.id);
+            setDistrict(matched ? matched.id : 'dhaka');
+          } else {
+            setDistrict('dhaka');
           }
-          if (saved.upazila && saved.upazila !== 'sadar' && saved.upazila !== 'সদর') {
-            setAreaAddress(saved.upazila);
+          setAreaAddress(
+            source.upazila && source.upazila !== 'sadar' && source.upazila !== 'সদর'
+              ? source.upazila
+              : ''
+          );
+          if (typeof source.availableToDonate === 'boolean') {
+            setAvailable(source.availableToDonate);
           }
-          if (typeof saved.availableToDonate === 'boolean') {
-            setAvailable(saved.availableToDonate);
+          if (typeof source.shareDirectContact === 'boolean') {
+            setShareDirectContact(source.shareDirectContact);
+          } else if (source.contactVisibility) {
+            setShareDirectContact(source.contactVisibility !== 'REQUEST_ONLY');
           }
-          if (typeof saved.shareDirectContact === 'boolean') {
-            setShareDirectContact(saved.shareDirectContact);
-          } else if (saved.contactVisibility) {
-            setShareDirectContact(saved.contactVisibility !== 'REQUEST_ONLY');
-          }
-          if (saved.gender) setGender(saved.gender);
-          if (saved.photoUrl) setPhotoUrl(saved.photoUrl);
+          if (source.gender) setGender(source.gender);
+          if (source.photoUrl) setPhotoUrl(source.photoUrl);
+        } else {
+          setName('');
+          setBloodGroup('O+');
+          setPhone('');
+          setWhatsappPhone('');
+          setFacebookUrl('');
+          setDistrict('dhaka');
+          setAreaAddress('');
+          setPhotoUrl(auth.currentUser?.photoURL || DEFAULT_AVATAR_DATA_URI);
         }
       } catch {}
     }
@@ -162,14 +208,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setFirebaseUser(u);
-      if (u) {
-        setName((prev) => prev || u.displayName || '');
-        if (u.phoneNumber) {
-          setPhone((prev) => prev || u.phoneNumber || '');
-        }
-        if (u.photoURL) {
-          setPhotoUrl((prev) => (prev === DEFAULT_AVATAR_DATA_URI ? u.photoURL! : prev));
-        }
+      if (u?.photoURL) {
+        setPhotoUrl((prev) => (prev === DEFAULT_AVATAR_DATA_URI ? u.photoURL! : prev));
       }
     });
     return () => unsub();
@@ -280,6 +320,26 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       return;
     }
 
+    const cleanWa = normalizeValidBangladeshMobileE164(whatsappPhone);
+    if (!cleanWa || !isValidBangladeshMobilePhone(whatsappPhone)) {
+      setFormError(
+        lang === 'bn'
+          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit WhatsApp number (e.g. 01712345678).'
+      );
+      return;
+    }
+
+    const cleanFb = normalizeFacebookProfileUrl(facebookUrl);
+    if (!cleanFb) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার আসল Facebook প্রোফাইল লিংক বা ইউজারনেম দিন (যেমন: facebook.com/your.id)।'
+          : 'Please enter your Facebook profile link or username (e.g. facebook.com/your.id).'
+      );
+      return;
+    }
+
     if (accountRole === 'ADMIN' && !isBootstrappedAdminUser(auth.currentUser)) {
       const check = computeAdminProofHashSync(adminSecretCode);
       if (!check.wellFormed) {
@@ -292,9 +352,36 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       }
     }
 
-    // Start Google popup synchronously BEFORE any await if user is not signed in yet
+    const resolvedDivision = selectedDistrictObj?.divisionId || 'dhaka';
+    const resolvedArea = (
+      areaAddress.trim() ||
+      (lang === 'bn' ? selectedDistrictObj.nameBn : selectedDistrictObj.nameEn) ||
+      'Dhaka'
+    ).slice(0, 120);
+
+    try {
+      localStorage.setItem(
+        'bloodsearch_pending_profile_draft',
+        JSON.stringify({
+          name: cleanName,
+          bloodGroup,
+          phone: cleanPhone,
+          whatsappPhone: cleanWa,
+          facebookUrl: cleanFb,
+          division: resolvedDivision,
+          district,
+          upazila: resolvedArea,
+          gender,
+          photoUrl: photoUrl || DEFAULT_AVATAR_DATA_URI,
+          availableToDonate: available,
+          shareDirectContact,
+        })
+      );
+    } catch {}
+
+    // Only force a live Google popup if user explicitly requested ADMIN role while signed out
     let pendingAuthPromise: Promise<User> | null = null;
-    if (!auth.currentUser || !isUserVerifiedForWrites(auth.currentUser)) {
+    if (accountRole === 'ADMIN' && (!auth.currentUser || !isUserVerifiedForWrites(auth.currentUser))) {
       pendingAuthPromise = signInWithGoogleReal();
     }
 
@@ -307,19 +394,29 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
           setFirebaseUser(activeUser);
         } catch (authErr: any) {
           const parsed = parseFirebaseAuthError(authErr);
-          setFormError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+          setFormError(
+            lang === 'bn'
+              ? `${parsed.messageBn} (অ্যাডমিন ভেরিফিকেশনের জন্য লগইন প্রয়োজন)`
+              : `${parsed.messageEn} (Sign in is required for Admin verification)`
+          );
           setIsSubmitting(false);
           return;
         }
       }
 
-      if (!activeUser) {
-        setIsSubmitting(false);
-        return;
-      }
+      const activeDevOtp = getStoredDevOtpSandboxSession();
 
       let verifiedProofHash = '';
       if (accountRole === 'ADMIN') {
+        if (!activeUser) {
+          setFormError(
+            lang === 'bn'
+              ? 'অ্যাডমিন রোল সক্রিয় করতে Google বা Email দিয়ে লগইন করুন (ডেভ OTP দিয়ে অ্যাডমিন হওয়া যাবে না)।'
+              : 'Sign in with Google or Email to activate Admin role (Dev OTP cannot grant Admin privileges).'
+          );
+          setIsSubmitting(false);
+          return;
+        }
         const cloudCheck = await verifyAdminInviteCodeInCloud(adminSecretCode, activeUser);
         if (!cloudCheck.valid || !cloudCheck.proofHash) {
           setFormError(
@@ -333,25 +430,32 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         verifiedProofHash = cloudCheck.proofHash;
       }
 
+      const resolvedUid =
+        activeUser?.uid ||
+        activeDevOtp?.uid ||
+        `local_donor_${cleanPhone.replace(/\D/g, '').slice(-8) || '1001'}`;
+
       let existingSaved: Partial<UserAccount> | null = null;
       try {
         const raw = localStorage.getItem('bloodsearch_current_user');
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (parsed && (!parsed.id || parsed.id === activeUser.uid)) {
+          if (parsed && parsed.id === resolvedUid) {
             existingSaved = parsed;
           }
         }
       } catch {}
 
-      const isSuperOwner = isBootstrappedAdminUser(activeUser);
+      const isSuperOwner = Boolean(activeUser && isBootstrappedAdminUser(activeUser));
       const effectiveRole: 'USER' | 'ADMIN' =
-        accountRole === 'ADMIN' || existingSaved?.role === 'ADMIN' || isSuperOwner
-          ? 'ADMIN'
-          : 'USER';
+        !activeUser && activeDevOtp
+          ? 'USER'
+          : accountRole === 'ADMIN' || existingSaved?.role === 'ADMIN' || isSuperOwner
+            ? 'ADMIN'
+            : 'USER';
 
       const uidShort =
-        activeUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
+        resolvedUid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
       const defaultCardId =
         effectiveRole === 'ADMIN' ? `ADMIN-BD-${uidShort}` : `BS-${uidShort}`;
       const cleanExistingCardId =
@@ -359,13 +463,6 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         /^[a-zA-Z0-9+-]{5,40}$/.test(existingSaved.idCardNumber)
           ? existingSaved.idCardNumber
           : defaultCardId;
-
-      const resolvedDivision = selectedDistrictObj?.divisionId || 'dhaka';
-      const resolvedArea = (
-        areaAddress.trim() ||
-        (lang === 'bn' ? selectedDistrictObj.nameBn : selectedDistrictObj.nameEn) ||
-        'Dhaka'
-      ).slice(0, 50);
 
       const resolvedStatus: DonorAvailabilityStatus = available
         ? 'AVAILABLE'
@@ -376,22 +473,24 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       const nowMs = Date.now();
 
       const accountRecord: UserAccount = {
-        id: activeUser.uid,
+        id: resolvedUid,
         name: cleanName,
         email:
-          activeUser.email ||
+          activeUser?.email ||
           existingSaved?.email ||
-          `${activeUser.uid.slice(0, 8)}@bloodsearch.bd`,
+          (activeDevOtp
+            ? `${activeDevOtp.phoneLocal}@otp-dev.bloodsearch.bd`
+            : `${uidShort.toLowerCase()}@bloodsearch.bd`),
         phone: cleanPhone,
-        whatsappPhone: cleanPhone,
-        facebookUrl: existingSaved?.facebookUrl || 'https://facebook.com/bloodsearch.bd',
+        whatsappPhone: cleanWa,
+        facebookUrl: cleanFb,
         bloodGroup,
         division: resolvedDivision,
         district,
         upazila: resolvedArea,
         photoUrl: photoUrl || DEFAULT_AVATAR_DATA_URI,
         role: effectiveRole,
-        verifiedStatus: true,
+        verifiedStatus: Boolean(activeUser),
         idCardNumber: cleanExistingCardId,
         age: existingSaved?.age || 25,
         gender,
@@ -412,14 +511,15 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       };
 
       const donorRecord: Donor = {
-        id: activeUser.uid,
+        id: resolvedUid,
         name: cleanName,
         bloodGroup,
         division: resolvedDivision,
         district,
         upazila: resolvedArea,
         phone: cleanPhone,
-        whatsappPhone: cleanPhone,
+        whatsappPhone: cleanWa,
+        facebookUrl: cleanFb,
         available,
         availabilityStatus: resolvedStatus,
         availabilityConfirmedAtMs: nowMs,
@@ -430,7 +530,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         allowSms: true,
         emergencyAlertsOptIn: accountRecord.emergencyAlertsOptIn,
         alertsPaused: accountRecord.alertsPaused,
-        isCloudRecord: true,
+        isCloudRecord: Boolean(activeUser),
         lastDonatedDate: accountRecord.lastDonationDate || '',
         totalDonations: accountRecord.totalDonations || 0,
         verifiedBadge: effectiveRole === 'ADMIN',
@@ -446,15 +546,23 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         avatar: accountRecord.photoUrl,
       };
 
-      await registerSmartAccountInFirestore({
-        firebaseUser: activeUser,
-        account: accountRecord,
-        donor: donorRecord,
-        adminProofHash: verifiedProofHash || undefined,
-      });
+      if (activeUser && isUserVerifiedForWrites(activeUser)) {
+        await registerSmartAccountInFirestore({
+          firebaseUser: activeUser,
+          account: accountRecord,
+          donor: donorRecord,
+          adminProofHash: verifiedProofHash || undefined,
+        });
+        localStorage.removeItem('bloodsearch_pending_profile_draft');
+      }
 
       localStorage.setItem('bloodsearch_current_user', JSON.stringify(accountRecord));
       window.dispatchEvent(new Event('bloodsearch_user_changed'));
+      window.dispatchEvent(
+        new CustomEvent('bloodsearch_donor_upserted', {
+          detail: { donor: donorRecord, account: accountRecord },
+        })
+      );
 
       onRegisterDonor(donorRecord, accountRecord);
       onLogAudit(
@@ -466,8 +574,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       console.error('Profile save error:', err);
       setFormError(
         lang === 'bn'
-          ? 'প্রোফাইল সেভ করতে সমস্যা হয়েছে। ইন্টারনেট সংযোগ চেক করে আবার "প্রোফাইল সেভ করুন" চাপুন।'
-          : 'Could not save profile right now. Please check your connection and try again.'
+          ? 'প্রোফাইল সেভ করতে Google বা Email দিয়ে লগইন করুন — আপনার তথ্য ড্রাফটে সংরক্ষিত আছে।'
+          : 'Please sign in below to finish saving — your details are preserved.'
       );
     } finally {
       setIsSubmitting(false);
@@ -479,21 +587,19 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain"
       onClick={() => showAreaSuggestions && setShowAreaSuggestions(false)}
     >
-      <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#111827] text-slate-900 dark:text-white p-4 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800 text-left">
-        {/* Clean Header */}
-        <div className="flex items-center justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-800">
+      <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#111827] text-slate-900 dark:text-white overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 text-left">
+        {/* Jewel Header */}
+        <div className="section-jewel-indigo text-white px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <BrandLogo size="sm" />
             <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
-                {lang === 'bn'
-                  ? 'ডোনার প্রোফাইল ও ঠিকানা সেটআপ'
-                  : 'Donor Profile & Address Setup'}
+              <h2 className="text-base sm:text-lg font-black text-white truncate">
+                {lang === 'bn' ? 'প্রোফাইল সেটআপ' : 'Profile Setup'}
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+              <p className="text-xs text-indigo-100/90 truncate">
                 {lang === 'bn'
-                  ? 'সহজ ১-ধাপে নাম, গ্রুপ ও আপনার এলাকার ঠিকানা সেভ করুন'
-                  : 'Save your name, blood group & exact neighborhood in one simple step'}
+                  ? 'নাম, রক্তের গ্রুপ, WhatsApp, Facebook ও ঠিকানা দিন'
+                  : 'Name, blood group, WhatsApp, Facebook & address'}
               </p>
             </div>
           </div>
@@ -501,12 +607,14 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+            className="min-h-[40px] min-w-[40px] rounded-lg flex items-center justify-center bg-white/10 hover:bg-white/20 text-white border border-white/20 cursor-pointer shrink-0 transition-colors"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        <div className="p-4 sm:p-6">
 
         {savedAccount ? (
           /* Clean Success Confirmation Screen */
@@ -555,9 +663,14 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                       : selectedDistrictObj.nameEn}
                   </span>
                 </div>
-                <div className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-0.5">
-                  {savedAccount.phone}
+                <div className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  {savedAccount.phone} · WA: {savedAccount.whatsappPhone}
                 </div>
+                {savedAccount.facebookUrl && (
+                  <div className="text-[11px] text-indigo-600 dark:text-indigo-400 truncate mt-0.5">
+                    {savedAccount.facebookUrl}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -603,9 +716,22 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             ) : null}
 
             {formError && (
-              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 flex items-start gap-2.5 text-xs font-semibold text-rose-800 dark:text-rose-200">
-                <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-                <span>{formError}</span>
+              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 space-y-2 text-xs font-semibold text-rose-800 dark:text-rose-200">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                  <span>{formError}</span>
+                </div>
+                {onOpenAuthModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenAuthModal}
+                    className="min-h-[38px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-white font-bold text-xs cursor-pointer"
+                  >
+                    {lang === 'bn'
+                      ? 'লগইন করে সেভ সম্পন্ন করুন (Gmail / Email)'
+                      : 'Sign In to Save (Gmail / Email)'}
+                  </button>
+                )}
               </div>
             )}
 
@@ -685,8 +811,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               <div className="sm:col-span-8">
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn'
-                    ? '৩. সচল মোবাইল নম্বর (Call ও WhatsApp) *'
-                    : '3. Active Mobile Number (Call & WhatsApp) *'}
+                    ? '৩. সচল মোবাইল নম্বর (Call) *'
+                    : '3. Active Mobile Number (Call) *'}
                 </label>
                 <div className="relative">
                   <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -694,7 +820,13 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                     type="tel"
                     required
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!whatsappPhone || whatsappPhone === phone) {
+                        setWhatsappPhone(val);
+                      }
+                      setPhone(val);
+                    }}
                     placeholder="017XXXXXXXX"
                     className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
                   />
@@ -717,6 +849,55 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
             </div>
 
+            {/* 4. Mandatory WhatsApp Number + Mandatory Facebook Profile Link */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    {lang === 'bn' ? '৪. WhatsApp নম্বর *' : '4. WhatsApp Number *'}
+                  </label>
+                  {phone.trim() && whatsappPhone !== phone && (
+                    <button
+                      type="button"
+                      onClick={() => setWhatsappPhone(phone)}
+                      className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+                    >
+                      {lang === 'bn' ? 'মোবাইল নম্বরের মতোই' : 'Same as Mobile'}
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <MessageCircle className="w-4 h-4 text-emerald-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="tel"
+                    required
+                    value={whatsappPhone}
+                    onChange={(e) => setWhatsappPhone(e.target.value)}
+                    placeholder="017XXXXXXXX"
+                    className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? '৫. Facebook প্রোফাইল লিংক / আইডি *' : '5. Facebook Profile Link / ID *'}
+                </label>
+                <div className="relative">
+                  <Globe className="w-4 h-4 text-indigo-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    required
+                    maxLength={200}
+                    value={facebookUrl}
+                    onChange={(e) => setFacebookUrl(e.target.value)}
+                    placeholder="https://facebook.com/your.id"
+                    className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* 4. Hybrid Address: GPS + Select District + Custom Area Text Input + Chips */}
             <div
               className="p-3.5 rounded-2xl bg-slate-50/90 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-3"
@@ -724,9 +905,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-bold text-slate-900 dark:text-white">
-                  {lang === 'bn'
-                    ? '৪. আপনার বর্তমান ঠিকানা (সিলেক্ট করুন বা নিজে লিখুন) *'
-                    : '4. Your Current Address (Select, GPS, or Type) *'}
+                  {lang === 'bn' ? '৬. বর্তমান ঠিকানা *' : '6. Current Address *'}
                 </label>
 
                 <button
@@ -805,7 +984,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                     <MapPin className="w-4 h-4 text-rose-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
-                      maxLength={50}
+                      maxLength={120}
                       value={areaAddress}
                       onFocus={() => setShowAreaSuggestions(true)}
                       onChange={(e) => {
@@ -912,46 +1091,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </label>
             </div>
 
-            {/* Optional Admin Invite Toggle (Quiet & collapsed for normal users) */}
-            <div className="pt-0.5">
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !showAdminInviteBox;
-                  setShowAdminInviteBox(next);
-                  setAccountRole(next ? 'ADMIN' : 'USER');
-                }}
-                className="text-[11px] text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 inline-flex items-center gap-1 cursor-pointer"
-              >
-                <KeyRound className="w-3 h-3" />
-                <span>
-                  {lang === 'bn'
-                    ? 'সমন্বয়ক / অ্যাডমিন ইনভাইট কোড আছে? (ঐচ্ছিক)'
-                    : 'Have an Admin Coordinator Invite Code? (Optional)'}
-                </span>
-                {showAdminInviteBox ? (
-                  <ChevronUp className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                )}
-              </button>
 
-              {showAdminInviteBox && !isBootstrappedAdminUser(firebaseUser) && (
-                <div className="mt-2 p-3 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-1.5">
-                  <input
-                    type="password"
-                    value={adminSecretCode}
-                    onChange={(e) => setAdminSecretCode(e.target.value)}
-                    placeholder={
-                      lang === 'bn'
-                        ? 'ওনার প্রদত্ত অ্যাডমিন কোড লিখুন'
-                        : 'Enter Owner-issued Admin Invite Code'
-                    }
-                    className="w-full h-10 px-3 rounded-lg bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
-                  />
-                </div>
-              )}
-            </div>
 
             {/* Single Clear Primary Save Button */}
             <div className="flex items-center gap-2.5 pt-1">
@@ -982,6 +1122,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             </div>
           </form>
         )}
+        </div>
       </div>
     </div>
   );

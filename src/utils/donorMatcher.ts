@@ -190,8 +190,6 @@ const KNOWN_PLACEHOLDER_PHONES = new Set([
   '8801700000000',
   '01711000000',
   '8801711000000',
-  '01700000001',
-  '8801700000001',
 ]);
 
 export function normalizePhoneAsciiDigits(raw?: string | null): string {

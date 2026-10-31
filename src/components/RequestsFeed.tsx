@@ -15,6 +15,8 @@ import { DISTRICTS } from '../data/bangladeshGeo';
 import { getTranslation } from '../utils/translations';
 import {
   auth,
+  isUserVerifiedForWrites,
+  getStoredDevOtpSandboxSession,
   signInWithGoogleReal,
   parseFirebaseAuthError,
   buildWhatsAppChatUrl,
@@ -178,9 +180,11 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
   const [unsuccessfulByReq, setUnsuccessfulByReq] = useState<Record<string, string[]>>({});
   const autoEscalatedStepRef = useRef<Record<string, number>>({});
 
-  const currentUid = auth.currentUser?.uid || null;
+  const cloudUid = auth.currentUser?.uid || null;
+  const devOtpUid = getStoredDevOtpSandboxSession()?.uid || null;
+  const currentUid = cloudUid || devOtpUid;
   const isVerifiedSeeker = Boolean(
-    auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
+    isUserVerifiedForWrites(auth.currentUser) || devOtpUid
   );
 
   // Refresh relative timestamps every 30s so "Just now" updates naturally
@@ -191,15 +195,15 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
   // Subscribe to real-time alert delivery & response states for requests owned by signed-in user
   useEffect(() => {
-    if (!currentUid) {
+    if (!cloudUid) {
       setMyRequestAlerts([]);
       return;
     }
-    const unsub = subscribeAlertsForAuthorRequests(currentUid, (alerts) => {
+    const unsub = subscribeAlertsForAuthorRequests(cloudUid, (alerts) => {
       setMyRequestAlerts(alerts);
     });
     return () => unsub();
-  }, [currentUid]);
+  }, [cloudUid]);
 
   const alertsByRequestId = useMemo(() => {
     const map = new Map<string, RequestAlertItem[]>();
@@ -463,8 +467,9 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
   const openRespondSheetWithPrefill = useCallback((req: BloodRequest) => {
     setRespondError(null);
     setRespondingToReq(req);
+    const devSess = getStoredDevOtpSandboxSession();
     let savedName = auth.currentUser?.displayName || '';
-    let savedPhone = auth.currentUser?.phoneNumber || '';
+    let savedPhone = auth.currentUser?.phoneNumber || devSess?.phoneLocal || '';
     let savedGroup: BloodGroup = req.bloodGroup;
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
@@ -523,9 +528,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
       return;
     }
 
-    // Trigger Google popup synchronously if volunteer is not signed in yet
+    // Trigger Google popup synchronously ONLY if volunteer has neither Firebase Auth nor Dev OTP session on a cloud request
+    const devSess = getStoredDevOtpSandboxSession();
+    const isLocalOnlyReq =
+      respondingToReq.id.startsWith('sos_') || respondingToReq.id.startsWith('req-');
     let pendingAuthPromise: Promise<any> | null = null;
-    if (!auth.currentUser) {
+    if (!auth.currentUser && !devSess && !isLocalOnlyReq) {
       pendingAuthPromise = signInWithGoogleReal();
     }
 
@@ -709,12 +717,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
       {/* Feed Header */}
       <div className="surface-card rounded-3xl overflow-hidden transition-colors">
-        <div className="banner-brand-strip text-white px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="section-jewel-ruby text-white px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
               {t.navRequestsFeed}
             </h1>
-            <p className="text-xs sm:text-sm text-slate-200 mt-1">
+            <p className="text-xs sm:text-sm text-rose-100/90 mt-1">
               {lang === 'bn'
                 ? 'সক্রিয় রক্তের আবেদন, রিয়েল-টাইম সাড়া ট্র্যাকিং ও সরাসরি হাসপাতাল যোগাযোগ'
                 : 'Verified emergency blood requests, real-time response tracking, and direct hospital contact'}

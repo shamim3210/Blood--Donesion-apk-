@@ -4,11 +4,14 @@ import {
   requestFreshHighAccuracyGPS,
   reverseGeocodeBangladeshCoords,
 } from '../../utils/geolocation';
+import { isFakePersonName } from '../../data/mockDonors';
 import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
   isUserVerifiedForWrites,
+  getStoredDevOtpSandboxSession,
+  DevOtpSandboxClientSession,
   parseFirebaseAuthError,
   DEFAULT_AVATAR_DATA_URI,
   subscribeCommunityMessages,
@@ -125,6 +128,9 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
 
   // Live Auth & Current User Profile
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [devOtpSession, setDevOtpSession] = useState<DevOtpSandboxClientSession | null>(() =>
+    getStoredDevOtpSandboxSession()
+  );
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     try {
       const saved = localStorage.getItem('bloodsearch_current_user');
@@ -141,10 +147,15 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
         setCurrentUser(saved ? JSON.parse(saved) : null);
       } catch {}
     };
+    const syncDevOtp = () => {
+      setDevOtpSession(getStoredDevOtpSandboxSession());
+    };
     window.addEventListener('bloodsearch_user_changed', syncProfile);
+    window.addEventListener('bloodsearch_dev_otp_changed', syncDevOtp);
     return () => {
       unsubAuth();
       window.removeEventListener('bloodsearch_user_changed', syncProfile);
+      window.removeEventListener('bloodsearch_dev_otp_changed', syncDevOtp);
       if (speechRecRef.current) {
         try {
           speechRecRef.current.stop();
@@ -153,18 +164,26 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     };
   }, []);
 
-  const myUid = firebaseUser?.uid || '';
+  const cloudAuthUid = firebaseUser?.uid || '';
+  const myUid = cloudAuthUid || devOtpSession?.uid || '';
   const isVerifiedSignedIn = Boolean(firebaseUser && isUserVerifiedForWrites(firebaseUser));
   const myName =
-    currentUser?.name ||
-    firebaseUser?.displayName ||
+    (currentUser?.name && !isFakePersonName(currentUser.name) ? currentUser.name : '') ||
+    (firebaseUser?.displayName && !isFakePersonName(firebaseUser.displayName)
+      ? firebaseUser.displayName
+      : '') ||
     firebaseUser?.email?.split('@')[0] ||
+    (devOtpSession ? `Donor (${devOtpSession.phoneLocal})` : '') ||
     (lang === 'bn' ? 'রক্তযোদ্ধা' : 'Blood Donor');
   const myGroup: BloodGroup = currentUser?.bloodGroup || 'B+';
   const myAvatar = currentUser?.photoUrl || firebaseUser?.photoURL || DEFAULT_AVATAR_DATA_URI;
   const myDistrict = currentUser?.district || 'ঢাকা';
   const myWhatsapp =
-    currentUser?.whatsappPhone || currentUser?.phone || firebaseUser?.phoneNumber || '';
+    currentUser?.whatsappPhone ||
+    currentUser?.phone ||
+    firebaseUser?.phoneNumber ||
+    devOtpSession?.phoneE164 ||
+    '';
   const myFb = currentUser?.facebookUrl || '';
 
   // Sidebar Tabs
@@ -251,15 +270,15 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
 
   // 2. Subscribe to My Real-Time 1-to-1 Direct Chat Rooms
   useEffect(() => {
-    if (!myUid) {
+    if (!cloudAuthUid) {
       setDirectRooms([]);
       return;
     }
-    const unsub = subscribeMyDirectChats(myUid, (rooms) => {
+    const unsub = subscribeMyDirectChats(cloudAuthUid, (rooms) => {
       setDirectRooms(rooms);
     });
     return () => unsub();
-  }, [myUid]);
+  }, [cloudAuthUid]);
 
   // Keep activePeer.chatId synchronized if user signs in while viewing a 1-to-1 room
   useEffect(() => {
@@ -273,20 +292,23 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
 
   // 3. Subscribe to Active 1-to-1 Direct Room Messages
   useEffect(() => {
-    if (selectedRoomId === COMMUNITY_ROOM_ID || !activePeer || !myUid) {
+    if (selectedRoomId === COMMUNITY_ROOM_ID || !activePeer || !cloudAuthUid) {
       setDirectMessages([]);
       return;
     }
-    const realChatId = buildDirectChatId(myUid, activePeer.peerUid);
+    const realChatId = buildDirectChatId(cloudAuthUid, activePeer.peerUid);
     const matchedRoom = directRooms.find((r) => r.id === realChatId);
-    const sorted = [sanitizeFirestoreIdPart(myUid), sanitizeFirestoreIdPart(activePeer.peerUid)].sort();
+    const sorted = [
+      sanitizeFirestoreIdPart(cloudAuthUid),
+      sanitizeFirestoreIdPart(activePeer.peerUid),
+    ].sort();
     const p1Uid = matchedRoom ? matchedRoom.participantOneUid : sorted[0];
 
-    const unsub = subscribeDirectChatMessages(realChatId, myUid, p1Uid, (msgs) => {
+    const unsub = subscribeDirectChatMessages(realChatId, cloudAuthUid, p1Uid, (msgs) => {
       setDirectMessages(msgs);
     });
     return () => unsub();
-  }, [selectedRoomId, activePeer?.chatId, activePeer?.peerUid, myUid, directRooms]);
+  }, [selectedRoomId, activePeer?.chatId, activePeer?.peerUid, cloudAuthUid, directRooms]);
 
   const enrichedPeer = useMemo<ActivePeerTarget | null>(() => {
     if (!activePeer) return null;

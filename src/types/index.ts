@@ -316,6 +316,8 @@ export interface UserAccount {
   emergencyContactPhone?: string;
   facebookUrl?: string;
   whatsappPhone?: string;
+  authSource?: 'FIREBASE' | 'DEV_OTP_SANDBOX';
+  mobileOperator?: string;
   createdAt: string;
 }
 

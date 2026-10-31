@@ -32,6 +32,7 @@ service cloud.firestore {
     function isVerifiedUser() {
       return isSignedIn() && (
         request.auth.token.email_verified == true ||
+        (request.auth.token.firebase.sign_in_provider == 'password' && request.auth.token.email is string && request.auth.token.email.size() >= 3 && request.auth.token.email.size() <= 120) ||
         (request.auth.token.firebase.sign_in_provider == 'phone' && request.auth.token.phone_number is string && request.auth.token.phone_number.size() <= 24)
       );
     }
@@ -51,14 +52,14 @@ service cloud.firestore {
 
     // Zero-Trust DB-backed Admin Role Lookup
     function isAdmin() {
-      return isVerifiedUser() && (
-        isBootstrappedSuperAdmin() ||
+      return isBootstrappedSuperAdmin() || (
+        isVerifiedUser() &&
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
     function isValidBloodGroup(bg) {
-      return bg is string && bg.size() >= 2 && bg.size() <= 4 && bg in ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+      return bg is string && bg in ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
     }
 
     function isValidCardNumber(card) {
@@ -72,23 +73,17 @@ service cloud.firestore {
     }
 
     function isValidAvailabilityStatus(st) {
-      return st is string && st.size() <= 28 && st in ['AVAILABLE', 'TEMPORARILY_UNAVAILABLE', 'DND'];
+      return st is string && st in ['AVAILABLE', 'TEMPORARILY_UNAVAILABLE', 'DND'];
     }
 
     function isValidContactVisibility(vis) {
-      return vis is string && vis.size() <= 24 && vis in ['PUBLIC_OPT_IN', 'VERIFIED_SEEKERS', 'REQUEST_ONLY'];
+      return vis is string && vis in ['PUBLIC_OPT_IN', 'VERIFIED_SEEKERS', 'REQUEST_ONLY'];
     }
 
-    // Server-side anti-XSS & script/HTML payload firewall enforced at Firestore kernel (multiline-aware)
+    // Server-side anti-XSS & script/HTML payload firewall enforced at Firestore kernel (single combined RE2 check stays well within Firestore AST/regex evaluation quota)
     function isSafeText(txt) {
       return txt is string
-        && !txt.matches('(?is).*<\\s*script.*')
-        && !txt.matches('(?is).*<\\s*(iframe|svg|object|embed|img|meta|link|style|form|base)\\b.*')
-        && !txt.matches('(?is).*<[^>]*\\bon[a-z]+\\s*=.*')
-        && !txt.matches('(?is).*javascript\\s*:.*')
-        && !txt.matches('(?is).*vbscript\\s*:.*')
-        && !txt.matches('(?is).*data\\s*:\\s*text/html.*')
-        && !txt.matches('(?is).*on(error|load|click|mouseover|focus|toggle|begin)\\s*=.*');
+        && !txt.matches('(?is).*((<\\s*(script|iframe|svg|object|embed|img|meta|link|style|form|base)\\b)|(<[^>]*\\bon[a-z]+\\s*=)|((javascript|vbscript)\\s*:)|(data\\s*:\\s*text/html)|(on(error|load|click|mouseover|focus|toggle|begin)\\s*=)).*');
     }
 
     // Ensures avatar and attachment fields can only hold empty string, HTTPS URLs, or image data URIs
@@ -97,9 +92,7 @@ service cloud.firestore {
         && uri.size() <= 150000
         && (
           uri.size() == 0 ||
-          uri.matches('(?s)^https://.*') ||
-          uri.matches('(?s)^data:image/.*') ||
-          uri.matches('^/[a-zA-Z0-9_/\\-.]+\\.(png|jpg|jpeg|webp|svg)$')
+          uri.matches('(?s)^(https://.*|data:image/.*|/[a-zA-Z0-9_/\\-.]+\\.(png|jpg|jpeg|webp|svg))$')
         );
     }
 
@@ -139,7 +132,7 @@ service cloud.firestore {
         && isValidBloodGroup(data.bloodGroup)
         && data.division is string && data.division.size() >= 2 && data.division.size() <= 40 && isSafeText(data.division)
         && data.district is string && data.district.size() >= 2 && data.district.size() <= 40 && isSafeText(data.district)
-        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 50 && isSafeText(data.upazila)
+        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 120 && isSafeText(data.upazila)
         && isValidCardNumber(data.idCardNumber)
         && data.panelType is string && data.panelType.size() <= 10 && data.panelType in ['USER', 'ADMIN']
         && isSafeMediaUri(data.photoUrl)
@@ -201,7 +194,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'ownerUid', 'name', 'bloodGroup', 'division', 'district', 'upazila',
-          'maskedPhone', 'available', 'availabilityStatus', 'availabilityConfirmedAt',
+          'maskedPhone', 'facebookUrl', 'available', 'availabilityStatus', 'availabilityConfirmedAt',
           'shareDirectContact', 'contactVisibility', 'allowCall', 'allowWhatsApp',
           'allowSms', 'emergencyAlertsOptIn', 'alertsPaused',
           'lastDonatedDate', 'totalDonations',
@@ -213,8 +206,9 @@ service cloud.firestore {
         && isValidBloodGroup(data.bloodGroup)
         && data.division is string && data.division.size() >= 2 && data.division.size() <= 40 && isSafeText(data.division)
         && data.district is string && data.district.size() >= 2 && data.district.size() <= 40 && isSafeText(data.district)
-        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 50 && isSafeText(data.upazila)
+        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 120 && isSafeText(data.upazila)
         && data.maskedPhone is string && data.maskedPhone.size() >= 4 && data.maskedPhone.size() <= 24 && data.maskedPhone.matches('.*\\*\\*.*') && isSafeText(data.maskedPhone)
+        && (!('facebookUrl' in data) || (data.facebookUrl is string && data.facebookUrl.size() <= 200 && isSafeText(data.facebookUrl)))
         && data.available is bool
         && (!('availabilityStatus' in data) || isValidAvailabilityStatus(data.availabilityStatus))
         && (!('availabilityConfirmedAt' in data) || data.availabilityConfirmedAt is timestamp)
@@ -247,13 +241,14 @@ service cloud.firestore {
           'allowSms', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'ownerUid', 'phone', 'whatsappPhone', 'shareDirectContact',
+          'ownerUid', 'phone', 'whatsappPhone', 'facebookUrl', 'shareDirectContact',
           'contactVisibility', 'availabilityStatus', 'allowCall', 'allowWhatsApp',
           'allowSms', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.ownerUid)
         && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 24 && isSafeText(data.phone)
         && data.whatsappPhone is string && data.whatsappPhone.size() <= 24 && isSafeText(data.whatsappPhone)
+        && (!('facebookUrl' in data) || (data.facebookUrl is string && data.facebookUrl.size() <= 200 && isSafeText(data.facebookUrl)))
         && data.shareDirectContact is bool
         && isValidContactVisibility(data.contactVisibility)
         && isValidAvailabilityStatus(data.availabilityStatus)
@@ -346,13 +341,13 @@ service cloud.firestore {
         && data.hospitalName is string && data.hospitalName.size() >= 2 && data.hospitalName.size() <= 120 && isSafeText(data.hospitalName)
         && data.division is string && data.division.size() >= 2 && data.division.size() <= 40 && isSafeText(data.division)
         && data.district is string && data.district.size() >= 2 && data.district.size() <= 40 && isSafeText(data.district)
-        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 50 && isSafeText(data.upazila)
-        && data.urgency is string && data.urgency.size() <= 12 && data.urgency in ['CRITICAL', 'URGENT', 'STANDARD']
-        && (!('requiredTimeWindow' in data) || (data.requiredTimeWindow is string && data.requiredTimeWindow.size() <= 20 && data.requiredTimeWindow in ['IMMEDIATE_2H', 'TODAY_6H', 'WITHIN_24H', 'SCHEDULED']))
+        && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 120 && isSafeText(data.upazila)
+        && data.urgency is string && data.urgency in ['CRITICAL', 'URGENT', 'STANDARD']
+        && (!('requiredTimeWindow' in data) || (data.requiredTimeWindow is string && data.requiredTimeWindow in ['IMMEDIATE_2H', 'TODAY_6H', 'WITHIN_24H', 'SCHEDULED']))
         && data.requiredDate is string && data.requiredDate.size() >= 2 && data.requiredDate.size() <= 30 && isSafeText(data.requiredDate)
         && data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 300 && isSafeText(data.reason)
-        && data.status is string && data.status.size() <= 12 && data.status in ['ACTIVE', 'FULFILLED', 'CANCELLED', 'EXPIRED']
-        && (!('lifecycleState' in data) || (data.lifecycleState is string && data.lifecycleState.size() <= 28 && data.lifecycleState in [
+        && data.status is string && data.status in ['ACTIVE', 'FULFILLED', 'CANCELLED', 'EXPIRED']
+        && (!('lifecycleState' in data) || (data.lifecycleState is string && data.lifecycleState in [
           'SEARCHING', 'DONORS_NOTIFIED', 'RESPONSES_RECEIVED', 'CONTACT_ATTEMPTED',
           'DONOR_CONFIRMED', 'FULFILLED', 'NO_RESPONSE', 'CANCELLED', 'EXPIRED'
         ]))
@@ -630,6 +625,22 @@ service cloud.firestore {
         && (
           isBootstrappedSuperAdmin() ||
           (
+            isOwner(userId)
+            && (
+              !('email' in existing()) ||
+              existing().email.size() < 3 ||
+              incoming().email == existing().email ||
+              (request.auth.token.email is string && incoming().email == request.auth.token.email)
+            )
+            && (
+              incoming().panelType == existing().panelType ||
+              incoming().panelType == 'USER' ||
+              isBootstrappedSuperAdmin() ||
+              isAdmin() ||
+              (incoming().panelType == 'ADMIN' && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid)))
+            )
+          ) ||
+          (
             isAdmin()
             && existing().email != 'shamimrakib015@gmail.com'
             && incoming().email == existing().email
@@ -639,19 +650,6 @@ service cloud.firestore {
               'weightKg', 'availableToDonate', 'availabilityStatus',
               'availabilityConfirmedAt', 'totalDonations', 'updatedAt'
             ])
-          ) ||
-          (
-            isOwner(userId)
-            && (
-              !('email' in existing()) ||
-              existing().email.size() < 3 ||
-              incoming().email == existing().email
-            )
-            && (
-              incoming().panelType == existing().panelType ||
-              isBootstrappedSuperAdmin() ||
-              (incoming().panelType == 'ADMIN' && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid)))
-            )
           )
         );
 
@@ -728,11 +726,9 @@ service cloud.firestore {
     // =========================================================================
     match /donors/{donorId} {
       allow get: if isValidId(donorId) && (
-        (resource == null && isOwner(donorId)) ||
-        (resource != null && (
-          existing().isPublic == true ||
-          (isSignedIn() && existing().ownerUid == request.auth.uid)
-        )) ||
+        resource == null ||
+        existing().isPublic == true ||
+        (isSignedIn() && existing().ownerUid == request.auth.uid) ||
         isAdmin()
       );
 
@@ -782,14 +778,6 @@ service cloud.firestore {
         && (
           isBootstrappedSuperAdmin() ||
           (
-            isAdmin()
-            && existing().panelType != 'ADMIN'
-            && incoming().panelType == existing().panelType
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'verifiedBadge', 'available', 'availabilityStatus', 'hospitalAffiliation', 'updatedAt'
-            ])
-          ) ||
-          (
             existing().ownerUid == request.auth.uid
             && (
               (
@@ -800,6 +788,14 @@ service cloud.firestore {
                 existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
               )
             )
+          ) ||
+          (
+            isAdmin()
+            && existing().panelType != 'ADMIN'
+            && incoming().panelType == existing().panelType
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'verifiedBadge', 'available', 'availabilityStatus', 'hospitalAffiliation', 'updatedAt'
+            ])
           )
         );
 
@@ -841,7 +837,10 @@ service cloud.firestore {
           (
             isOwner(donorId)
             && incoming().ownerUid == request.auth.uid
-            && hasRegisteredUserProfile()
+            && (
+              hasRegisteredUserProfile() ||
+              existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+            )
           )
         );
 
@@ -861,7 +860,7 @@ service cloud.firestore {
           (
             isOwner(donorId)
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'phone', 'whatsappPhone', 'shareDirectContact', 'contactVisibility',
+              'phone', 'whatsappPhone', 'facebookUrl', 'shareDirectContact', 'contactVisibility',
               'availabilityStatus', 'allowCall', 'allowWhatsApp', 'allowSms', 'updatedAt'
             ])
           )
@@ -911,8 +910,7 @@ service cloud.firestore {
         && incoming().approvedWhatsApp == ''
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && exists(/databases/$(database)/documents/donors/$(incoming().donorUid))
-        && hasRegisteredUserProfile();
+        && exists(/databases/$(database)/documents/donors/$(incoming().donorUid));
 
       allow update: if isValidContactConsentRequest(incoming())
         && isVerifiedUser()
@@ -1017,7 +1015,6 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          isAdmin() ||
           (
             existing().deliveryState != 'STOPPED_RESOLVED' && (
               (
@@ -1035,11 +1032,14 @@ service cloud.firestore {
                 ])
               )
             )
-          )
+          ) ||
+          isAdmin()
         );
 
       allow delete: if isVerifiedUser() && isValidId(alertId) && (
-        existing().authorUid == request.auth.uid || isAdmin()
+        existing().authorUid == request.auth.uid ||
+        existing().donorUid == request.auth.uid ||
+        isAdmin()
       );
     }
 
@@ -1048,8 +1048,9 @@ service cloud.firestore {
     // =========================================================================
     match /requests/{requestId} {
       allow get: if isValidId(requestId) && (
-        (resource != null && existing().isPublic == true) ||
-        (resource != null && isSignedIn() && existing().authorUid == request.auth.uid) ||
+        resource == null ||
+        existing().isPublic == true ||
+        (isSignedIn() && existing().authorUid == request.auth.uid) ||
         isAdmin()
       );
 
@@ -1063,14 +1064,13 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isValidBloodRequest(incoming())
-        && isVerifiedUser()
+      allow update: if isVerifiedUser()
         && isValidId(requestId)
         && incoming().authorUid == existing().authorUid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
+        && isValidBloodRequest(incoming())
         && (
-          isAdmin() ||
           (
             existing().status == 'ACTIVE' && (
               (
@@ -1097,7 +1097,8 @@ service cloud.firestore {
                 ])
               )
             )
-          )
+          ) ||
+          isAdmin()
         );
 
       allow delete: if isVerifiedUser() && isValidId(requestId) && (
@@ -1166,7 +1167,8 @@ service cloud.firestore {
     // =========================================================================
     match /requestResponses/{responseId} {
       allow get: if isValidId(responseId) && (
-        (resource != null && existing().isPublic == true) ||
+        resource == null ||
+        existing().isPublic == true ||
         isAdmin()
       );
 
@@ -1385,7 +1387,6 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          isAdmin() ||
           (
             existing().participantOneUid == request.auth.uid
             && incoming().lastSenderUid == request.auth.uid
@@ -1409,10 +1410,15 @@ service cloud.firestore {
               'participantTwoWhatsapp', 'participantTwoFb',
               'lastMessage', 'lastSenderUid', 'updatedAt'
             ])
-          )
+          ) ||
+          isAdmin()
         );
 
-      allow delete: if isVerifiedUser() && isValidId(chatId) && isBootstrappedSuperAdmin();
+      allow delete: if isVerifiedUser() && isValidId(chatId) && (
+        isBootstrappedSuperAdmin() ||
+        existing().participantOneUid == request.auth.uid ||
+        existing().participantTwoUid == request.auth.uid
+      );
 
       // =======================================================================
       // SUBCOLLECTION: /directChats/{chatId}/messages/{messageId}

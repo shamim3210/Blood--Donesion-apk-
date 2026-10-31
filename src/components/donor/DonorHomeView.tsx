@@ -696,8 +696,8 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   <Download className="w-4 h-4 text-emerald-300 shrink-0" />
                   <span className="text-xs font-bold text-white truncate">
                     {lang === 'bn'
-                      ? 'ফোনে অফিশিয়াল BloodSearch অ্যাপ / APK ইনস্টল ও ডাউনলোড'
-                      : 'Install Official BloodSearch Phone App / APK'}
+                      ? 'BloodSearch অ্যাপ ইনস্টল করুন'
+                      : 'Install BloodSearch App'}
                   </span>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-200 shrink-0" />
@@ -707,14 +707,14 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
         </div>
       </section>
 
-      {/* 3. Active Emergency Blood Requests Near You */}
-      <section className="space-y-3">
+      {/* 2. Active Emergency Blood Requests Section — Signature Ruby-Burgundy Jewel Theme */}
+      <section className="rounded-3xl section-jewel-ruby p-4 sm:p-6 space-y-4 text-white">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="text-sm sm:text-base font-extrabold text-[#0b2239] dark:text-white">
+            <h3 className="text-base sm:text-lg font-black text-white tracking-tight">
               {lang === 'bn' ? 'সক্রিয় জরুরি রক্তের আবেদনসমূহ' : 'Active Emergency Blood Requests'}
             </h3>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            <p className="text-xs text-rose-200/90">
               {lang === 'bn'
                 ? 'রিয়েল-টাইম যাচাইকৃত জরুরি রক্তের চাহিদা'
                 : 'Real-time verified urgent blood requests'}
@@ -724,10 +724,10 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => setRareOnlyFilter(!rareOnlyFilter)}
-              className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition-colors border whitespace-nowrap ${
+              className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors border whitespace-nowrap ${
                 rareOnlyFilter
-                  ? 'bg-rose-600 text-white border-rose-600'
-                  : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  ? 'bg-white text-rose-900 border-white shadow-sm'
+                  : 'bg-white/12 text-rose-100 border-white/25 hover:bg-white/22'
               }`}
             >
               {lang === 'bn' ? 'নেগেটিভ গ্রুপ' : 'Negative Only'}
@@ -735,7 +735,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigateTab('requests')}
-              className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer whitespace-nowrap"
+              className="min-h-[38px] px-3.5 py-1.5 rounded-lg text-xs font-bold bg-rose-500/25 hover:bg-rose-500/45 border border-rose-300/35 text-white cursor-pointer whitespace-nowrap transition-colors"
             >
               {lang === 'bn' ? 'সব দেখুন →' : 'See All →'}
             </button>
@@ -802,10 +802,10 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               return (
                 <div
                   key={req.id}
-                  className="surface-card rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-rose-300 dark:hover:border-rose-700 transition-colors"
+                  className="bg-white/97 dark:bg-[#11192c]/95 border border-white/70 dark:border-rose-900/50 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md hover:bg-white dark:hover:bg-[#162038] transition-all"
                 >
                   <div className="flex items-start gap-3 min-w-0 flex-1">
-                    <div className="w-12 h-12 rounded-2xl btn-crimson flex flex-col items-center justify-center font-black text-base shrink-0">
+                    <div className="w-12 h-12 rounded-xl btn-crimson flex flex-col items-center justify-center font-black text-base shrink-0">
                       <span>{req.bloodGroup}</span>
                     </div>
                     <div className="min-w-0 flex-1">
@@ -883,20 +883,20 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
         </div>
       </section>
 
-      {/* 4. Two-Column Live Hospital/Donor Street Map + 90d/14d Readiness & Recovery Tracker */}
+      {/* 3 & 4. Two-Column Ocean-Sapphire Live Map + Forest-Emerald Readiness Tracker */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
-        {/* Live Interactive Street Map Preview Card */}
-        <section className="surface-card rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-3">
+        {/* Live Interactive Street Map Preview Card — Ocean Sapphire Jewel Theme */}
+        <section className="section-jewel-ocean rounded-3xl p-4 sm:p-5 flex flex-col justify-between space-y-3.5 text-white">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0 flex-1">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#dc2626] to-[#0b2239] text-white flex items-center justify-center shrink-0 shadow-xs">
-                <Compass className="w-4.5 h-4.5" />
+              <div className="w-10 h-10 rounded-xl bg-sky-500/25 border border-sky-300/35 text-sky-200 flex items-center justify-center shrink-0">
+                <Compass className="w-5 h-5" />
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="font-bold text-sm text-[#0b2239] dark:text-white truncate">
+                <h3 className="font-black text-sm sm:text-base text-white truncate">
                   {lang === 'bn' ? 'লাইভ হাসপাতাল ও ডোনার ম্যাপ' : 'Live Hospital & Donor Map'}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                <p className="text-[11px] text-sky-200/90 truncate">
                   {isGpsActive
                     ? lang === 'bn'
                       ? 'GPS সক্রিয় · সরকারি ব্লাড ব্যাংক ও প্রস্তুত ডোনার'
@@ -917,13 +917,13 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   onNavigateTab('map');
                 }
               }}
-              className="min-h-[38px] px-3.5 py-1.5 btn-obsidian font-semibold text-xs rounded-xl cursor-pointer whitespace-nowrap shrink-0"
+              className="min-h-[38px] px-3.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs rounded-lg cursor-pointer whitespace-nowrap shrink-0 transition-colors"
             >
               {lang === 'bn' ? 'পূর্ণ ম্যাপ →' : 'Open Map →'}
             </button>
           </div>
 
-          <div className="relative w-full h-48 sm:h-52 rounded-xl overflow-hidden border border-slate-200/90 dark:border-slate-800 bg-slate-100 dark:bg-slate-900">
+          <div className="relative w-full h-48 sm:h-52 rounded-2xl overflow-hidden border border-white/20 bg-slate-100 dark:bg-slate-900">
             <div ref={miniMapContainerRef} className="w-full h-full z-0" />
 
             <div className="absolute top-2.5 left-2.5 z-[400] flex items-center gap-1 pointer-events-auto">
@@ -953,7 +953,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
           </div>
 
           {activeSelectedPin && (
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-2.5">
+            <div className="p-3 rounded-xl bg-white/95 dark:bg-slate-950/80 border border-white/40 dark:border-slate-800 flex items-center justify-between gap-2.5 text-slate-900 dark:text-white">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <div
                   className={`px-2.5 h-9 rounded-lg flex items-center justify-center font-bold text-xs text-white shrink-0 ${
@@ -970,7 +970,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   <h4 className="font-bold text-xs text-slate-900 dark:text-white leading-tight truncate">
                     {activeSelectedPin.name}
                   </h4>
-                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate tabular-nums">
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 mt-0.5 truncate tabular-nums">
                     <MapPin className="w-3 h-3 text-rose-500 shrink-0" />
                     <span className="truncate">{activeSelectedPin.district}</span>
                     <span>·</span>
@@ -1044,16 +1044,16 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
           )}
         </section>
 
-        {/* 90-Day Whole Blood & 14-Day Platelet Readiness & Recovery Tracker */}
-        <section className="surface-card rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-3">
+        {/* 90-Day Whole Blood & 14-Day Platelet Readiness Tracker — Forest Emerald Jewel Theme */}
+        <section className="section-jewel-emerald rounded-3xl p-4 sm:p-5 flex flex-col justify-between space-y-3.5 text-white">
           <div className="space-y-3">
             <div className="flex flex-wrap items-start justify-between gap-2.5">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <div
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
                     recovery.isEligible
-                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400'
-                      : 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400'
+                      ? 'bg-emerald-400/20 border-emerald-300/35 text-emerald-200'
+                      : 'bg-amber-400/20 border-amber-300/35 text-amber-200'
                   }`}
                 >
                   {recovery.isEligible ? (
@@ -1063,7 +1063,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="font-bold text-sm text-slate-900 dark:text-white leading-snug">
+                  <h3 className="font-black text-sm sm:text-base text-white leading-snug">
                     {recovery.isEligible
                       ? lang === 'bn'
                         ? 'রক্তদানের জন্য প্রস্তুত'
@@ -1072,7 +1072,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       ? 'রক্তদান পরবর্তী রিকভারি বিশ্রাম'
                       : 'Post-Donation Recovery Active'}
                   </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  <p className="text-[11px] text-emerald-200/90 mt-0.5 truncate">
                     {lang === 'bn'
                       ? `সর্বশেষ: ${recovery.lastDonatedLabel} · পরবর্তী: ${recovery.nextEligibleDateLabel}`
                       : `Last: ${recovery.lastDonatedLabel} · Next: ${recovery.nextEligibleDateLabel}`}
@@ -1080,14 +1080,14 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 </div>
               </div>
 
-              <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-[11px] font-semibold shrink-0">
+              <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-white/12 border border-white/20 text-[11px] font-bold shrink-0">
                 <button
                   type="button"
                   onClick={() => setRecoveryMode('WHOLE_BLOOD')}
-                  className={`px-2.5 py-1 rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  className={`px-2.5 py-1 rounded-md cursor-pointer transition-colors whitespace-nowrap ${
                     recoveryMode === 'WHOLE_BLOOD'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                      : 'text-slate-600 dark:text-slate-400'
+                      ? 'bg-white text-emerald-950 shadow-2xs'
+                      : 'text-emerald-100 hover:bg-white/15'
                   }`}
                 >
                   {lang === 'bn' ? 'পূর্ণ রক্ত (৯০ দিন)' : 'Whole (90d)'}
@@ -1095,10 +1095,10 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setRecoveryMode('PLATELET')}
-                  className={`px-2.5 py-1 rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  className={`px-2.5 py-1 rounded-md cursor-pointer transition-colors whitespace-nowrap ${
                     recoveryMode === 'PLATELET'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                      : 'text-slate-600 dark:text-slate-400'
+                      ? 'bg-white text-emerald-950 shadow-2xs'
+                      : 'text-emerald-100 hover:bg-white/15'
                   }`}
                 >
                   {lang === 'bn' ? 'প্লাটিলেট (১৪ দিন)' : 'Platelet (14d)'}
@@ -1109,9 +1109,9 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             {/* Readiness Status OR Active Countdown Progress */}
             {recovery.isEligible ? (
               <div className="space-y-2.5">
-                <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
+                <div className="p-3 rounded-xl bg-white/12 border border-emerald-300/30 space-y-2">
                   <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-bold text-emerald-900 dark:text-emerald-200">
+                    <span className="font-bold text-white">
                       {recovery.daysSinceLast !== null
                         ? lang === 'bn'
                           ? 'রিকভারি বিরতি ১০০% সম্পন্ন'
@@ -1120,7 +1120,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                         ? 'বর্তমান স্ট্যাটাস: রক্তদানে প্রস্তুত'
                         : 'Current Status: Ready to Donate'}
                     </span>
-                    <span className="font-mono font-bold text-[11px] text-emerald-700 dark:text-emerald-400 tabular-nums">
+                    <span className="font-mono font-bold text-[11px] text-emerald-200 tabular-nums">
                       {recoveryMode === 'PLATELET'
                         ? lang === 'bn'
                           ? '১৪ দিনের চক্র'
@@ -1130,40 +1130,40 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                         : '90-Day Cycle'}
                     </span>
                   </div>
-                  <div className="w-full h-2 rounded-full bg-emerald-200/70 dark:bg-emerald-950 overflow-hidden">
-                    <div className="h-full w-full bg-emerald-500" />
+                  <div className="w-full h-2 rounded-full bg-white/20 overflow-hidden">
+                    <div className="h-full w-full bg-emerald-400" />
                   </div>
                 </div>
 
-                {/* 3-Column Clinical Readiness Standards (Eliminates empty whitespace & guides new donors) */}
+                {/* 3-Column Clinical Readiness Standards */}
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/16">
+                    <div className="text-[10px] font-semibold text-emerald-200 truncate">
                       {lang === 'bn' ? 'নিরাপদ বিরতি' : 'Min. Interval'}
                     </div>
-                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                    <div className="text-xs sm:text-sm font-black text-white font-mono tabular-nums mt-0.5">
                       {recovery.intervalDays} {lang === 'bn' ? 'দিন' : 'Days'}
                     </div>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/16">
+                    <div className="text-[10px] font-semibold text-emerald-200 truncate">
                       {lang === 'bn' ? 'বয়স ও ওজন' : 'Age & Weight'}
                     </div>
-                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                    <div className="text-xs sm:text-sm font-black text-white font-mono tabular-nums mt-0.5">
                       {lang === 'bn' ? '১৮–৬০ · ৫০+কেজি' : '18–60y · ≥50kg'}
                     </div>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/16">
+                    <div className="text-[10px] font-semibold text-emerald-200 truncate">
                       {lang === 'bn' ? 'হিমোগ্লোবিন' : 'Hemoglobin'}
                     </div>
-                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                    <div className="text-xs sm:text-sm font-black text-white font-mono tabular-nums mt-0.5">
                       ≥12.5 g/dL
                     </div>
                   </div>
                 </div>
 
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                <p className="text-[11px] text-emerald-100/90 leading-relaxed">
                   {recovery.daysSinceLast !== null
                     ? lang === 'bn'
                       ? `সর্বশেষ রক্তদানের পর ${recovery.daysSinceLast} দিন অতিবাহিত হয়েছে। রক্ত দেওয়ার আগে ৬+ ঘণ্টা ঘুম ও হালকা খাবার নিশ্চিত করুন।`
@@ -1175,12 +1175,12 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               </div>
             ) : (
               <div className="space-y-2.5">
-                <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200/80 dark:border-amber-900/60 space-y-2">
+                <div className="p-3 rounded-xl bg-amber-400/15 border border-amber-300/35 space-y-2">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-amber-900 dark:text-amber-200">
+                    <span className="font-bold text-amber-200">
                       {lang === 'bn' ? 'রিকভারি কাউন্টডাউন' : 'Recovery Countdown'}
                     </span>
-                    <div className="font-mono font-bold text-slate-900 dark:text-white tabular-nums">
+                    <div className="font-mono font-bold text-white tabular-nums">
                       {String(recovery.remainingDays).padStart(2, '0')}d :{' '}
                       {String(recovery.remainingHours).padStart(2, '0')}h :{' '}
                       {String(recovery.remainingMinutes).padStart(2, '0')}m
@@ -1189,38 +1189,38 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   <progress
                     value={recovery.progressPercent}
                     max={100}
-                    className="w-full h-2 rounded-full overflow-hidden [&::-webkit-progress-bar]:bg-amber-200/70 dark:[&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:bg-amber-500 [&::-moz-progress-bar]:bg-amber-500"
+                    className="w-full h-2 rounded-full overflow-hidden [&::-webkit-progress-bar]:bg-white/20 [&::-webkit-progress-value]:bg-amber-400 [&::-moz-progress-bar]:bg-amber-400"
                   />
                 </div>
 
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/16">
+                    <div className="text-[10px] font-semibold text-emerald-200 truncate">
                       {lang === 'bn' ? 'সম্পন্ন দিন' : 'Completed'}
                     </div>
-                    <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                    <div className="text-xs sm:text-sm font-black text-white font-mono tabular-nums mt-0.5">
                       {recovery.daysSinceLast ?? 0}/{recovery.intervalDays}d
                     </div>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/16">
+                    <div className="text-[10px] font-semibold text-emerald-200 truncate">
                       {lang === 'bn' ? 'অগ্রগতি' : 'Recovered'}
                     </div>
-                    <div className="text-xs sm:text-sm font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums mt-0.5">
+                    <div className="text-xs sm:text-sm font-black text-amber-300 font-mono tabular-nums mt-0.5">
                       {recovery.progressPercent}%
                     </div>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/16">
+                    <div className="text-[10px] font-semibold text-emerald-200 truncate">
                       {lang === 'bn' ? 'পরবর্তী তারিখ' : 'Next Date'}
                     </div>
-                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate mt-0.5 tabular-nums">
+                    <div className="text-xs font-bold text-white truncate mt-0.5 tabular-nums">
                       {recovery.nextEligibleDateLabel}
                     </div>
                   </div>
                 </div>
 
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                <p className="text-[11px] text-emerald-100/90 leading-relaxed">
                   {lang === 'bn'
                     ? 'রিকভারি চলাকালীন আয়রনসমৃদ্ধ খাবার ও পর্যাপ্ত পানি পান করুন। জরুরি আবেদনে আপনি পরিবার বা পরিচিত ডোনার রেফার করতে পারেন।'
                     : 'Focus on hydration and iron-rich meals during recovery. You can still share SOS posts to help patients.'}
@@ -1239,7 +1239,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   setShowReadinessCheck(false);
                   setShowCrossMatchGuide(false);
                 }}
-                className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-crimson font-bold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="min-h-[40px] px-3.5 py-1.5 rounded-lg btn-crimson font-bold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
                 <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
                 <span>{lang === 'bn' ? 'রক্তদান লগ করুন' : 'Log Donation'}</span>
@@ -1252,9 +1252,9 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   setShowLogDrawer(false);
                   setShowCrossMatchGuide(false);
                 }}
-                className="min-h-[40px] px-3 py-1.5 rounded-xl btn-surface font-semibold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="min-h-[40px] px-3 py-1.5 rounded-lg bg-white/14 hover:bg-white/24 border border-white/25 text-white font-semibold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               >
-                <Stethoscope className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <Stethoscope className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
                 <span>{lang === 'bn' ? 'পূর্ব-প্রস্তুতি চেক' : 'Readiness Check'}</span>
               </button>
 
@@ -1265,9 +1265,9 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   setShowLogDrawer(false);
                   setShowReadinessCheck(false);
                 }}
-                className="min-h-[40px] px-3 py-1.5 rounded-xl btn-surface font-semibold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="min-h-[40px] px-3 py-1.5 rounded-lg bg-white/14 hover:bg-white/24 border border-white/25 text-white font-semibold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               >
-                <FlaskConical className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
+                <FlaskConical className="w-3.5 h-3.5 text-rose-300 shrink-0" />
                 <span>{lang === 'bn' ? 'ক্রস-ম্যাচ গাইড' : 'Cross-Match Guide'}</span>
               </button>
             </div>
@@ -1421,15 +1421,15 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
         </section>
       </div>
 
-      {/* 5. Focused Blood-Only Quick Help (3 Core Blood Essentials Only) */}
-      <section className="space-y-3">
+      {/* 5. Essential Blood Bank & Matching Help — Royal Indigo-Plum Jewel Theme */}
+      <section className="section-jewel-indigo rounded-3xl p-4 sm:p-6 space-y-4 text-white">
         <div>
-          <h3 className="text-sm sm:text-base font-extrabold text-[#0b2239] dark:text-white">
+          <h3 className="text-base sm:text-lg font-black text-white tracking-tight">
             {lang === 'bn'
               ? 'জরুরি ব্লাড ব্যাংক ও সরাসরি সহায়তা'
               : 'Essential Blood Bank & Matching Help'}
           </h3>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+          <p className="text-xs text-indigo-200/90">
             {lang === 'bn'
               ? 'শুধু রক্তদাতা ও রোগীর জন্য প্রয়োজনীয় ৩টি সরাসরি সেবা'
               : 'Direct blood bank hotlines, live donor map & blood group compatibility'}
@@ -1445,7 +1445,9 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   ? 'সরকারি ও ভেরিফাইড ব্লাড ব্যাংকের সরাসরি নম্বর'
                   : 'Verified government & hospital blood bank numbers',
               icon: Building2,
-              tone: 'bg-gradient-to-br from-[#dc2626] to-[#991b1b] text-white',
+              cardBg:
+                'bg-rose-500/20 hover:bg-rose-500/35 border-rose-300/30',
+              iconTone: 'bg-rose-500 text-white',
               onClick: onOpenDirectory,
             },
             {
@@ -1455,7 +1457,9 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   ? 'জিপিএস ও এলাকার নাম দিয়ে নিকটস্থ রক্তদাতা খুঁজুন'
                   : 'Find closest donors & hospitals by GPS or neighborhood',
               icon: Hospital,
-              tone: 'bg-gradient-to-br from-[#0b2239] to-[#1e3a5f] text-white',
+              cardBg:
+                'bg-sky-500/20 hover:bg-sky-500/35 border-sky-300/30',
+              iconTone: 'bg-sky-500 text-white',
               onClick: () => onNavigateTab('map'),
             },
             {
@@ -1465,7 +1469,9 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   ? 'কোন গ্রুপের মানুষ কাকে রক্ত দিতে ও নিতে পারবেন'
                   : 'Check who can safely donate to or receive from your group',
               icon: Droplet,
-              tone: 'bg-gradient-to-br from-[#059669] to-[#047857] text-white',
+              cardBg:
+                'bg-emerald-500/20 hover:bg-emerald-500/35 border-emerald-300/30',
+              iconTone: 'bg-emerald-500 text-white',
               onClick: () => onNavigateTab('compatibility'),
             },
           ].map((tool, idx) => {
@@ -1475,20 +1481,20 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 key={idx}
                 type="button"
                 onClick={tool.onClick}
-                className="min-h-[72px] p-4 rounded-2xl surface-card hover:border-rose-300 dark:hover:border-rose-700 transition-colors flex items-center gap-3.5 text-left cursor-pointer"
+                className={`min-h-[76px] p-4 rounded-2xl border ${tool.cardBg} transition-all duration-200 hover:-translate-y-0.5 flex items-center gap-3.5 text-left cursor-pointer`}
               >
-                <div className={`w-11 h-11 rounded-2xl ${tool.tone} flex items-center justify-center shrink-0 shadow-xs`}>
+                <div className={`w-11 h-11 rounded-xl ${tool.iconTone} flex items-center justify-center shrink-0 shadow-sm`}>
                   <Icon className="w-5 h-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs sm:text-sm font-bold text-[#0b2239] dark:text-white leading-snug truncate">
+                  <div className="text-xs sm:text-sm font-black text-white leading-snug truncate">
                     {tool.label}
                   </div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  <div className="text-[11px] text-slate-200/85 mt-0.5 truncate">
                     {tool.sub}
                   </div>
                 </div>
-                <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                <ChevronRight className="w-4 h-4 text-white/80 shrink-0" />
               </button>
             );
           })}

@@ -11,6 +11,7 @@ import {
 } from '../../types';
 import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
 import { DISTRICTS } from '../../data/bangladeshGeo';
+import { INITIAL_DONORS, INITIAL_REQUESTS, isFakePersonName } from '../../data/mockDonors';
 import {
   QrCode,
   Award,
@@ -32,6 +33,9 @@ import {
   LocateFixed,
   Pencil,
   Check,
+  RefreshCw,
+  Trash2,
+  Globe,
 } from 'lucide-react';
 import { PrivacyPolicyModal } from '../ecosystem/PrivacyPolicyModal';
 import { DonorCertificateModal } from './DonorCertificateModal';
@@ -58,11 +62,16 @@ import {
   isBootstrappedAdminUser,
   isUserVerifiedForWrites,
   registerSmartAccountInFirestore,
+  normalizeFacebookProfileUrl,
+  deleteMyUserAndDonorDataInFirestore,
+  ownerWipeEntireDatabaseZeroSlateV6InFirestore,
   updateDonorAvailabilityAndConsentInFirestore,
   recordCompletedDonationInFirestore,
   subscribeIncomingContactRequestsForDonor,
   respondToContactRequestInFirestore,
-  parseFirebaseAuthError,
+  getStoredDevOtpSandboxSession,
+  clearDevOtpSandboxSession,
+  DevOtpClientSession,
   User as FirebaseUser,
 } from '../../firebase';
 
@@ -78,10 +87,16 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   onOpenAuthModal,
 }) => {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [devOtpSession, setDevOtpSession] = useState<DevOtpClientSession | null>(() =>
+    getStoredDevOtpSandboxSession()
+  );
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     try {
       const saved = localStorage.getItem('bloodsearch_current_user');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && !isFakePersonName(parsed.name)) return parsed;
+      }
     } catch {}
     return null;
   });
@@ -89,26 +104,36 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     getStoredDonationLogs()
   );
   const [statusToast, setStatusToast] = useState<string | null>(null);
+  const [isRebuildingDb, setIsRebuildingDb] = useState(false);
 
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, (u) => {
-      setFirebaseUser(u);
-    });
     const syncUser = () => {
       try {
+        setDevOtpSession(getStoredDevOtpSandboxSession());
         const saved = localStorage.getItem('bloodsearch_current_user');
         const parsed = saved ? JSON.parse(saved) : null;
-        setCurrentUser(parsed);
-        if (parsed && typeof parsed.availableToDonate === 'boolean') {
-          setIsAvailable(parsed.availableToDonate);
+        const safeUser = parsed && !isFakePersonName(parsed.name) ? parsed : null;
+        setCurrentUser(safeUser);
+        if (safeUser && typeof safeUser.availableToDonate === 'boolean') {
+          setIsAvailable(safeUser.availableToDonate);
         }
         setDonationLogs(getStoredDonationLogs());
       } catch {}
     };
+    const unsubAuth = onAuthStateChanged(auth, (u) => {
+      setFirebaseUser(u);
+      syncUser();
+    });
+    const syncDevOtp = () => {
+      setDevOtpSession(getStoredDevOtpSandboxSession());
+      syncUser();
+    };
     window.addEventListener('bloodsearch_user_changed', syncUser);
+    window.addEventListener('bloodsearch_dev_otp_changed', syncDevOtp);
     return () => {
       unsubAuth();
       window.removeEventListener('bloodsearch_user_changed', syncUser);
+      window.removeEventListener('bloodsearch_dev_otp_changed', syncDevOtp);
     };
   }, []);
 
@@ -170,47 +195,78 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     setAlertsPaused(currentUser.alertsPaused === true);
   }, [currentUser]);
 
-  // Quick Inline Profile Edit State (Name, Blood Group, Mobile, District, Custom Area + GPS)
+  // Quick Inline Profile Edit State (Name, Blood Group, Mobile, WhatsApp, Facebook, District, Custom Area + GPS)
   const [isQuickEditOpen, setIsQuickEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editGroup, setEditGroup] = useState<BloodGroup>('O+');
   const [editPhone, setEditPhone] = useState('');
+  const [editWhatsapp, setEditWhatsapp] = useState('');
+  const [editFacebook, setEditFacebook] = useState('');
   const [editDistrict, setEditDistrict] = useState('dhaka');
   const [editArea, setEditArea] = useState('');
   const [isSavingQuickEdit, setIsSavingQuickEdit] = useState(false);
   const [isLocatingQuickGps, setIsLocatingQuickGps] = useState(false);
   const [quickEditError, setQuickEditError] = useState<string | null>(null);
+  const [confirmDeleteMyProfile, setConfirmDeleteMyProfile] = useState(false);
+  const [isDeletingMyProfile, setIsDeletingMyProfile] = useState(false);
 
-  const openInlineQuickEdit = () => {
-    setQuickEditError(null);
-    setEditName(
-      currentUser?.name ||
-        firebaseUser?.displayName ||
-        firebaseUser?.email?.split('@')[0] ||
-        ''
+  const populateQuickEditFields = (sourceUser: UserAccount | null) => {
+    const hasRealSaved = Boolean(
+      sourceUser &&
+        !isFakePersonName(sourceUser.name) &&
+        sourceUser.phone &&
+        sourceUser.phone !== '01700000000' &&
+        sourceUser.facebookUrl !== 'https://facebook.com/bloodsearch.bd'
     );
-    setEditGroup(currentUser?.bloodGroup || 'O+');
-    setEditPhone(
-      currentUser?.phone && currentUser.phone !== '01700000000'
-        ? currentUser.phone
-        : firebaseUser?.phoneNumber || ''
+    setEditName(hasRealSaved ? sourceUser!.name : '');
+    setEditGroup((hasRealSaved && sourceUser?.bloodGroup) || 'O+');
+    const cleanPhoneVal = hasRealSaved && sourceUser?.phone ? sourceUser.phone : '';
+    setEditPhone(cleanPhoneVal);
+    setEditWhatsapp(
+      hasRealSaved && sourceUser?.whatsappPhone && sourceUser.whatsappPhone !== '01700000000'
+        ? sourceUser.whatsappPhone
+        : cleanPhoneVal
+    );
+    setEditFacebook(
+      hasRealSaved ? normalizeFacebookProfileUrl(sourceUser?.facebookUrl) || '' : ''
     );
     const matchedDist = DISTRICTS.find(
       (d) =>
-        d.id === String(currentUser?.district || '').toLowerCase() ||
-        d.nameBn === currentUser?.district ||
-        d.nameEn.toLowerCase() === String(currentUser?.district || '').toLowerCase()
+        d.id === String(sourceUser?.district || '').toLowerCase() ||
+        d.nameBn === sourceUser?.district ||
+        d.nameEn.toLowerCase() === String(sourceUser?.district || '').toLowerCase()
     );
-    setEditDistrict(matchedDist?.id || 'dhaka');
+    setEditDistrict(hasRealSaved && matchedDist ? matchedDist.id : 'dhaka');
     setEditArea(
-      currentUser?.upazila &&
-        currentUser.upazila !== 'sadar' &&
-        currentUser.upazila !== 'সদর'
-        ? currentUser.upazila
+      hasRealSaved &&
+        sourceUser?.upazila &&
+        sourceUser.upazila !== 'sadar' &&
+        sourceUser.upazila !== 'সদর'
+        ? sourceUser.upazila
         : ''
     );
+  };
+
+  const openInlineQuickEdit = () => {
+    setQuickEditError(null);
+    populateQuickEditFields(currentUser);
     setIsQuickEditOpen(true);
   };
+
+  useEffect(() => {
+    const hasRealSaved = Boolean(
+      currentUser &&
+        !isFakePersonName(currentUser.name) &&
+        currentUser.phone &&
+        currentUser.phone !== '01700000000' &&
+        currentUser.facebookUrl !== 'https://facebook.com/bloodsearch.bd' &&
+        (!firebaseUser || !currentUser.id || currentUser.id === firebaseUser.uid)
+    );
+    if (firebaseUser && !hasRealSaved) {
+      populateQuickEditFields(null);
+      setIsQuickEditOpen(true);
+    }
+  }, [firebaseUser?.uid, currentUser?.id, currentUser?.phone, currentUser?.facebookUrl]);
 
   const handleQuickEditGps = async () => {
     setIsLocatingQuickGps(true);
@@ -255,55 +311,66 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       return;
     }
 
-    let pendingAuth: Promise<FirebaseUser> | null = null;
-    if (!auth.currentUser || !isUserVerifiedForWrites(auth.currentUser)) {
-      pendingAuth = signInWithGoogleReal();
+    const cleanWa = normalizeValidBangladeshMobileE164(editWhatsapp);
+    if (!cleanWa || !isValidBangladeshMobilePhone(editWhatsapp)) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (যেমন: 01712345678)।'
+          : 'Please enter a valid 11-digit WhatsApp number (e.g. 01712345678).'
+      );
+      return;
     }
+
+    const cleanFb = normalizeFacebookProfileUrl(editFacebook);
+    if (!cleanFb) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার আসল Facebook প্রোফাইল লিংক বা ইউজারনেম দিন (যেমন: facebook.com/your.id)।'
+          : 'Please enter your Facebook profile link or username (e.g. facebook.com/your.id).'
+      );
+      return;
+    }
+
+    const distObj = DISTRICTS.find((d) => d.id === editDistrict) || DISTRICTS[0];
+    const finalArea = (
+      editArea.trim() ||
+      (lang === 'bn' ? distObj.nameBn : distObj.nameEn) ||
+      'Dhaka'
+    ).slice(0, 120);
 
     setIsSavingQuickEdit(true);
     try {
-      let activeUser = auth.currentUser;
-      if (pendingAuth) {
-        try {
-          activeUser = await pendingAuth;
-          setFirebaseUser(activeUser);
-        } catch (authErr: any) {
-          const parsed = parseFirebaseAuthError(authErr);
-          setQuickEditError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
-          setIsSavingQuickEdit(false);
-          return;
-        }
-      }
+      const activeUser = auth.currentUser;
+      const activeDevOtp = getStoredDevOtpSandboxSession();
+      const resolvedUid =
+        activeUser?.uid ||
+        activeDevOtp?.uid ||
+        currentUser?.id ||
+        `local_donor_${cleanPhone.replace(/\D/g, '').slice(-8) || '1001'}`;
 
-      if (!activeUser) {
-        setIsSavingQuickEdit(false);
-        return;
-      }
+      const sameOwnerExisting =
+        currentUser && currentUser.id === resolvedUid ? currentUser : null;
 
-      const distObj = DISTRICTS.find((d) => d.id === editDistrict) || DISTRICTS[0];
-      const finalArea = (
-        editArea.trim() ||
-        (lang === 'bn' ? distObj.nameBn : distObj.nameEn) ||
-        'Dhaka'
-      ).slice(0, 50);
-
-      const isSuperOwner = isBootstrappedAdminUser(activeUser);
+      const isSuperOwner = Boolean(activeUser && isBootstrappedAdminUser(activeUser));
       const effectiveRole: 'USER' | 'ADMIN' =
-        currentUser?.role === 'ADMIN' || isSuperOwner ? 'ADMIN' : 'USER';
+        !activeUser && activeDevOtp
+          ? 'USER'
+          : sameOwnerExisting?.role === 'ADMIN' || isSuperOwner
+            ? 'ADMIN'
+            : 'USER';
 
       const uidShort =
-        activeUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
+        resolvedUid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
       const defaultCardId =
         effectiveRole === 'ADMIN' ? `ADMIN-BD-${uidShort}` : `BS-${uidShort}`;
       const cleanCardId =
-        currentUser?.idCardNumber &&
-        /^[a-zA-Z0-9+-]{5,40}$/.test(currentUser.idCardNumber)
-          ? currentUser.idCardNumber
+        sameOwnerExisting?.idCardNumber &&
+        /^[a-zA-Z0-9+-]{5,40}$/.test(sameOwnerExisting.idCardNumber)
+          ? sameOwnerExisting.idCardNumber
           : defaultCardId;
 
-      // If previously auto-synced with placeholder phone '01700000000', promote visibility to PUBLIC_OPT_IN when user saves their real phone!
       const hadPlaceholderPhone =
-        !currentUser?.phone || currentUser.phone === '01700000000';
+        !sameOwnerExisting?.phone || sameOwnerExisting.phone === '01700000000';
       const effectiveVisibility =
         hadPlaceholderPhone && contactVisibility === 'REQUEST_ONLY'
           ? 'PUBLIC_OPT_IN'
@@ -311,26 +378,34 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       const effectiveShareDirect = effectiveVisibility !== 'REQUEST_ONLY';
 
       const updatedAccount: UserAccount = {
-        id: activeUser.uid,
+        id: resolvedUid,
         name: cleanName,
         email:
-          activeUser.email ||
-          currentUser?.email ||
-          `${activeUser.uid.slice(0, 8)}@bloodsearch.bd`,
+          activeUser?.email ||
+          sameOwnerExisting?.email ||
+          (activeDevOtp
+            ? `${activeDevOtp.phoneLocal}@otp-dev.bloodsearch.bd`
+            : `${uidShort.toLowerCase()}@bloodsearch.bd`),
         phone: cleanPhone,
-        whatsappPhone: cleanPhone,
-        facebookUrl: currentUser?.facebookUrl || 'https://facebook.com/bloodsearch.bd',
+        whatsappPhone: cleanWa,
+        facebookUrl: cleanFb,
         bloodGroup: editGroup,
         division: distObj.divisionId || 'dhaka',
         district: distObj.id,
         upazila: finalArea,
-        photoUrl: currentUser?.photoUrl || activeUser.photoURL || DEFAULT_AVATAR_DATA_URI,
+        photoUrl:
+          (sameOwnerExisting?.photoUrl && sameOwnerExisting.photoUrl !== DEFAULT_AVATAR_DATA_URI
+            ? sameOwnerExisting.photoUrl
+            : '') ||
+          currentUser?.photoUrl ||
+          activeUser?.photoURL ||
+          DEFAULT_AVATAR_DATA_URI,
         role: effectiveRole,
-        verifiedStatus: true,
+        verifiedStatus: Boolean(activeUser),
         idCardNumber: cleanCardId,
-        age: currentUser?.age || 25,
-        gender: currentUser?.gender || 'MALE',
-        weightKg: currentUser?.weightKg || 62,
+        age: sameOwnerExisting?.age || currentUser?.age || 25,
+        gender: sameOwnerExisting?.gender || currentUser?.gender || 'MALE',
+        weightKg: sameOwnerExisting?.weightKg || currentUser?.weightKg || 62,
         availableToDonate: availabilityStatus === 'AVAILABLE',
         availabilityStatus,
         availabilityConfirmedAtMs: Date.now(),
@@ -341,20 +416,21 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         allowSms,
         emergencyAlertsOptIn,
         alertsPaused,
-        lastDonationDate: currentUser?.lastDonationDate || '',
-        totalDonations: currentUser?.totalDonations || 0,
-        createdAt: currentUser?.createdAt || new Date().toISOString(),
+        lastDonationDate: sameOwnerExisting?.lastDonationDate || '',
+        totalDonations: sameOwnerExisting?.totalDonations || 0,
+        createdAt: sameOwnerExisting?.createdAt || new Date().toISOString(),
       };
 
       const updatedDonor: Donor = {
-        id: activeUser.uid,
+        id: resolvedUid,
         name: cleanName,
         bloodGroup: editGroup,
         division: distObj.divisionId || 'dhaka',
         district: distObj.id,
         upazila: finalArea,
         phone: cleanPhone,
-        whatsappPhone: cleanPhone,
+        whatsappPhone: cleanWa,
+        facebookUrl: cleanFb,
         available: availabilityStatus === 'AVAILABLE',
         availabilityStatus,
         availabilityConfirmedAtMs: Date.now(),
@@ -365,7 +441,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         allowSms,
         emergencyAlertsOptIn,
         alertsPaused,
-        isCloudRecord: true,
+        isCloudRecord: Boolean(activeUser),
         lastDonatedDate: updatedAccount.lastDonationDate || '',
         totalDonations: updatedAccount.totalDonations || 0,
         verifiedBadge: effectiveRole === 'ADMIN',
@@ -381,11 +457,17 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         avatar: updatedAccount.photoUrl,
       };
 
-      await registerSmartAccountInFirestore({
-        firebaseUser: activeUser,
-        account: updatedAccount,
-        donor: updatedDonor,
-      });
+      // Cloud sync FIRST when signed in so Blood Group & Address never revert on snapshot!
+      if (activeUser && isUserVerifiedForWrites(activeUser)) {
+        await registerSmartAccountInFirestore({
+          firebaseUser: activeUser,
+          account: updatedAccount,
+          donor: updatedDonor,
+        });
+        localStorage.removeItem('bloodsearch_pending_profile_draft');
+      } else {
+        localStorage.setItem('bloodsearch_pending_profile_draft', JSON.stringify(updatedAccount));
+      }
 
       if (effectiveVisibility !== contactVisibility) {
         setContactVisibility(effectiveVisibility);
@@ -393,18 +475,37 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       localStorage.setItem('bloodsearch_current_user', JSON.stringify(updatedAccount));
       setCurrentUser(updatedAccount);
       window.dispatchEvent(new Event('bloodsearch_user_changed'));
+      window.dispatchEvent(
+        new CustomEvent('bloodsearch_donor_upserted', {
+          detail: { donor: updatedDonor, account: updatedAccount },
+        })
+      );
+
       setIsQuickEditOpen(false);
       showToast(
         lang === 'bn'
-          ? '✓ আপনার নাম, মোবাইল নম্বর ও ঠিকানা সফলভাবে পরিবর্তন হয়েছে!'
-          : '✓ Your name, phone, and address have been updated!'
+          ? '✓ আপনার প্রোফাইল, রক্তের গ্রুপ ও ঠিকানা সফলভাবে সেভ হয়েছে!'
+          : '✓ Your profile, blood group & address have been saved!'
       );
-    } catch (err) {
+    } catch (err: any) {
       console.error('Quick profile update failed:', err);
+      localStorage.setItem(
+        'bloodsearch_pending_profile_draft',
+        JSON.stringify({
+          name: cleanName,
+          bloodGroup: editGroup,
+          phone: cleanPhone,
+          whatsappPhone: cleanWa,
+          facebookUrl: cleanFb,
+          division: distObj.divisionId || 'dhaka',
+          district: distObj.id,
+          upazila: finalArea,
+        })
+      );
       setQuickEditError(
         lang === 'bn'
-          ? 'তথ্য সেভ করা যায়নি। ইন্টারনেট সংযোগ চেক করে আবার চেষ্টা করুন।'
-          : 'Could not save details. Please check your connection and try again.'
+          ? 'ক্লাউডে সেভ করতে পুনরায় লগইন করুন — আপনার তথ্য ড্রাফটে সংরক্ষিত আছে।'
+          : 'Please sign in below to finish saving to Cloud — your changes are preserved.'
       );
     } finally {
       setIsSavingQuickEdit(false);
@@ -559,41 +660,65 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     }
   };
 
-  const isLoggedIn = Boolean(currentUser || firebaseUser);
+  const isLoggedIn = Boolean(firebaseUser || devOtpSession);
+  const hasSavedProfile = Boolean(
+    currentUser &&
+      !isFakePersonName(currentUser.name) &&
+      currentUser.phone &&
+      currentUser.phone !== '01700000000' &&
+      currentUser.facebookUrl !== 'https://facebook.com/bloodsearch.bd' &&
+      (!firebaseUser || !currentUser.id || currentUser.id === firebaseUser.uid)
+  );
+  const safeCurrentName = hasSavedProfile ? currentUser!.name : '';
   const displayName =
-    currentUser?.name ||
-    firebaseUser?.displayName ||
-    firebaseUser?.email?.split('@')[0] ||
-    (lang === 'bn' ? 'গেস্ট ভিজিটর (লগইন করুন)' : 'Guest Visitor');
-  const verifiedProfilePhone = isValidBangladeshMobilePhone(currentUser?.phone)
-    ? currentUser!.phone
-    : isValidBangladeshMobilePhone(firebaseUser?.phoneNumber)
-    ? firebaseUser!.phoneNumber!
-    : '';
-  const verifiedWhatsappPhone = isValidBangladeshMobilePhone(currentUser?.whatsappPhone)
-    ? currentUser!.whatsappPhone!
-    : '';
+    safeCurrentName ||
+    (isLoggedIn
+      ? lang === 'bn'
+        ? 'নিজের প্রোফাইল তথ্য দিন'
+        : 'Complete Your Profile Below'
+      : lang === 'bn'
+        ? 'গেস্ট ভিজিটর (লগইন করুন)'
+        : 'Guest Visitor (Tap Sign In)');
+  const verifiedProfilePhone =
+    hasSavedProfile && isValidBangladeshMobilePhone(currentUser?.phone)
+      ? currentUser!.phone
+      : '';
+  const verifiedWhatsappPhone =
+    hasSavedProfile && isValidBangladeshMobilePhone(currentUser?.whatsappPhone)
+      ? currentUser!.whatsappPhone!
+      : verifiedProfilePhone;
   const displayPhone =
     verifiedProfilePhone ||
-    (isLoggedIn
+    (isLoggedIn || hasSavedProfile
       ? lang === 'bn'
         ? 'নম্বর যুক্ত হয়নি'
         : 'Phone not added'
       : '—');
   const displayEmail =
-    currentUser?.email ||
     firebaseUser?.email ||
+    (devOtpSession ? `DEV OTP · ${devOtpSession.operator}` : '') ||
+    (hasSavedProfile && currentUser?.email ? currentUser.email : '') ||
     (lang === 'bn' ? 'অ্যাকাউন্ট যুক্ত নয়' : 'Not signed in');
-  const displayGroup = currentUser?.bloodGroup || 'B+';
-  const displayAvatar = currentUser?.photoUrl || firebaseUser?.photoURL || DEFAULT_AVATAR_DATA_URI;
+  const displayGroup = (hasSavedProfile && currentUser?.bloodGroup) || 'O+';
+  const displayAvatar =
+    (hasSavedProfile &&
+    currentUser?.photoUrl &&
+    currentUser.photoUrl !== DEFAULT_AVATAR_DATA_URI
+      ? currentUser.photoUrl
+      : '') ||
+    firebaseUser?.photoURL ||
+    (hasSavedProfile ? currentUser?.photoUrl : '') ||
+    DEFAULT_AVATAR_DATA_URI;
   const displayId =
-    currentUser?.idCardNumber ||
+    (hasSavedProfile && currentUser?.idCardNumber) ||
     (firebaseUser
       ? `BS-${firebaseUser.uid.slice(0, 6).toUpperCase()}`
-      : lang === 'bn'
-      ? 'লগইন করলে যুক্ত হবে'
-      : 'Sign in to generate');
-  const rawDistrict = currentUser?.district || 'dhaka';
+      : devOtpSession
+        ? `DEV-${devOtpSession.uid.slice(-6).toUpperCase()}`
+        : lang === 'bn'
+          ? 'লগইন করলে যুক্ত হবে'
+          : 'Sign in to generate');
+  const rawDistrict = (hasSavedProfile && currentUser?.district) || 'dhaka';
   const matchedProfileDist = DISTRICTS.find(
     (d) =>
       d.id === rawDistrict.toLowerCase() ||
@@ -620,16 +745,18 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         ? 'মহিলা'
         : 'Female'
       : currentUser?.gender === 'OTHER'
-      ? lang === 'bn'
-        ? 'অন্যান্য'
-        : 'Other'
-      : lang === 'bn'
-      ? 'পুরুষ'
-      : 'Male';
+        ? lang === 'bn'
+          ? 'অন্যান্য'
+          : 'Other'
+        : lang === 'bn'
+          ? 'পুরুষ'
+          : 'Male';
   const displayDonations = currentUser?.totalDonations ?? 0;
   const displayAge = currentUser?.age ?? 25;
   const displayRole =
-    currentUser?.role === 'ADMIN' || isBootstrappedAdminUser(firebaseUser) ? 'ADMIN' : 'USER';
+    firebaseUser && (currentUser?.role === 'ADMIN' || isBootstrappedAdminUser(firebaseUser))
+      ? 'ADMIN'
+      : 'USER';
 
   const lastDate =
     (currentUser as any)?.lastDonationDate || (donationLogs[0] ? donationLogs[0].date : '');
@@ -657,9 +784,9 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
   return (
     <div className="space-y-6 max-w-xl mx-auto pb-8 text-left">
       {/* Profile Card Header */}
-      <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-[0_1px_3px_rgba(15,23,42,0.04)] transition-all text-center relative">
+      <div className="section-jewel-indigo text-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 transition-all text-center relative">
         <div className="flex items-center justify-between pb-3">
-          <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
+          <span className="text-xs font-bold text-indigo-200">
             {isLoggedIn
               ? displayRole === 'ADMIN'
                 ? lang === 'bn'
@@ -675,17 +802,17 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setIsPrivacyOpen(true)}
-              className="min-h-[38px] flex items-center gap-1 px-2.5 py-1.5 rounded-xl btn-soft-emerald text-xs font-semibold cursor-pointer"
+              className="min-h-[38px] flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-300/35 text-emerald-100 text-xs font-semibold cursor-pointer transition-colors"
               title="Google Play Safety"
             >
-              <Lock className="w-3.5 h-3.5 text-emerald-600" />
+              <Lock className="w-3.5 h-3.5 text-emerald-300" />
               <span>{lang === 'bn' ? 'পলিসি' : 'Privacy'}</span>
             </button>
             <button
               onClick={() => setIsQrOpen(true)}
-              className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer"
+              className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/14 hover:bg-white/24 border border-white/25 text-white text-xs font-semibold cursor-pointer transition-colors"
             >
-              <QrCode className="w-3.5 h-3.5 text-rose-500" />
+              <QrCode className="w-3.5 h-3.5 text-rose-300" />
               <span>QR Pass</span>
             </button>
           </div>
@@ -700,48 +827,59 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             }}
             referrerPolicy="no-referrer"
             alt={displayName}
-            className="w-full h-full object-cover rounded-3xl ring-4 ring-rose-500/20 shadow-xl"
+            className="w-full h-full object-cover rounded-3xl ring-4 ring-white/25 shadow-xl"
           />
           {isLoggedIn && (
-            <span className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold ring-2 ring-white dark:ring-slate-900 shadow">
+            <span className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold ring-2 ring-[#1e1b4b] shadow">
               ✓
             </span>
           )}
         </div>
 
-        <h2 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">
+        <h2 className="text-lg sm:text-xl font-black text-white">
           {displayName}
         </h2>
-        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono truncate px-2">
+        <div className="text-xs text-indigo-100/90 mt-0.5 font-mono truncate px-2">
           {displayEmail} · {displayPhone}
         </div>
-        <div className="mt-1 inline-flex items-center justify-center gap-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
-          <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-          <span>{displayFullAddress}</span>
+        <div className="mt-1 inline-flex items-center justify-center gap-1 text-xs font-semibold text-indigo-100">
+          <MapPin className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+          <span>{hasSavedProfile ? displayFullAddress : lang === 'bn' ? 'ঠিকানা যুক্ত হয়নি' : 'Address not added yet'}</span>
         </div>
-        <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400 font-mono mt-0.5">
+        <div className="text-[11px] font-bold text-rose-300 font-mono mt-0.5">
           {lang === 'bn' ? 'স্মার্ট কার্ড নং:' : 'Card ID:'} {displayId}
         </div>
 
         {/* WhatsApp & Facebook Links when registered */}
-        {(verifiedWhatsappPhone || currentUser?.facebookUrl) && (
+        {hasSavedProfile && (verifiedWhatsappPhone || normalizeFacebookProfileUrl(currentUser?.facebookUrl)) && (
           <div className="mt-2.5 flex items-center justify-center gap-2 flex-wrap text-xs">
             {verifiedWhatsappPhone && (
               <a
                 href={`https://wa.me/${verifiedWhatsappPhone.replace(/[^0-9]/g, '')}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-bold text-[11px]"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-300/35 text-emerald-100 font-bold text-[11px] transition-colors"
               >
                 <MessageCircle className="w-3.5 h-3.5" />
                 <span>WhatsApp: {verifiedWhatsappPhone}</span>
+              </a>
+            )}
+            {normalizeFacebookProfileUrl(currentUser?.facebookUrl) && (
+              <a
+                href={normalizeFacebookProfileUrl(currentUser?.facebookUrl)!}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-300/35 text-sky-100 font-bold text-[11px] transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Facebook Profile</span>
               </a>
             )}
           </div>
         )}
 
         {statusToast && (
-          <div className="mt-2.5 p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-xs font-bold text-emerald-800 dark:text-emerald-200">
+          <div className="mt-2.5 p-2.5 rounded-xl bg-emerald-500/25 border border-emerald-300/40 text-xs font-bold text-white">
             {statusToast}
           </div>
         )}
@@ -752,23 +890,27 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             <button
               type="button"
               onClick={onOpenAuthModal}
-              className="min-h-[44px] px-4 py-2 rounded-xl btn-obsidian text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[44px] px-4 py-2 rounded-lg bg-white text-slate-900 hover:bg-rose-600 hover:text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap transition-colors"
             >
               <LogIn className="w-3.5 h-3.5 shrink-0" />
-              <span>{lang === 'bn' ? 'Google লগইন করুন' : 'Sign In Now'}</span>
+              <span>{lang === 'bn' ? 'লগইন / সাইন ইন' : 'Sign In Now'}</span>
             </button>
           )}
 
           <button
             type="button"
             onClick={openInlineQuickEdit}
-            className="min-h-[44px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+            className="min-h-[44px] px-4 py-2 rounded-lg btn-crimson text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
           >
             <Pencil className="w-3.5 h-3.5 shrink-0" />
             <span>
-              {lang === 'bn'
-                ? 'নাম ও ঠিকানা পরিবর্তন করুন'
-                : 'Edit Name & Address'}
+              {hasSavedProfile
+                ? lang === 'bn'
+                  ? 'নাম ও ঠিকানা পরিবর্তন করুন'
+                  : 'Edit Name & Address'
+                : lang === 'bn'
+                  ? 'নিজের প্রোফাইল তথ্য লিখুন'
+                  : 'Enter Profile Info'}
             </span>
           </button>
 
@@ -776,7 +918,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             <button
               type="button"
               onClick={() => onOpenRegister('USER')}
-              className="min-h-[44px] px-3.5 py-2 rounded-xl btn-surface text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg bg-white/14 hover:bg-white/25 border border-white/25 text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap transition-colors"
             >
               <UserPlus className="w-3.5 h-3.5 shrink-0" />
               <span>
@@ -803,13 +945,66 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             <span>{lang === 'bn' ? 'সম্মাননা সনদপত্র' : 'Certificate'}</span>
           </button>
 
-          {isLoggedIn && (
+
+
+          {(isLoggedIn || hasSavedProfile) &&
+            (confirmDeleteMyProfile ? (
+              <button
+                type="button"
+                disabled={isDeletingMyProfile}
+                onClick={async () => {
+                  setIsDeletingMyProfile(true);
+                  try {
+                    await deleteMyUserAndDonorDataInFirestore(firebaseUser);
+                    localStorage.removeItem('bloodsearch_current_user');
+                    localStorage.removeItem('bloodsearch_pending_profile_draft');
+                    setCurrentUser(null);
+                    setConfirmDeleteMyProfile(false);
+                    window.dispatchEvent(new Event('bloodsearch_user_changed'));
+                    showToast(
+                      lang === 'bn'
+                        ? '✓ আপনার প্রোফাইল ও ডোনার ডাটা সম্পূর্ণ ডিলিট হয়েছে।'
+                        : '✓ Your profile & donor data have been permanently deleted.'
+                    );
+                  } finally {
+                    setIsDeletingMyProfile(false);
+                  }
+                }}
+                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {isDeletingMyProfile
+                    ? lang === 'bn'
+                      ? 'ডিলিট হচ্ছে...'
+                      : 'Deleting...'
+                    : lang === 'bn'
+                      ? 'নিশ্চিত? আমার ডাটা ডিলিট'
+                      : 'Confirm Delete My Data'}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteMyProfile(true)}
+                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/35 border border-rose-300/35 text-rose-100 text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                <span>{lang === 'bn' ? 'প্রোফাইল ডিলিট' : 'Delete My Data'}</span>
+              </button>
+            ))}
+
+          {(isLoggedIn || hasSavedProfile) && (
             <button
               type="button"
               onClick={async () => {
                 try {
+                  clearDevOtpSandboxSession();
+                  localStorage.removeItem('bloodsearch_pending_profile_draft');
+                  localStorage.removeItem('bloodsearch_current_user');
                   await signOutReal();
                 } catch {}
+                setDevOtpSession(null);
                 setCurrentUser(null);
                 setFirebaseUser(null);
                 showToast(
@@ -847,8 +1042,20 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </div>
 
             {quickEditError && (
-              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-200">
-                {quickEditError}
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-200 space-y-2">
+                <div>{quickEditError}</div>
+                {onOpenAuthModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenAuthModal}
+                    className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-white font-bold text-xs cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>
+                      {lang === 'bn' ? 'লগইন করে সেভ সম্পন্ন করুন' : 'Sign In to Finish Saving'}
+                    </span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -870,22 +1077,71 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  {lang === 'bn' ? 'মোবাইল নম্বর *' : 'Mobile Number *'}
+                  {lang === 'bn' ? 'মোবাইল নম্বর (Call) *' : 'Mobile Number (Call) *'}
                 </label>
                 <input
                   type="tel"
                   required
                   value={editPhone}
-                  onChange={(e) => setEditPhone(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!editWhatsapp || editWhatsapp === editPhone) {
+                      setEditWhatsapp(val);
+                    }
+                    setEditPhone(val);
+                  }}
                   placeholder="017XXXXXXXX"
                   className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-mono font-semibold text-slate-900 dark:text-white"
                 />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    {lang === 'bn' ? 'WhatsApp নম্বর *' : 'WhatsApp Number *'}
+                  </label>
+                  {editPhone.trim() && editWhatsapp !== editPhone && (
+                    <button
+                      type="button"
+                      onClick={() => setEditWhatsapp(editPhone)}
+                      className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+                    >
+                      {lang === 'bn' ? 'মোবাইলের মতোই' : 'Same as Mobile'}
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="tel"
+                  required
+                  value={editWhatsapp}
+                  onChange={(e) => setEditWhatsapp(e.target.value)}
+                  placeholder="017XXXXXXXX"
+                  className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-mono font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {lang === 'bn' ? 'Facebook প্রোফাইল লিংক / আইডি *' : 'Facebook Profile Link / ID *'}
+                </label>
+                <div className="relative">
+                  <Globe className="w-3.5 h-3.5 text-indigo-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    required
+                    maxLength={200}
+                    value={editFacebook}
+                    onChange={(e) => setEditFacebook(e.target.value)}
+                    placeholder="https://facebook.com/your.id"
+                    className="w-full h-11 pl-8 pr-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white"
+                  />
+                </div>
               </div>
             </div>
 
             <div>
               <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                {lang === 'bn' ? 'রক্তের গ্রুপ' : 'Blood Group'}
+                {lang === 'bn' ? 'রক্তের গ্রুপ *' : 'Blood Group *'}
               </label>
               <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
                 {ALL_BLOOD_GROUPS.map((g) => (
@@ -946,7 +1202,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
                 <input
                   type="text"
-                  maxLength={50}
+                  maxLength={120}
                   value={editArea}
                   onChange={(e) => setEditArea(e.target.value)}
                   placeholder={

@@ -64,8 +64,8 @@
         "upazila": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 50,
-          "description": "Upazila or Thana."
+          "maxLength": 120,
+          "description": "Upazila, Thana, or neighborhood address."
         },
         "idCardNumber": {
           "type": "string",
@@ -331,8 +331,8 @@
         "upazila": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 50,
-          "description": "Upazila ID or name."
+          "maxLength": 120,
+          "description": "Upazila, Thana, or neighborhood address."
         },
         "maskedPhone": {
           "type": "string",
@@ -340,6 +340,12 @@
           "maxLength": 24,
           "pattern": ".*\\*\\*.*",
           "description": "Masked phone indicator guaranteed to obscure digits (non-PII, e.g. 0171****89)."
+        },
+        "facebookUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "Donor Facebook profile link for verification and emergency contact."
         },
         "available": {
           "type": "boolean",
@@ -501,6 +507,12 @@
           "minLength": 0,
           "maxLength": 24,
           "description": "Opted-in WhatsApp number."
+        },
+        "facebookUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "Opted-in Facebook profile URL."
         },
         "shareDirectContact": {
           "type": "boolean",
@@ -831,8 +843,8 @@
         "upazila": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 50,
-          "description": "Upazila."
+          "maxLength": 120,
+          "description": "Upazila, Thana, or neighborhood address."
         },
         "urgency": {
           "type": "string",

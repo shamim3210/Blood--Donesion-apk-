@@ -17,6 +17,7 @@ import {
   isSeedDonorId,
   isSeedRequestId,
   isSeedAuditId,
+  isFakePersonName,
   evictSeedsProgressively,
   scrubFakeLocalStorageOnBoot,
 } from './data/mockDonors';
@@ -31,6 +32,14 @@ import { RequestBloodWizard } from './components/donor/RequestBloodWizard';
 import { AuthModuleModal } from './components/auth/AuthModuleModal';
 import { PwaInstallPrompt } from './components/ecosystem/PwaInstallPrompt';
 import { AppUpdateBannerModal } from './components/ecosystem/AppUpdateBannerModal';
+import { BrandLogo } from './components/BrandLogo';
+import {
+  isStandaloneAdminUrl,
+  navigateToStandaloneAdmin,
+  navigateToPublicUserApp,
+  PORTAL_ROUTE_EVENT,
+} from './utils/adminRoute';
+import { ShieldCheck, ArrowUpRight, Sun, Moon } from 'lucide-react';
 import {
   canDonorGiveToPatient,
   playEmergencySosChime,
@@ -59,7 +68,7 @@ import {
   subscribeActiveAnnouncements,
   isBootstrappedAdminUser,
   ownerPurgeFakeCloudRecordsOnlyInFirestore,
-  seedVerifiedStarterNetworkInFirestore,
+  ownerWipeEntireDatabaseZeroSlateV6InFirestore,
   upsertLiveDonorTripInFirestore,
   updateLiveDonorTripStatusInFirestore,
   subscribeLiveTripsForSeeker,
@@ -67,6 +76,10 @@ import {
   maskPhoneNumber,
   DEFAULT_AVATAR_DATA_URI,
   OwnerAnnouncementItem,
+  verifyStoredDevOtpSandboxSessionWithServer,
+  getStoredDevOtpSandboxSession,
+  clearDevOtpSandboxSession,
+  DevOtpSandboxClientSession,
   User as FirebaseUser,
 } from './firebase';
 import {
@@ -198,8 +211,39 @@ export default function App() {
   const cloudRequestIdsRef = React.useRef<Set<string>>(new Set());
   const seenChatMsgIdsRef = React.useRef<Set<string> | null>(null);
 
+  // Dedicated Standalone Admin Console Route (/admin) — 100% isolated from User App (/)
+  const [isAdminPortalRoute, setIsAdminPortalRoute] = useState<boolean>(() =>
+    isStandaloneAdminUrl()
+  );
+
+  useEffect(() => {
+    const syncPortalRoute = () => {
+      setIsAdminPortalRoute(isStandaloneAdminUrl());
+    };
+    const handleAdminShortcut = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        navigateToStandaloneAdmin();
+      }
+    };
+    window.addEventListener('popstate', syncPortalRoute);
+    window.addEventListener('hashchange', syncPortalRoute);
+    window.addEventListener(PORTAL_ROUTE_EVENT, syncPortalRoute);
+    window.addEventListener('keydown', handleAdminShortcut);
+    return () => {
+      window.removeEventListener('popstate', syncPortalRoute);
+      window.removeEventListener('hashchange', syncPortalRoute);
+      window.removeEventListener(PORTAL_ROUTE_EVENT, syncPortalRoute);
+      window.removeEventListener('keydown', handleAdminShortcut);
+    };
+  }, []);
+
   // Scroll naturally to top when changing tabs on mobile/desktop
   const handleSelectTab = useCallback((tab: ActiveTab) => {
+    if (tab === 'admin') {
+      navigateToStandaloneAdmin();
+      return;
+    }
     setActiveTab(tab);
     setViewMode('app');
     if (tab === 'chat') {
@@ -356,10 +400,15 @@ export default function App() {
   }, []);
 
   const [liveFirebaseUser, setLiveFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [devOtpSession, setDevOtpSession] = useState<DevOtpSandboxClientSession | null>(() =>
+    getStoredDevOtpSandboxSession()
+  );
   const [currentSavedUser, setCurrentSavedUser] = useState<Record<string, any> | null>(() => {
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
-      return raw ? JSON.parse(raw) : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && isFakePersonName(parsed.name)) return null;
+      return parsed;
     } catch {
       return null;
     }
@@ -369,12 +418,46 @@ export default function App() {
   const [confirmedDonorId, setConfirmedDonorId] = useState<string | null>(null);
   const markedViewedAlertIdsRef = React.useRef<Set<string>>(new Set());
 
+  useEffect(() => {
+    const syncDevSession = () => {
+      verifyStoredDevOtpSandboxSessionWithServer()
+        .then((verified) => {
+          setDevOtpSession(verified);
+        })
+        .catch(() => {
+          setDevOtpSession(null);
+        });
+    };
+    syncDevSession();
+    window.addEventListener('bloodsearch_dev_otp_changed', syncDevSession);
+    return () => {
+      window.removeEventListener('bloodsearch_dev_otp_changed', syncDevSession);
+    };
+  }, []);
+
   // Sync local profile edits (Name, Blood Group, Custom Area/Neighborhood, Photo) across Header & Donor Cards immediately
   useEffect(() => {
     const syncSavedUser = () => {
       try {
         const raw = localStorage.getItem('bloodsearch_current_user');
         const parsed = raw ? JSON.parse(raw) : null;
+        if (!parsed) {
+          setCurrentSavedUser(null);
+          const uidToRemove = auth.currentUser?.uid;
+          if (uidToRemove) {
+            setDonors((prev) => prev.filter((d) => d.id !== uidToRemove));
+          }
+          return;
+        }
+        if (
+          isFakePersonName(parsed.name) ||
+          !parsed.phone ||
+          parsed.phone === '01700000000' ||
+          parsed.facebookUrl === 'https://facebook.com/bloodsearch.bd'
+        ) {
+          setCurrentSavedUser(null);
+          return;
+        }
         setCurrentSavedUser(parsed);
         if (parsed && parsed.id && parsed.name && parsed.bloodGroup) {
           setDonors((prev) => {
@@ -397,6 +480,7 @@ export default function App() {
               whatsappPhone: parsed.shareDirectContact
                 ? parsed.whatsappPhone || parsed.phone
                 : undefined,
+              facebookUrl: parsed.facebookUrl || existing?.facebookUrl,
               available: parsed.availableToDonate !== false,
               availabilityStatus: parsed.availabilityStatus || 'AVAILABLE',
               availabilityConfirmedAtMs:
@@ -426,10 +510,29 @@ export default function App() {
         }
       } catch {}
     };
+    const handleDonorUpserted = (ev: Event) => {
+      const customEv = ev as CustomEvent<{ donor?: Donor; account?: any }>;
+      const upsertedDonor = customEv?.detail?.donor;
+      const upsertedAccount = customEv?.detail?.account;
+      if (upsertedAccount && !isFakePersonName(String(upsertedAccount.name || ''))) {
+        setCurrentSavedUser(upsertedAccount);
+      }
+      if (upsertedDonor && upsertedDonor.id) {
+        setDonors((prev) => {
+          const others = prev.filter(
+            (d) => !isSeedDonorId(d.id) && d.id !== upsertedDonor.id
+          );
+          return evictSeedsProgressively([upsertedDonor, ...others], INITIAL_DONORS);
+        });
+      }
+    };
+
     window.addEventListener('bloodsearch_user_changed', syncSavedUser);
+    window.addEventListener('bloodsearch_donor_upserted', handleDonorUpserted);
     window.addEventListener('storage', syncSavedUser);
     return () => {
       window.removeEventListener('bloodsearch_user_changed', syncSavedUser);
+      window.removeEventListener('bloodsearch_donor_upserted', handleDonorUpserted);
       window.removeEventListener('storage', syncSavedUser);
     };
   }, []);
@@ -519,12 +622,24 @@ export default function App() {
       }
       if (u) {
         try {
+          // One-time v6 Zero-Slate Reset for Super Owner (shamimrakib015@gmail.com):
+          // Wipes all old pre-v6 records & Shamim's legacy profile once so only brand-new accounts remain
+          if (isBootstrappedAdminUser(u)) {
+            const zeroSlateKey = 'bloodsearch_owner_zero_slate_v6';
+            if (localStorage.getItem(zeroSlateKey) !== 'done') {
+              const hasFreshDraft = Boolean(
+                localStorage.getItem('bloodsearch_pending_profile_draft')
+              );
+              await ownerWipeEntireDatabaseZeroSlateV6InFirestore(!hasFreshDraft).catch(() => {});
+              localStorage.setItem(zeroSlateKey, 'done');
+            }
+          }
+
           const syncedProfile = await ensureUserAutoSyncedInFirestore(u);
           if (syncedProfile) {
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(syncedProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
 
-            // Immediately upsert signed-in real user in local donors state while Cloud snapshot syncs
             setDonors((prev) => {
               const existing = prev.find((d) => d.id === syncedProfile.id);
               const autoDonorCard: Donor = {
@@ -534,13 +649,14 @@ export default function App() {
                 bloodGroup: syncedProfile.bloodGroup,
                 division: syncedProfile.division || 'dhaka',
                 district: syncedProfile.district || 'dhaka',
-                upazila: syncedProfile.upazila || 'dhanmondi',
+                upazila: syncedProfile.upazila || 'Dhaka',
                 phone: syncedProfile.shareDirectContact
                   ? syncedProfile.phone
                   : maskPhoneNumber(syncedProfile.phone),
                 whatsappPhone: syncedProfile.shareDirectContact
                   ? syncedProfile.whatsappPhone || syncedProfile.phone
                   : undefined,
+                facebookUrl: syncedProfile.facebookUrl,
                 available: syncedProfile.availableToDonate !== false,
                 availabilityStatus: syncedProfile.availabilityStatus || 'AVAILABLE',
                 availabilityConfirmedAtMs: syncedProfile.availabilityConfirmedAtMs || Date.now(),
@@ -569,26 +685,25 @@ export default function App() {
               const others = prev.filter((d) => d.id !== syncedProfile.id);
               return [autoDonorCard, ...others];
             });
-          }
-
-          // One-time cleanup of legacy fake IDs + live Cloud Firestore sync of 7 verified starter donors & 2 active requests
-          if (isBootstrappedAdminUser(u)) {
-            const seedKey = 'bloodsearch_verified_cloud_seeded_v4';
-            if (localStorage.getItem(seedKey) !== 'done') {
-              ownerPurgeFakeCloudRecordsOnlyInFirestore()
-                .catch(() => 0)
-                .then(() =>
-                  seedVerifiedStarterNetworkInFirestore(INITIAL_DONORS, INITIAL_REQUESTS)
-                )
-                .then(() => {
-                  localStorage.setItem(seedKey, 'done');
-                })
-                .catch(() => {});
-            }
+          } else {
+            localStorage.removeItem('bloodsearch_current_user');
+            setCurrentSavedUser(null);
+            setDonors((prev) => prev.filter((d) => d.id !== u.uid));
           }
 
           unsubProfile = subscribeMyUserProfile(u.uid, async (liveProfile) => {
-            if (!liveProfile) return;
+            if (
+              !liveProfile ||
+              isFakePersonName(liveProfile.name) ||
+              !liveProfile.phone ||
+              liveProfile.phone === '01700000000' ||
+              liveProfile.facebookUrl === 'https://facebook.com/bloodsearch.bd'
+            ) {
+              localStorage.removeItem('bloodsearch_current_user');
+              setCurrentSavedUser(null);
+              setDonors((prev) => prev.filter((d) => d.id !== u.uid));
+              return;
+            }
             const isAdmin = await checkIsVerifiedAdminInFirestore(u);
             if (isAdmin) liveProfile.role = 'ADMIN';
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(liveProfile));
@@ -617,6 +732,19 @@ export default function App() {
           unsubDonorTrips = subscribeLiveTripsForDonor(u.uid, setCloudDonorTrips);
         } catch {}
       } else {
+        const verifiedDev = await verifyStoredDevOtpSandboxSessionWithServer();
+        setDevOtpSession(verifiedDev);
+        if (!verifiedDev) {
+          try {
+            const savedRaw = localStorage.getItem('bloodsearch_current_user');
+            const savedParsed = savedRaw ? JSON.parse(savedRaw) : null;
+            if (!savedParsed || isFakePersonName(savedParsed.name)) {
+              setCurrentSavedUser(null);
+            }
+          } catch {
+            setCurrentSavedUser(null);
+          }
+        }
         setIncomingDonorAlerts([]);
         setCloudSeekerTrips([]);
         setCloudDonorTrips([]);
@@ -956,7 +1084,12 @@ export default function App() {
         note,
       });
 
-      if (!res.ok && res.reason !== 'LOCAL_ONLY_REQUEST') {
+      const activeDevOtp = getStoredDevOtpSandboxSession();
+      if (
+        !res.ok &&
+        res.reason !== 'LOCAL_ONLY_REQUEST' &&
+        !(res.reason === 'AUTH_REQUIRED' && activeDevOtp)
+      ) {
         return res;
       }
 
@@ -972,7 +1105,7 @@ export default function App() {
             if (!localSeekerName && r.contactName) {
               localSeekerName = r.contactName;
             }
-            const uid = auth.currentUser?.uid;
+            const uid = auth.currentUser?.uid || activeDevOtp?.uid;
             if (uid && r.responders.some((resp) => resp.responderUid === uid)) {
               return r;
             }
@@ -1349,17 +1482,111 @@ export default function App() {
     [requests]
   );
 
-  const liveUserLabel = liveFirebaseUser
-    ? (currentSavedUser?.id === liveFirebaseUser.uid && currentSavedUser?.name
-        ? String(currentSavedUser.name).trim()
-        : '') ||
-      liveFirebaseUser.displayName?.trim() ||
-      liveFirebaseUser.email?.split('@')[0] ||
-      liveFirebaseUser.phoneNumber ||
-      (lang === 'bn' ? 'অ্যাকাউন্ট' : 'Account')
-    : currentSavedUser?.name
+  const savedDisplayName =
+    currentSavedUser?.name && !isFakePersonName(String(currentSavedUser.name))
       ? String(currentSavedUser.name).trim()
-      : null;
+      : '';
+
+  const liveUserLabel = liveFirebaseUser
+    ? (currentSavedUser?.id === liveFirebaseUser.uid && savedDisplayName
+        ? savedDisplayName
+        : '') ||
+      (lang === 'bn' ? 'প্রোফাইল সেটআপ' : 'Set Up Profile')
+    : devOtpSession
+      ? savedDisplayName || `DEV · ${devOtpSession.phoneE164.slice(-6)}`
+      : savedDisplayName || null;
+
+  // =========================================================================
+  // DEDICATED STANDALONE ADMIN CONSOLE APPLICATION SHELL (/admin)
+  // 100% Isolated from Public User App (Zero User Navbar / Bottom Nav / User Modals)
+  // =========================================================================
+  if (isAdminPortalRoute) {
+    return (
+      <div
+        className={`min-h-dvh w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#070d19] text-slate-100 ${
+          darkMode ? 'dark' : 'dark'
+        }`}
+      >
+        <header className="sticky top-0 z-40 w-full bg-[#0b1324]/95 backdrop-blur-md border-b border-slate-800">
+          <div className="h-[3px] w-full bg-gradient-to-r from-indigo-500 via-amber-500 to-emerald-500" />
+          <div className="max-w-6xl mx-auto h-16 px-4 sm:px-6 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-white p-1 flex items-center justify-center shrink-0">
+                <BrandLogo size="sm" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="font-black text-sm sm:text-base tracking-tight text-white truncate">
+                    {lang === 'bn' ? 'BloodSearch অ্যাডমিন কনসোল' : 'BloodSearch Admin Console'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 font-mono truncate">
+                  {lang === 'bn'
+                    ? 'স্বতন্ত্র অ্যাডমিন পোর্টাল · সাধারণ ইউজার অ্যাপ থেকে সম্পূর্ণ আলাদা'
+                    : 'Standalone Restricted Portal · Isolated from Public User App'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setLang(lang === 'bn' ? 'en' : 'bn')}
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200 cursor-pointer whitespace-nowrap"
+              >
+                {lang === 'bn' ? 'EN' : 'বাংলা'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDarkMode(!darkMode)}
+                className="min-h-[38px] min-w-[38px] rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center text-slate-200 cursor-pointer"
+                aria-label="Toggle Theme"
+              >
+                {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={navigateToPublicUserApp}
+                className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <span>{lang === 'bn' ? 'ইউজার অ্যাপ' : 'User App'}</span>
+                <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 w-full max-w-6xl mx-auto px-3.5 sm:px-6 py-5 sm:py-6">
+          <Suspense fallback={<ViewFallback lang={lang} />}>
+            <AdminPortal
+              lang={lang}
+              donors={donors}
+              setDonors={setDonors}
+              requests={requests}
+              setRequests={setRequests}
+              auditLogs={auditLogs}
+              onLogAudit={addAuditLog}
+              onExitAdmin={navigateToPublicUserApp}
+              onOpenApkGuide={() => setIsPlayStoreModalOpen(true)}
+            />
+          </Suspense>
+        </main>
+
+        {isPlayStoreModalOpen && (
+          <Suspense fallback={null}>
+            <PlayStoreGuideModal
+              isOpen={isPlayStoreModalOpen}
+              onClose={() => setIsPlayStoreModalOpen(false)}
+              lang={lang}
+            />
+          </Suspense>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -1417,6 +1644,34 @@ export default function App() {
             activeTab === 'chat' ? 'pt-3 pb-24 lg:pb-10' : 'pt-4 sm:pt-5 pb-24 lg:pb-12'
           }`}
         >
+          {/* Explicit Development Mode OTP Sandbox Indicator (Phase 2 Requirement) */}
+          {!liveFirebaseUser && devOtpSession && (
+            <div className="mb-3.5 px-3.5 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-950 dark:text-amber-100 text-xs flex flex-wrap items-center justify-between gap-2 text-left">
+              <div>
+                <span className="font-bold">
+                  {lang === 'bn'
+                    ? 'DEVELOPMENT MODE (টেস্ট ওটিপি স্যান্ডবক্স — কোনো আসল SMS পাঠানো হয়নি)'
+                    : 'DEVELOPMENT MODE (Sandbox OTP Session — No Real SMS Sent)'}
+                </span>
+                <span className="ml-1.5 font-mono text-[11px] opacity-90">
+                  {devOtpSession.phoneE164} · {devOtpSession.operator} · Role: USER (Admin Disabled)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  clearDevOtpSandboxSession().catch(() => {});
+                  localStorage.removeItem('bloodsearch_current_user');
+                  setCurrentSavedUser(null);
+                  setDevOtpSession(null);
+                }}
+                className="min-h-[34px] px-3 py-1 rounded-xl bg-amber-900/10 hover:bg-amber-900/20 dark:bg-amber-400/15 font-bold text-[11px] cursor-pointer whitespace-nowrap"
+              >
+                {lang === 'bn' ? 'টেস্ট সেশন বন্ধ করুন' : 'End Dev Session'}
+              </button>
+            </div>
+          )}
+
           {/* Quick Share Toast */}
           {appShareToast && (
             <div className="mb-3 p-3 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-sm text-left">
@@ -1724,20 +1979,7 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'admin' && (
-                <AdminPortal
-                  lang={lang}
-                  donors={donors}
-                  setDonors={setDonors}
-                  requests={requests}
-                  setRequests={setRequests}
-                  auditLogs={auditLogs}
-                  onLogAudit={addAuditLog}
-                  onExitAdmin={() => handleSelectTab('home')}
-                  onOpenRegisterWithRole={(role) => openRegisterWithRole(role)}
-                  onOpenApkGuide={() => setIsPlayStoreModalOpen(true)}
-                />
-              )}
+
 
               {activeTab === 'compatibility' && <CompatibilityMatrixModal lang={lang} />}
 
@@ -1803,6 +2045,10 @@ export default function App() {
           onRegisterDonor={handleRegisterDonor}
           onLogAudit={addAuditLog}
           onNavigateTab={(tab) => handleSelectTab(tab)}
+          onOpenAuthModal={() => {
+            setIsRegisterModalOpen(false);
+            setIsAuthModalOpen(true);
+          }}
         />
       )}
 

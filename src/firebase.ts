@@ -10,6 +10,8 @@ import {
   browserPopupRedirectResolver,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithCredential,
+  signInWithCustomToken,
   signOut,
   onAuthStateChanged as firebaseOnAuthStateChanged,
   RecaptchaVerifier,
@@ -34,6 +36,7 @@ import {
   getDocs,
   getDocFromServer,
   setDoc,
+  updateDoc,
   deleteDoc,
   collection,
   query,
@@ -63,7 +66,20 @@ import {
   deriveRequestLifecycleState,
   normalizeValidBangladeshMobileE164,
 } from './utils/donorMatcher';
+import {
+  validateBangladeshMobile,
+  detectBangladeshOperatorPreview,
+  type BangladeshMobileOperator,
+  type BangladeshPhoneValidationResult,
+} from './utils/bdPhoneValidator';
 import { isFakeIdentifier, isFakePersonName } from './data/mockDonors';
+
+export {
+  validateBangladeshMobile,
+  detectBangladeshOperatorPreview,
+  type BangladeshMobileOperator,
+  type BangladeshPhoneValidationResult,
+};
 
 // ============================================================================
 // 1. INITIALIZE FIREBASE SDK (Iframe-Resilient Persistence + Popup Resolver)
@@ -89,9 +105,10 @@ if (typeof window !== 'undefined' && IS_APP_CHECK_CONFIGURED) {
   }
 }
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-
 function createResilientAuth(): Auth {
+  if (typeof window === 'undefined') {
+    return getAuth(app);
+  }
   try {
     return initializeAuth(app, {
       persistence: [
@@ -110,6 +127,8 @@ function createResilientAuth(): Auth {
 export const auth = createResilientAuth();
 auth.languageCode = 'bn';
 
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account',
@@ -118,6 +137,7 @@ googleProvider.setCustomParameters({
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 export const FIREBASE_PROJECT_NUMBER = firebaseConfig.messagingSenderId || '194868852449';
+export const GOOGLE_OAUTH_CLIENT_ID = String((firebaseConfig as any).oAuthClientId || '').trim();
 export const FIREBASE_AUTH_PROVIDERS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
 export const FIREBASE_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
 export const FIREBASE_PROJECT_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/settings/general`;
@@ -217,15 +237,11 @@ function scheduleProactiveTokenServiceGuard(user: User): void {
     .then((tokenResult) => {
       const expMs = new Date(tokenResult.expirationTime).getTime();
       if (!Number.isFinite(expMs)) return;
-      // Check 6 minutes before expiry (1 minute before Firebase SDK's 5-min refresh window)
-      const msUntilGuard = Math.max(5000, expMs - Date.now() - 6 * 60 * 1000);
+      // Only check AFTER actual token expiry (+5s) so active sessions are never ended prematurely
+      const msUntilGuard = Math.max(15000, expMs - Date.now() + 5000);
       tokenExpiryGuardTimer = window.setTimeout(async () => {
         if (auth.currentUser?.uid !== user.uid) return;
-        const enabled = await probeTokenServiceApiEnabled();
-        if (!enabled && auth.currentUser?.uid === user.uid) {
-          recordTokenServiceAlert(GCP_TOKEN_SERVICE_API_URL, user.email);
-          await signOut(auth).catch(() => {});
-        }
+        await validateOrClearBrokenAuthToken(auth.currentUser);
       }, msUntilGuard);
     })
     .catch(() => {});
@@ -257,9 +273,23 @@ export async function validateOrClearBrokenAuthToken(
     }
 
     if (isInvalidatedToken) {
-      // Sign out ONLY the broken Firebase Auth token so Firestore never gets stuck offline;
-      // keep localStorage profile intact for smooth UX.
+      // Preserve any unsaved user profile details into draft before signing out expired Firebase token
       await signOut(auth).catch(() => {});
+      if (typeof window !== 'undefined') {
+        try {
+          const existingRaw = localStorage.getItem('bloodsearch_current_user');
+          if (existingRaw && !localStorage.getItem('bloodsearch_pending_profile_draft')) {
+            const parsed = JSON.parse(existingRaw);
+            if (parsed && parsed.name && !isFakePersonName(parsed.name)) {
+              localStorage.setItem('bloodsearch_pending_profile_draft', JSON.stringify(parsed));
+            }
+          }
+          if (!getStoredDevOtpSandboxSession()) {
+            localStorage.removeItem('bloodsearch_current_user');
+            window.dispatchEvent(new Event('bloodsearch_user_changed'));
+          }
+        } catch {}
+      }
       return null;
     }
     return candidateUser;
@@ -574,26 +604,24 @@ export function maskPhoneNumber(phone: string): string {
  * Prevents the +880017... double-zero bug!
  */
 export function formatBangladeshE164(rawPhone: string): string {
+  const validated = validateBangladeshMobile(rawPhone, { allowBare10DigitNational: true });
+  if (validated.valid) {
+    return validated.e164;
+  }
   const ascii = normalizeAsciiDigits(rawPhone).trim();
   let digits = ascii.replace(/[^0-9]/g, '');
-
-  // Strip country prefix 880 or 88 if present
   if (digits.startsWith('880')) {
     digits = digits.slice(3);
   } else if (digits.startsWith('88') && digits.length >= 12) {
     digits = digits.slice(2);
   }
-
-  // Strip any leading zeros so 01712345678 and 001712345678 both become 1712345678
   digits = digits.replace(/^0+/, '');
-
   if (!digits) return '';
   return `+880${digits}`;
 }
 
 export function isValidBangladeshMobile(rawPhone: string): boolean {
-  const e164 = formatBangladeshE164(rawPhone);
-  return /^\+8801[3-9][0-9]{8}$/.test(e164);
+  return validateBangladeshMobile(rawPhone, { allowBare10DigitNational: true }).valid;
 }
 
 export async function compressAvatarIfNeeded(dataUrlOrHttp: string): Promise<string> {
@@ -845,13 +873,13 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     rawMsg.includes('OPERATION_NOT_ALLOWED')
   ) {
     return {
-      code,
+      code: 'auth/operation-not-allowed',
       messageBn:
-        'এই মুহূর্তে এই পদ্ধতিটি সাময়িক বন্ধ আছে। অনুগ্রহ করে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনে ট্যাপ করে সাথে সাথে লগইন করুন।',
+        'Firebase Console-এ Mobile Phone OTP অপশনটি এখনো চালু (Enable) করা হয়নি। নিচে দেওয়া ধাপ অনুসরণ করে ১ মিনিটে চালু করুন, অথবা এখনই Google বা ইমেইল দিয়ে লগইন করুন।',
       messageEn:
-        'This sign-in method is currently unavailable. Please use "Continue with Google" above for instant access.',
-      needsConsoleProviderEnable: false,
-      consoleUrl: '',
+        'Phone OTP provider is currently turned OFF in Firebase Console. Enable "Phone" in Sign-in method below, or sign in right now with Google or Email & Password.',
+      needsConsoleProviderEnable: true,
+      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
     };
   }
 
@@ -865,13 +893,13 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     code === 'auth/unsupported-first-factor'
   ) {
     return {
-      code,
+      code: 'auth/billing-not-enabled',
       messageBn:
-        'এই মুহূর্তে মোবাইল এসএমএস সার্ভিস ব্যস্ত আছে। কোনো অপেক্ষা ছাড়াই লগইন করতে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনটি ব্যবহার করুন।',
+        'Firebase Free (Spark) প্ল্যানে সরাসরি সিম SMS পাঠাতে টেস্ট নম্বর যুক্ত করতে হয় অথবা Blaze প্ল্যান লাগে। টেস্ট নম্বর (+8801521704755) যুক্ত করুন অথবা Google / ইমেইল দিয়ে সাথে সাথে লগইন করুন।',
       messageEn:
-        'SMS delivery is temporarily unavailable right now. Please tap "Continue with Google" above to sign in immediately.',
-      needsConsoleProviderEnable: false,
-      consoleUrl: '',
+        'Firebase Free (Spark) tier requires adding test phone numbers under Phone -> "Phone numbers for testing" (or Blaze plan for carrier SMS). Use Google or Email Sign-In for instant access.',
+      needsConsoleProviderEnable: true,
+      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
     };
   }
 
@@ -886,9 +914,9 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code: 'auth/captcha-check-failed',
       messageBn:
-        'নিরাপত্তা যাচাই সম্পন্ন হয়নি। আবার চেষ্টা করুন অথবা সরাসরি "Google দিয়ে ১-ক্লিকে লগইন করুন" ব্যবহার করুন।',
+        'নিরাপত্তা যাচাই সম্পন্ন হয়নি। নিচের চেকবক্সে টিক দিয়ে আবার চেষ্টা করুন অথবা সরাসরি Google দিয়ে লগইন করুন।',
       messageEn:
-        'Security verification did not complete. Please try again or use "Continue with Google" above.',
+        'Security verification did not complete. Tick the security box below and retry, or use Google Sign-In.',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
     };
@@ -910,9 +938,9 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code,
       messageBn:
-        'আপনার ব্রাউজারে পপ-আপ ব্লক করা আছে। ব্রাউজারে পপ-আপ অনুমতি দিয়ে আবার লগইন বাটনে ট্যাপ করুন।',
+        'আপনার ব্রাউজারে পপ-আপ ব্লক করা হয়েছে। নিচের অফিসিয়াল Google বাটনে ট্যাপ করুন অথবা ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন।',
       messageEn:
-        'Your browser blocked the sign-in window. Please allow popups for this site and tap again.',
+        'Your browser blocked the popup window. Tap the embedded Google button below or sign in with Email & Password.',
       needsConsoleProviderEnable: false,
       isPopupBlocked: true,
       consoleUrl: '',
@@ -922,18 +950,18 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
   if (code === 'auth/unauthorized-domain') {
     return {
       code,
-      messageBn: 'এই ঠিকানা থেকে লগইন সাময়িক সীমাবদ্ধ রয়েছে। অনুগ্রহ করে কিছুক্ষণ পর চেষ্টা করুন।',
-      messageEn: 'Sign-in from this domain is temporarily restricted.',
-      needsConsoleProviderEnable: false,
-      consoleUrl: '',
+      messageBn: 'এই ডোমেইনটি Firebase Authorized Domains-এ যুক্ত নেই।',
+      messageEn: 'This domain is not yet listed in Firebase Authorized Domains.',
+      needsConsoleProviderEnable: true,
+      consoleUrl: FIREBASE_SETTINGS_URL,
     };
   }
 
   if (code === 'auth/popup-closed-by-user') {
     return {
       code,
-      messageBn: 'লগইন সম্পন্ন হওয়ার আগেই উইন্ডোটি বন্ধ হয়ে গেছে। আবার ট্যাপ করে আপনার অ্যাকাউন্ট নির্বাচন করুন।',
-      messageEn: 'Sign-in window was closed before selecting an account. Please tap again.',
+      messageBn: 'লগইন সম্পন্ন হওয়ার আগেই উইন্ডোটি বন্ধ হয়ে গেছে। আবার ট্যাপ করে আপনার Gmail নির্বাচন করুন।',
+      messageEn: 'Sign-in window was closed before selecting an account. Please tap again and choose your Gmail.',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
     };
@@ -942,7 +970,7 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
   if (code === 'auth/invalid-phone-number') {
     return {
       code,
-      messageBn: 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678)।',
+      messageBn: 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678 বা 01521704755)।',
       messageEn: 'Please enter a valid 11-digit mobile number (e.g. 01712345678).',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
@@ -977,9 +1005,9 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code,
       messageBn:
-        'ইমেইল বা পাসওয়ার্ড মেলেনি। সহজে লগইন করতে উপরের "Google দিয়ে ১-ক্লিকে লগইন করুন" বাটনটি ব্যবহার করুন।',
+        'পাসওয়ার্ড মেলেনি (অথবা এই Gmail দিয়ে Google লগইন খোলা আছে)। "পাসওয়ার্ড ভুলে গেছেন?" চাপুন অথবা উপরের Google বাটনে ট্যাপ করুন।',
       messageEn:
-        'Incorrect email or password. Use "Continue with Google" above for 1-click sign-in.',
+        'Incorrect password (or this Gmail uses Google Sign-In). Use "Forgot password?" or tap "Continue with Google" above.',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
     };
@@ -988,8 +1016,8 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
   if (code === 'auth/email-already-in-use') {
     return {
       code,
-      messageBn: 'এই ইমেইল দিয়ে আগেই অ্যাকাউন্ট খোলা আছে। সরাসরি লগইন করুন অথবা Google বাটন ব্যবহার করুন।',
-      messageEn: 'This email is already registered. Sign in or continue with Google above.',
+      messageBn: 'এই ইমেইল দিয়ে আগেই অ্যাকাউন্ট খোলা আছে। সঠিক পাসওয়ার্ড দিয়ে লগইন করুন অথবা Google বাটন ব্যবহার করুন।',
+      messageEn: 'This email is already registered. Sign in with your password or continue with Google above.',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
     };
@@ -1014,16 +1042,36 @@ export function signInWithGoogleReal(loginHintEmail?: string): Promise<User> {
     prompt: 'select_account',
   };
   const cleanHint = (loginHintEmail || '').trim();
-  if (cleanHint && cleanHint.includes('@')) {
+  if (cleanHint && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanHint)) {
     params.login_hint = cleanHint;
   }
   provider.setCustomParameters(params);
 
-  return signInWithPopup(auth, provider, browserPopupRedirectResolver).then((res) => {
-    dismissTokenServiceAlert();
-    scheduleProactiveTokenServiceGuard(res.user);
-    return res.user;
-  });
+  return signInWithPopup(auth, provider, browserPopupRedirectResolver)
+    .catch((err: any) => {
+      const code = String(err?.code || '');
+      if (code === 'auth/internal-error' || code === 'auth/cancelled-popup-request') {
+        return signInWithPopup(auth, provider);
+      }
+      throw err;
+    })
+    .then((res) => {
+      dismissTokenServiceAlert();
+      scheduleProactiveTokenServiceGuard(res.user);
+      return res.user;
+    });
+}
+
+/**
+ * Popup-free Google Identity Services (GIS) ID Token exchange for browsers/iframes/WebViews
+ * where `window.open` popups may be blocked.
+ */
+export async function signInWithGoogleIdToken(idToken: string): Promise<User> {
+  const credential = GoogleAuthProvider.credential(idToken);
+  const res = await signInWithCredential(auth, credential);
+  dismissTokenServiceAlert();
+  scheduleProactiveTokenServiceGuard(res.user);
+  return res.user;
 }
 
 export async function sendRealGmailSignInLink(email: string): Promise<void> {
@@ -1038,7 +1086,7 @@ export async function sendRealGmailSignInLink(email: string): Promise<void> {
 
 export async function completeRealGmailSignInIfPresent(): Promise<User | null> {
   if (isSignInWithEmailLink(auth, window.location.href)) {
-    let storedEmail = localStorage.getItem('bloodsearch_email_for_signin');
+    const storedEmail = localStorage.getItem('bloodsearch_email_for_signin');
     if (!storedEmail) {
       return null;
     }
@@ -1053,24 +1101,105 @@ export async function completeRealGmailSignInIfPresent(): Promise<User | null> {
 export async function registerOrLoginRealEmailPassword(
   email: string,
   password: string,
-  isRegister: boolean
-): Promise<{ user: User; verificationSent: boolean }> {
+  isRegister: boolean,
+  displayName?: string
+): Promise<{ user: User; verificationSent: boolean; autoCreated?: boolean }> {
   const cleanEmail = email.trim();
+  const cleanDisplayName = (displayName || '').trim();
+
   if (isRegister) {
-    const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-    await sendEmailVerification(cred.user);
-    return { user: cred.user, verificationSent: true };
-  }
-  const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-  if (!cred.user.emailVerified) {
     try {
-      await sendEmailVerification(cred.user);
-      return { user: cred.user, verificationSent: true };
-    } catch {
-      return { user: cred.user, verificationSent: false };
+      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      if (cleanDisplayName.length >= 2) {
+        await updateProfile(cred.user, { displayName: cleanDisplayName }).catch(() => {});
+      }
+      let verificationSent = false;
+      try {
+        await sendEmailVerification(cred.user);
+        verificationSent = true;
+      } catch {}
+      dismissTokenServiceAlert();
+      scheduleProactiveTokenServiceGuard(cred.user);
+      return { user: cred.user, verificationSent, autoCreated: true };
+    } catch (err: any) {
+      if (String(err?.code || '') === 'auth/email-already-in-use') {
+        // Returning user tapped Create Account — sign them in seamlessly if password matches!
+        const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+        dismissTokenServiceAlert();
+        scheduleProactiveTokenServiceGuard(cred.user);
+        return { user: cred.user, verificationSent: false, autoCreated: false };
+      }
+      throw err;
     }
   }
-  return { user: cred.user, verificationSent: false };
+
+  try {
+    const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+    dismissTokenServiceAlert();
+    scheduleProactiveTokenServiceGuard(cred.user);
+    if (!cred.user.emailVerified) {
+      try {
+        await sendEmailVerification(cred.user);
+        return { user: cred.user, verificationSent: true, autoCreated: false };
+      } catch {
+        return { user: cred.user, verificationSent: false, autoCreated: false };
+      }
+    }
+    return { user: cred.user, verificationSent: false, autoCreated: false };
+  } catch (loginErr: any) {
+    const code = String(loginErr?.code || '');
+    if (code === 'auth/invalid-credential' || code === 'auth/user-not-found') {
+      // Smart First-Time Account Auto-Registration: if email doesn't exist yet, create it immediately!
+      try {
+        const created = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        const fallbackName =
+          cleanDisplayName.length >= 2 ? cleanDisplayName : cleanEmail.split('@')[0] || 'Blood Donor';
+        await updateProfile(created.user, { displayName: fallbackName }).catch(() => {});
+        let verificationSent = false;
+        try {
+          await sendEmailVerification(created.user);
+          verificationSent = true;
+        } catch {}
+        dismissTokenServiceAlert();
+        scheduleProactiveTokenServiceGuard(created.user);
+        return { user: created.user, verificationSent, autoCreated: true };
+      } catch (createErr: any) {
+        if (String(createErr?.code || '') === 'auth/email-already-in-use') {
+          throw {
+            code: 'auth/wrong-password',
+            message: 'Account already exists with a different password or Google provider.',
+          };
+        }
+        throw loginErr;
+      }
+    }
+    throw loginErr;
+  }
+}
+
+/**
+ * Re-authenticates via IdentityToolkit (`signInWithPassword`) after clicking the email
+ * verification link so a brand-new `email_verified: true` JWT is minted immediately
+ * without depending on `securetoken.googleapis.com`.
+ */
+export async function refreshVerifiedEmailSessionWithPassword(
+  email: string,
+  password: string
+): Promise<User> {
+  const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+  dismissTokenServiceAlert();
+  scheduleProactiveTokenServiceGuard(cred.user);
+  return cred.user;
+}
+
+export async function resendVerificationEmailForCurrentUser(): Promise<boolean> {
+  if (!auth.currentUser) return false;
+  try {
+    await sendEmailVerification(auth.currentUser);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function sendRealPasswordReset(email: string): Promise<void> {
@@ -1191,12 +1320,238 @@ export async function sendRealPhoneSmsOtp(
   }
 }
 
+export interface DevOtpSandboxClientSession {
+  sessionToken: string;
+  uid: string;
+  phoneE164: string;
+  phoneLocal?: string;
+  operator: BangladeshMobileOperator;
+  role: 'USER';
+  adminEligible: false;
+  isDevSandbox: true;
+  expiresAtMs: number;
+}
+
+export type DevOtpClientSession = DevOtpSandboxClientSession;
+
+export interface ServerOtpCapabilities {
+  ok: boolean;
+  isProduction: boolean;
+  devSandboxAvailable: boolean;
+  smsGatewayProvider: 'NONE' | 'W3SMS' | 'ZENDSMS' | 'BTRC_CUSTOM';
+  smsGatewayConfigured: boolean;
+  customTokenConfigured: boolean;
+  otpExpirySeconds: number;
+  resendCooldownSeconds: number;
+  maxVerifyAttempts: number;
+}
+
+export interface ServerOtpSendResult {
+  ok: boolean;
+  code: string;
+  messageEn: string;
+  messageBn: string;
+  challengeId?: string;
+  phoneE164?: string;
+  operator?: BangladeshMobileOperator;
+  operatorLabelEn?: string;
+  operatorLabelBn?: string;
+  deliveryMode?: 'DEV_SANDBOX' | 'GATEWAY_SMS';
+  isDevelopmentMode?: boolean;
+  expiresInSec?: number;
+  resendCooldownSec?: number;
+  retryAfterSec?: number;
+  devSandboxTestOtp?: string;
+}
+
+export interface ServerOtpVerifyResult {
+  ok: boolean;
+  code: string;
+  messageEn: string;
+  messageBn: string;
+  phoneE164?: string;
+  operator?: BangladeshMobileOperator;
+  deliveryMode?: 'DEV_SANDBOX' | 'GATEWAY_SMS';
+  isDevelopmentMode?: boolean;
+  remainingAttempts?: number;
+  firebaseCustomToken?: string;
+  devSandboxSession?: DevOtpSandboxClientSession;
+}
+
+const DEV_OTP_SESSION_STORAGE_KEY = 'bloodsearch_dev_otp_sandbox_session';
+
+export function isClientProductionBuild(): boolean {
+  return Boolean((import.meta as any).env?.PROD);
+}
+
+export async function signInWithFirebaseCustomTokenReal(customToken: string): Promise<User> {
+  const res = await signInWithCustomToken(auth, customToken);
+  dismissTokenServiceAlert();
+  scheduleProactiveTokenServiceGuard(res.user);
+  return res.user;
+}
+
+export async function fetchServerOtpCapabilities(): Promise<ServerOtpCapabilities | null> {
+  try {
+    const res = await fetch('/api/auth/otp/config', { method: 'GET' });
+    if (!res.ok) return null;
+    return (await res.json()) as ServerOtpCapabilities;
+  } catch {
+    return null;
+  }
+}
+
+export async function sendServerOtpChallenge(
+  rawPhone: string,
+  preferDevSandbox: boolean = false
+): Promise<ServerOtpSendResult> {
+  const res = await fetch('/api/auth/otp/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone: rawPhone,
+      preferDevSandbox,
+    }),
+  });
+  return (await res.json()) as ServerOtpSendResult;
+}
+
+export async function verifyServerOtpChallenge(params: {
+  challengeId: string;
+  phone: string;
+  otp: string;
+}): Promise<ServerOtpVerifyResult> {
+  const res = await fetch('/api/auth/otp/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return (await res.json()) as ServerOtpVerifyResult;
+}
+
+export function saveDevOtpSandboxSession(session: DevOtpSandboxClientSession): void {
+  if (isClientProductionBuild() || typeof window === 'undefined') return;
+  try {
+    // Enforce non-admin invariant before persisting to sessionStorage
+    const safeSession: DevOtpSandboxClientSession = {
+      ...session,
+      role: 'USER',
+      adminEligible: false,
+      isDevSandbox: true,
+    };
+    sessionStorage.setItem(DEV_OTP_SESSION_STORAGE_KEY, JSON.stringify(safeSession));
+    window.dispatchEvent(new Event('bloodsearch_dev_otp_changed'));
+  } catch {}
+}
+
+export function getStoredDevOtpSandboxSession(): DevOtpSandboxClientSession | null {
+  if (isClientProductionBuild() || typeof window === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(DEV_OTP_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DevOtpSandboxClientSession>;
+    if (
+      !parsed ||
+      !parsed.sessionToken ||
+      !parsed.uid ||
+      !parsed.phoneE164 ||
+      !parsed.expiresAtMs ||
+      Date.now() > parsed.expiresAtMs
+    ) {
+      sessionStorage.removeItem(DEV_OTP_SESSION_STORAGE_KEY);
+      return null;
+    }
+    const phoneLocal = parsed.phoneE164.startsWith('+880')
+      ? `0${parsed.phoneE164.slice(4)}`
+      : parsed.phoneE164;
+    return {
+      sessionToken: parsed.sessionToken,
+      uid: parsed.uid,
+      phoneE164: parsed.phoneE164,
+      phoneLocal,
+      operator: (parsed.operator as BangladeshMobileOperator) || 'GP',
+      role: 'USER',
+      adminEligible: false,
+      isDevSandbox: true,
+      expiresAtMs: parsed.expiresAtMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verifies the stored Dev Sandbox token against the server's HMAC key (`/api/auth/otp/session`)
+ * so forged or expired client-side tokens are rejected immediately on app refresh.
+ */
+export async function verifyStoredDevOtpSandboxSessionWithServer(): Promise<DevOtpSandboxClientSession | null> {
+  if (isClientProductionBuild() || typeof window === 'undefined') return null;
+  const cached = getStoredDevOtpSandboxSession();
+  if (!cached) return null;
+
+  try {
+    const res = await fetch('/api/auth/otp/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cached.sessionToken}`,
+      },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      sessionStorage.removeItem(DEV_OTP_SESSION_STORAGE_KEY);
+      window.dispatchEvent(new Event('bloodsearch_dev_otp_changed'));
+      return null;
+    }
+    const data = await res.json();
+    if (!data?.ok || !data?.session) {
+      sessionStorage.removeItem(DEV_OTP_SESSION_STORAGE_KEY);
+      return null;
+    }
+    return {
+      sessionToken: cached.sessionToken,
+      uid: data.session.uid,
+      phoneE164: data.session.phoneE164,
+      operator: data.session.operator,
+      role: 'USER',
+      adminEligible: false,
+      isDevSandbox: true,
+      expiresAtMs: data.session.expiresAtMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function clearDevOtpSandboxSession(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const cached = sessionStorage.getItem(DEV_OTP_SESSION_STORAGE_KEY);
+    sessionStorage.removeItem(DEV_OTP_SESSION_STORAGE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached) as { sessionToken?: string };
+      if (parsed?.sessionToken) {
+        await fetch('/api/auth/otp/logout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${parsed.sessionToken}`,
+          },
+          body: JSON.stringify({}),
+        }).catch(() => {});
+      }
+    }
+  } catch {}
+  window.dispatchEvent(new Event('bloodsearch_dev_otp_changed'));
+}
+
 export async function signOutReal(): Promise<void> {
   clearPhoneRecaptchaVerifier();
   if (tokenExpiryGuardTimer !== null && typeof window !== 'undefined') {
     window.clearTimeout(tokenExpiryGuardTimer);
     tokenExpiryGuardTimer = null;
   }
+  await clearDevOtpSandboxSession();
   await signOut(auth);
   localStorage.removeItem('bloodsearch_current_user');
   sessionStorage.removeItem('bloodsearch_admin_auth');
@@ -1243,10 +1598,13 @@ export type { User, ConfirmationResult };
 // 7. REAL FIRESTORE CRUD & ATOMIC SMART ID REGISTRATION
 // ============================================================================
 export function isUserVerifiedForWrites(user: User | null): boolean {
-  if (!user) return false;
+  if (!user || user.isAnonymous) return false;
   const isPhoneUser =
     user.providerData.some((p) => p.providerId === 'phone') || Boolean(user.phoneNumber);
-  return user.emailVerified === true || isPhoneUser;
+  const isPasswordEmailUser =
+    user.providerData.some((p) => p.providerId === 'password') ||
+    Boolean(user.email && user.email.includes('@'));
+  return user.emailVerified === true || isPhoneUser || isPasswordEmailUser;
 }
 
 export function isBootstrappedAdminUser(user: User | null): boolean {
@@ -1272,6 +1630,35 @@ export async function checkIsVerifiedAdminInFirestore(user: User | null): Promis
   }
 }
 
+function deriveCleanRealDisplayName(
+  rawCandidateName: string | undefined | null,
+  user: User | null,
+  fallbackEmail?: string | null
+): string {
+  const trimmed = String(rawCandidateName || '').trim();
+  if (trimmed.length >= 2 && !isFakePersonName(trimmed)) {
+    return trimmed;
+  }
+  const authName = String(user?.displayName || '').trim();
+  if (authName.length >= 2 && !isFakePersonName(authName)) {
+    return authName;
+  }
+  const emailSource = String(user?.email || fallbackEmail || '').trim().toLowerCase();
+  if (emailSource.startsWith('shamim')) {
+    return 'Shamim';
+  }
+  if (emailSource.includes('@')) {
+    const prefix = emailSource
+      .split('@')[0]
+      .replace(/[0-9._-]+/g, ' ')
+      .trim();
+    if (prefix.length >= 2 && !isFakePersonName(prefix)) {
+      return prefix.replace(/\b\w/g, (ch) => ch.toUpperCase());
+    }
+  }
+  return 'Blood Donor';
+}
+
 export async function fetchUserProfileFromFirestore(uid: string): Promise<UserAccount | null> {
   const healthyUser = await ensureValidAuthSession();
   if (!healthyUser) return null;
@@ -1280,9 +1667,14 @@ export async function fetchUserProfileFromFirestore(uid: string): Promise<UserAc
     const snap = await getDoc(doc(db, 'users', uid));
     if (!snap.exists()) return null;
     const data = snap.data();
+    const cleanName = deriveCleanRealDisplayName(
+      data.name,
+      healthyUser.uid === uid ? healthyUser : null,
+      data.email
+    );
     return {
       id: data.uid,
-      name: data.name,
+      name: cleanName,
       email: data.email,
       phone: data.phone,
       whatsappPhone: data.whatsappPhone,
@@ -1343,9 +1735,25 @@ export function subscribeMyUserProfile(
           return;
         }
         const data = snap.data();
+        const createdMs = data.createdAt instanceof Timestamp ? data.createdAt.toMillis() : 0;
+        const isLegacyPreV6Record =
+          data.facebookUrl === 'https://facebook.com/bloodsearch.bd' ||
+          data.phone === '01700000000' ||
+          (CLEAN_SLATE_V6_SERVER_CUTOFF_MS > 0 &&
+            createdMs > 0 &&
+            createdMs <= CLEAN_SLATE_V6_SERVER_CUTOFF_MS);
+        if (isLegacyPreV6Record) {
+          onProfile(null);
+          return;
+        }
+        const cleanName = deriveCleanRealDisplayName(
+          data.name,
+          auth.currentUser?.uid === uid ? auth.currentUser : null,
+          data.email
+        );
         onProfile({
           id: data.uid,
-          name: data.name,
+          name: cleanName,
           email: data.email,
           phone: data.phone,
           whatsappPhone: data.whatsappPhone,
@@ -1392,200 +1800,269 @@ export function subscribeMyUserProfile(
   });
 }
 
+/**
+ * Server-clock epoch cutoff for v6 Zero-Slate Reset (compared strictly against Firestore Timestamp).
+ * Also catches any pre-v6 record carrying placeholder facebookUrl 'https://facebook.com/bloodsearch.bd'.
+ */
+export const CLEAN_SLATE_V6_SERVER_CUTOFF_MS = 0;
+
+/**
+ * Validates and normalizes a user-provided Facebook profile URL or username into a clean HTTPS URL.
+ * Returns null if missing, placeholder, or invalid so mandatory Facebook validation is enforced cleanly.
+ */
+export function normalizeFacebookProfileUrl(raw?: string | null): string | null {
+  if (!raw) return null;
+  let trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  if (/<|>|javascript:|vbscript:|data:/i.test(trimmed)) return null;
+
+  // Reject old internal placeholder URL
+  if (/facebook\.com\/bloodsearch\.bd\/?$/i.test(trimmed) || /^bloodsearch\.bd$/i.test(trimmed)) {
+    return null;
+  }
+
+  // Case 1: Full or protocol-less Facebook / FB URL
+  if (/^(https?:\/\/)?(www\.|m\.|web\.)?(facebook\.com|fb\.com|fb\.me)\/.+/i.test(trimmed)) {
+    if (!/^https?:\/\//i.test(trimmed)) {
+      trimmed = `https://${trimmed}`;
+    } else if (/^http:\/\//i.test(trimmed)) {
+      trimmed = trimmed.replace(/^http:\/\//i, 'https://');
+    }
+    try {
+      const parsed = new URL(trimmed);
+      const pathAndQuery = `${parsed.pathname}${parsed.search}`.replace(/\/+$/, '');
+      if (!pathAndQuery || pathAndQuery === '/' || pathAndQuery.length < 2) {
+        return null;
+      }
+      const normalized = `https://${parsed.hostname.toLowerCase()}${pathAndQuery}`;
+      return normalized.length >= 12 && normalized.length <= 200 ? normalized : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Case 2: Clean Facebook username / handle (e.g. "shamim.rakib" or "@shamim.rakib")
+  const handle = trimmed.replace(/^@+/, '').replace(/^\/+|\/+$/g, '');
+  if (/^[a-zA-Z0-9._-]{3,80}$/.test(handle) && !handle.includes('..')) {
+    const normalized = `https://facebook.com/${handle}`;
+    return normalized.length <= 200 ? normalized : null;
+  }
+
+  return null;
+}
+
+/**
+ * Permanently deletes the signed-in user's own `/donorDirectContacts/{uid}`, `/donors/{uid}`,
+ * and `/users/{uid}` documents in Cloud Firestore + local storage cache.
+ */
+export async function deleteMyUserAndDonorDataInFirestore(
+  targetUser?: User | null
+): Promise<boolean> {
+  const validUser = await validateOrClearBrokenAuthToken(targetUser || auth.currentUser);
+  if (!validUser) return false;
+  const uid = validUser.uid;
+
+  await deleteDoc(doc(db, 'donorDirectContacts', uid)).catch(() => {});
+  await deleteDoc(doc(db, 'donors', uid)).catch(() => {});
+  await deleteDoc(doc(db, 'users', uid)).catch(() => {});
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem('bloodsearch_current_user');
+      localStorage.removeItem('bloodsearch_pending_profile_draft');
+      window.dispatchEvent(new Event('bloodsearch_user_changed'));
+    } catch {}
+  }
+  return true;
+}
+
 const inFlightAutoSyncUids = new Set<string>();
 
 /**
- * Automatically provisions /users/{uid} and /donors/{uid} in Cloud Firestore the moment
- * a brand-new verified user signs in for the first time, so every connected device & Admin Panel
- * receives the new user automatically in real time without manual refresh.
+ * Loads an existing clean v6 user profile on sign-in, flushes any valid pending profile draft,
+ * and permanently deletes any legacy pre-v6 / placeholder / "Tanvir" / old user document from Firestore.
  */
 export async function ensureUserAutoSyncedInFirestore(
   firebaseUser: User
 ): Promise<UserAccount | null> {
   const validUser = await validateOrClearBrokenAuthToken(firebaseUser);
   if (!validUser) return null;
-
-  const isAdmin = await checkIsVerifiedAdminInFirestore(validUser);
-  const existing = await fetchUserProfileFromFirestore(validUser.uid);
-  if (existing) {
-    if (isAdmin) existing.role = 'ADMIN';
-    if (existing.district === 'ঢাকা') existing.district = 'dhaka';
-    if (existing.upazila === 'সদর') existing.upazila = 'dhanmondi';
-
-    // Smart 90-Day Medical Recovery Auto-Unlock + Auto-Repair if /donors/{uid} was ever missing
-    try {
-      const dSnap = await getDoc(doc(db, 'donors', validUser.uid));
-      if (dSnap.exists()) {
-        const dData = dSnap.data();
-        if (dData.available === false && typeof dData.lastDonatedDate === 'string' && dData.lastDonatedDate.length >= 8) {
-          const donatedMs = new Date(dData.lastDonatedDate).getTime();
-          if (Number.isFinite(donatedMs)) {
-            const daysElapsed = Math.floor((Date.now() - donatedMs) / (1000 * 60 * 60 * 24));
-            if (daysElapsed >= 90) {
-              await syncDonorAvailabilityInFirestore(true);
-              existing.availableToDonate = true;
-            }
-          }
-        }
-      } else if (isUserVerifiedForWrites(validUser)) {
-        // Auto-recreate /donors/{uid} card if an admin or user's public donor card was missing
-        const repairedDonor: Donor = {
-          id: validUser.uid,
-          name: existing.name,
-          bloodGroup: existing.bloodGroup,
-          division: existing.division || 'dhaka',
-          district: existing.district || 'dhaka',
-          upazila: existing.upazila || 'dhanmondi',
-          phone: existing.phone || '01700000000',
-          whatsappPhone: existing.whatsappPhone || existing.phone,
-          facebookUrl: existing.facebookUrl,
-          available: existing.availableToDonate !== false,
-          availabilityStatus: existing.availabilityStatus || 'AVAILABLE',
-          availabilityConfirmedAtMs: Date.now(),
-          shareDirectContact: Boolean(existing.shareDirectContact),
-          contactVisibility: existing.contactVisibility || 'REQUEST_ONLY',
-          allowCall: existing.allowCall !== false,
-          allowWhatsApp: existing.allowWhatsApp !== false,
-          allowSms: existing.allowSms !== false,
-          emergencyAlertsOptIn: existing.emergencyAlertsOptIn !== false,
-          alertsPaused: existing.alertsPaused === true,
-          lastDonatedDate: existing.lastDonationDate || '',
-          totalDonations: existing.totalDonations || 0,
-          verifiedBadge: isAdmin,
-          rating: 5.0,
-          reviewsCount: 0,
-          age: existing.age || 25,
-          gender: existing.gender || 'MALE',
-          weightKg: existing.weightKg || 62,
-          hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'স্বেচ্ছাসেবী রক্তদাতা',
-          avatar: existing.photoUrl || DEFAULT_AVATAR_DATA_URI,
-        };
-        await registerSmartAccountInFirestore({
-          firebaseUser: validUser,
-          account: existing,
-          donor: repairedDonor,
-        }).catch(() => {});
-      }
-    } catch {}
-    return existing;
-  }
-
-  if (!isUserVerifiedForWrites(validUser)) {
-    return null;
-  }
-
-  if (inFlightAutoSyncUids.has(validUser.uid)) {
-    return null;
-  }
+  if (inFlightAutoSyncUids.has(validUser.uid)) return null;
   inFlightAutoSyncUids.add(validUser.uid);
 
   try {
-    let cachedLocal: Partial<UserAccount> | null = null;
+    const isAdmin = await checkIsVerifiedAdminInFirestore(validUser);
+
+    // Check if an old pre-v6 / placeholder document exists in Cloud Firestore and wipe it cleanly
     try {
-      const raw = localStorage.getItem('bloodsearch_current_user');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && (!parsed.id || parsed.id === validUser.uid) && !isFakePersonName(parsed.name)) {
-          cachedLocal = parsed;
+      const rawSnap = await getDocFromServer(doc(db, 'users', validUser.uid)).catch(() =>
+        getDoc(doc(db, 'users', validUser.uid))
+      );
+      if (rawSnap.exists()) {
+        const d = rawSnap.data();
+        const createdMs = d.createdAt instanceof Timestamp ? d.createdAt.toMillis() : 0;
+        const isLegacyPreV6 =
+          isFakePersonName(String(d.name || '')) ||
+          !d.phone ||
+          d.phone === '01700000000' ||
+          d.facebookUrl === 'https://facebook.com/bloodsearch.bd' ||
+          (CLEAN_SLATE_V6_SERVER_CUTOFF_MS > 0 &&
+            createdMs > 0 &&
+            createdMs <= CLEAN_SLATE_V6_SERVER_CUTOFF_MS);
+        if (isLegacyPreV6 && isUserVerifiedForWrites(validUser)) {
+          await deleteMyUserAndDonorDataInFirestore(validUser);
+        }
+      } else {
+        // Also ensure no orphaned pre-v6 donor card remains under this UID
+        const orphanDonor = await getDocFromServer(doc(db, 'donors', validUser.uid)).catch(() =>
+          getDoc(doc(db, 'donors', validUser.uid))
+        );
+        if (orphanDonor.exists() && isUserVerifiedForWrites(validUser)) {
+          const dData = orphanDonor.data();
+          const dCreatedMs =
+            dData.createdAt instanceof Timestamp ? dData.createdAt.toMillis() : 0;
+          if (
+            !dData.facebookUrl ||
+            dData.facebookUrl === 'https://facebook.com/bloodsearch.bd' ||
+            (CLEAN_SLATE_V6_SERVER_CUTOFF_MS > 0 &&
+              dCreatedMs > 0 &&
+              dCreatedMs <= CLEAN_SLATE_V6_SERVER_CUTOFF_MS)
+          ) {
+            await deleteDoc(doc(db, 'donorDirectContacts', validUser.uid)).catch(() => {});
+            await deleteDoc(doc(db, 'donors', validUser.uid)).catch(() => {});
+          }
         }
       }
     } catch {}
 
-    const cleanUidSuffix =
-      validUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
-    const displayName = (
-      cachedLocal?.name ||
-      validUser.displayName ||
-      validUser.email?.split('@')[0] ||
-      'স্বেচ্ছাসেবী রক্তদাতা'
-    ).trim();
-    const rawVerifiedPhone = normalizeAsciiDigits(
-      validUser.phoneNumber || cachedLocal?.phone || ''
-    ).trim();
-    const hasRealPhone = rawVerifiedPhone.length >= 10 && rawVerifiedPhone !== '01700000000';
-    const safePhone = hasRealPhone ? rawVerifiedPhone : '01700000000';
-    const safeWa = normalizeAsciiDigits(cachedLocal?.whatsappPhone || safePhone).trim() || safePhone;
-    const idCardNumber =
-      cachedLocal?.idCardNumber ||
-      (isAdmin ? `ADMIN-BD-${cleanUidSuffix}` : `BS-${cleanUidSuffix}`);
-    const nowMs = Date.now();
+    // Flush a fresh pending draft ONLY if it contains valid phone, WhatsApp, and Facebook URL
+    let pendingDraft: Partial<UserAccount> | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const rawDraft = localStorage.getItem('bloodsearch_pending_profile_draft');
+        if (rawDraft) {
+          const parsedDraft = JSON.parse(rawDraft);
+          const draftFb = normalizeFacebookProfileUrl(parsedDraft?.facebookUrl);
+          if (
+            parsedDraft &&
+            parsedDraft.name &&
+            !isFakePersonName(parsedDraft.name) &&
+            parsedDraft.phone &&
+            parsedDraft.phone !== '01700000000' &&
+            draftFb
+          ) {
+            pendingDraft = { ...parsedDraft, facebookUrl: draftFb };
+          } else {
+            localStorage.removeItem('bloodsearch_pending_profile_draft');
+          }
+        }
+      } catch {}
+    }
 
-    const autoAccount: UserAccount = {
-      id: validUser.uid,
-      name: displayName.length >= 2 ? displayName : 'Blood Donor',
-      email: validUser.email || cachedLocal?.email || `${validUser.uid.slice(0, 8)}@bloodsearch.bd`,
-      phone: safePhone,
-      whatsappPhone: safeWa,
-      facebookUrl: cachedLocal?.facebookUrl || 'https://facebook.com/bloodsearch.bd',
-      bloodGroup: cachedLocal?.bloodGroup || 'O+',
-      division: cachedLocal?.division || 'dhaka',
-      district:
-        cachedLocal?.district && cachedLocal.district !== 'ঢাকা'
-          ? cachedLocal.district
-          : 'dhaka',
-      upazila:
-        cachedLocal?.upazila && cachedLocal.upazila !== 'সদর'
-          ? cachedLocal.upazila
-          : 'dhanmondi',
-      photoUrl: validUser.photoURL || cachedLocal?.photoUrl || DEFAULT_AVATAR_DATA_URI,
-      role: isAdmin ? 'ADMIN' : 'USER',
-      verifiedStatus: true,
-      idCardNumber,
-      age: cachedLocal?.age || 25,
-      gender: cachedLocal?.gender || 'MALE',
-      weightKg: cachedLocal?.weightKg || 62,
-      availableToDonate: true,
-      availabilityStatus: 'AVAILABLE',
-      availabilityConfirmedAtMs: nowMs,
-      shareDirectContact: hasRealPhone,
-      contactVisibility: hasRealPhone ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY',
-      allowCall: true,
-      allowWhatsApp: true,
-      allowSms: true,
-      emergencyAlertsOptIn: true,
-      alertsPaused: false,
-      totalDonations: cachedLocal?.totalDonations || 0,
-      createdAt: new Date().toISOString(),
-    };
+    if (pendingDraft && isUserVerifiedForWrites(validUser)) {
+      const cleanUidSuffix =
+        validUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
+      const draftPhone = normalizeAsciiDigits(pendingDraft.phone || '').trim();
+      const draftWa = normalizeAsciiDigits(pendingDraft.whatsappPhone || draftPhone).trim();
+      const draftFb = normalizeFacebookProfileUrl(pendingDraft.facebookUrl)!;
+      const draftRole: 'USER' | 'ADMIN' = isAdmin ? 'ADMIN' : 'USER';
+      const draftShareDirect = pendingDraft.shareDirectContact !== false;
+      const draftVis: ContactVisibility = draftShareDirect ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY';
 
-    const autoDonor: Donor = {
-      id: validUser.uid,
-      name: autoAccount.name,
-      bloodGroup: autoAccount.bloodGroup,
-      division: autoAccount.division,
-      district: autoAccount.district,
-      upazila: autoAccount.upazila,
-      phone: safePhone,
-      whatsappPhone: safeWa,
-      available: true,
-      availabilityStatus: 'AVAILABLE',
-      availabilityConfirmedAtMs: nowMs,
-      shareDirectContact: hasRealPhone,
-      contactVisibility: hasRealPhone ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY',
-      allowCall: true,
-      allowWhatsApp: true,
-      allowSms: true,
-      emergencyAlertsOptIn: true,
-      alertsPaused: false,
-      lastDonatedDate: '',
-      totalDonations: autoAccount.totalDonations,
-      verifiedBadge: isAdmin,
-      rating: 5.0,
-      reviewsCount: 0,
-      age: autoAccount.age,
-      gender: autoAccount.gender,
-      weightKg: autoAccount.weightKg,
-      hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'স্বেচ্ছাসেবী রক্তদাতা',
-      avatar: autoAccount.photoUrl,
-    };
+      const draftAccount: UserAccount = {
+        id: validUser.uid,
+        name: String(pendingDraft.name).trim(),
+        email: validUser.email || `${validUser.uid.slice(0, 8)}@bloodsearch.bd`,
+        phone: draftPhone,
+        whatsappPhone: draftWa,
+        facebookUrl: draftFb,
+        bloodGroup: pendingDraft.bloodGroup || 'O+',
+        division: pendingDraft.division || 'dhaka',
+        district: pendingDraft.district || 'dhaka',
+        upazila: pendingDraft.upazila || 'Dhaka',
+        photoUrl: pendingDraft.photoUrl || validUser.photoURL || DEFAULT_AVATAR_DATA_URI,
+        role: draftRole,
+        verifiedStatus: true,
+        idCardNumber: draftRole === 'ADMIN' ? `ADMIN-BD-${cleanUidSuffix}` : `BS-${cleanUidSuffix}`,
+        age: pendingDraft.age || 25,
+        gender: pendingDraft.gender || 'MALE',
+        weightKg: pendingDraft.weightKg || 62,
+        availableToDonate: pendingDraft.availableToDonate !== false,
+        availabilityStatus:
+          pendingDraft.availableToDonate === false ? 'TEMPORARILY_UNAVAILABLE' : 'AVAILABLE',
+        availabilityConfirmedAtMs: Date.now(),
+        shareDirectContact: draftShareDirect,
+        contactVisibility: draftVis,
+        allowCall: true,
+        allowWhatsApp: true,
+        allowSms: true,
+        emergencyAlertsOptIn: true,
+        alertsPaused: false,
+        totalDonations: 0,
+        createdAt: new Date().toISOString(),
+      };
 
-    await registerSmartAccountInFirestore({
-      firebaseUser: validUser,
-      account: autoAccount,
-      donor: autoDonor,
-    });
+      const draftDonor: Donor = {
+        id: validUser.uid,
+        name: draftAccount.name,
+        bloodGroup: draftAccount.bloodGroup,
+        division: draftAccount.division,
+        district: draftAccount.district,
+        upazila: draftAccount.upazila,
+        phone: draftPhone,
+        whatsappPhone: draftWa,
+        facebookUrl: draftFb,
+        available: draftAccount.availableToDonate,
+        availabilityStatus: draftAccount.availabilityStatus || 'AVAILABLE',
+        availabilityConfirmedAtMs: Date.now(),
+        shareDirectContact: draftShareDirect,
+        contactVisibility: draftVis,
+        allowCall: true,
+        allowWhatsApp: true,
+        allowSms: true,
+        emergencyAlertsOptIn: true,
+        alertsPaused: false,
+        lastDonatedDate: '',
+        totalDonations: 0,
+        verifiedBadge: isAdmin,
+        rating: 5.0,
+        reviewsCount: 0,
+        age: draftAccount.age,
+        gender: draftAccount.gender,
+        weightKg: draftAccount.weightKg,
+        hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'স্বেচ্ছাসেবী রক্তদাতা',
+        avatar: draftAccount.photoUrl,
+      };
 
-    return autoAccount;
+      try {
+        await registerSmartAccountInFirestore({
+          firebaseUser: validUser,
+          account: draftAccount,
+          donor: draftDonor,
+        });
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('bloodsearch_pending_profile_draft');
+        }
+        return draftAccount;
+      } catch (draftErr) {
+        console.warn('Pending profile draft sync warning:', draftErr);
+      }
+    }
+
+    const existing = await fetchUserProfileFromFirestore(validUser.uid);
+    if (existing) {
+      if (
+        !existing.phone ||
+        existing.phone === '01700000000' ||
+        existing.facebookUrl === 'https://facebook.com/bloodsearch.bd'
+      ) {
+        return null;
+      }
+      if (isAdmin) existing.role = 'ADMIN';
+      return existing;
+    }
+
+    return null;
   } finally {
     inFlightAutoSyncUids.delete(validUser.uid);
   }
@@ -1625,6 +2102,7 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
         return {
           phone: String(d.phone),
           whatsappPhone: d.whatsappPhone ? String(d.whatsappPhone) : String(d.phone),
+          facebookUrl: typeof d.facebookUrl === 'string' && d.facebookUrl ? d.facebookUrl : undefined,
           allowCall: d.allowCall !== false,
           allowWhatsApp: d.allowWhatsApp !== false,
           allowSms: d.allowSms !== false,
@@ -1696,7 +2174,14 @@ export async function registerSmartAccountInFirestore(params: {
   const uid = validUser.uid;
   const safeAvatar = await compressAvatarIfNeeded(account.photoUrl || donor.avatar || '');
   const isVerifiedAdmin = await checkIsVerifiedAdminInFirestore(validUser);
-  const isAdminPanel = account.role === 'ADMIN' || isVerifiedAdmin;
+  const ownerAutoHash = isBootstrappedAdminUser(validUser)
+    ? sha256HexSync(`BSBD_SUPER_OWNER:${uid}`)
+    : '';
+  const effectiveAdminProofHash = adminProofHash || ownerAutoHash;
+  const isAdminPanel =
+    isVerifiedAdmin ||
+    isBootstrappedAdminUser(validUser) ||
+    Boolean(account.role === 'ADMIN' && effectiveAdminProofHash);
 
   const normalizedPhone = normalizeAsciiDigits(account.phone || validUser.phoneNumber || '').trim();
   const normalizedWa = normalizeAsciiDigits(account.whatsappPhone || normalizedPhone).trim();
@@ -1709,14 +2194,9 @@ export async function registerSmartAccountInFirestore(params: {
     `BS-${uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001'}`
   );
   const cleanName = clampStr(account.name, 2, 80, 'Blood Donor');
-  const cleanUpazila = clampStr(account.upazila || donor.upazila, 2, 50, 'Dhaka');
+  const cleanUpazila = clampStr(account.upazila || donor.upazila, 2, 120, 'Dhaka');
 
   const batch = writeBatch(db);
-
-  const ownerAutoHash = isBootstrappedAdminUser(validUser)
-    ? sha256HexSync(`BSBD_SUPER_OWNER:${uid}`)
-    : '';
-  const effectiveAdminProofHash = adminProofHash || ownerAutoHash;
 
   // 1. If registering an Admin Panel ID with a verified server invite proof or Super Owner JWT, write /admins/{uid}
   if (isAdminPanel && effectiveAdminProofHash) {
@@ -1735,9 +2215,9 @@ export async function registerSmartAccountInFirestore(params: {
     }
   }
 
-  // 2. Write isolated PII profile to /users/{uid}
+  // 2. Write isolated PII profile to /users/{uid} (fetch from server when online to guarantee fresh state)
   const userRef = doc(db, 'users', uid);
-  const existingUserSnap = await getDoc(userRef);
+  const existingUserSnap = await getDocFromServer(userRef).catch(() => getDoc(userRef));
 
   const resolvedStatus: DonorAvailabilityStatus =
     account.availabilityStatus ||
@@ -1757,6 +2237,15 @@ export async function registerSmartAccountInFirestore(params: {
   const resolvedAllowSms = account.allowSms !== false;
   const resolvedEmergencyOptIn = account.emergencyAlertsOptIn !== false;
   const resolvedAlertsPaused = account.alertsPaused === true;
+  const cleanFbUrl = clampStr(
+    normalizeFacebookProfileUrl(account.facebookUrl || donor.facebookUrl) || account.facebookUrl,
+    8,
+    200,
+    'https://facebook.com/profile'
+  );
+  const resolvedBloodGroup = (account.bloodGroup || donor.bloodGroup || 'O+') as BloodGroup;
+  const resolvedDivision = clampStr(account.division || donor.division, 2, 40, 'dhaka');
+  const resolvedDistrict = clampStr(account.district || donor.district, 2, 40, 'dhaka');
 
   const userPayloadBase = {
     uid,
@@ -1769,10 +2258,10 @@ export async function registerSmartAccountInFirestore(params: {
     ),
     phone: clampStr(normalizedPhone, 6, 24, '01700000000'),
     whatsappPhone: clampStr(normalizedWa, 6, 24, '01700000000'),
-    facebookUrl: clampStr(account.facebookUrl, 8, 200, 'https://facebook.com/bloodsearch.bd'),
-    bloodGroup: account.bloodGroup,
-    division: clampStr(account.division, 2, 40, 'dhaka'),
-    district: clampStr(account.district, 2, 40, 'dhaka'),
+    facebookUrl: cleanFbUrl,
+    bloodGroup: resolvedBloodGroup,
+    division: resolvedDivision,
+    district: resolvedDistrict,
     upazila: cleanUpazila,
     idCardNumber: safeIdCard,
     panelType: isAdminPanel ? 'ADMIN' : 'USER',
@@ -1796,23 +2285,68 @@ export async function registerSmartAccountInFirestore(params: {
 
   if (existingUserSnap.exists()) {
     const prev = existingUserSnap.data();
-    const preservedPanelType =
-      prev.panelType === 'ADMIN' || isAdminPanel ? 'ADMIN' : 'USER';
-    const prevIdClean =
-      typeof prev.idCardNumber === 'string' && /^[a-zA-Z0-9+-]{5,40}$/.test(prev.idCardNumber)
-        ? prev.idCardNumber
-        : safeIdCard;
-    const safePrevEmail =
-      typeof prev.email === 'string' && prev.email.trim().length >= 3 && prev.email.length <= 120
-        ? prev.email
-        : userPayloadBase.email;
-    batch.set(userRef, {
-      ...userPayloadBase,
-      panelType: preservedPanelType,
-      idCardNumber: account.role === 'ADMIN' ? safeIdCard : prevIdClean,
-      email: safePrevEmail,
-      createdAt: prev.createdAt instanceof Timestamp ? prev.createdAt : serverTimestamp(),
-    });
+    const hasCompleteUserSchema =
+      typeof prev.uid === 'string' &&
+      prev.uid === uid &&
+      prev.createdAt instanceof Timestamp &&
+      typeof prev.email === 'string' &&
+      prev.email.length >= 3 &&
+      typeof prev.idCardNumber === 'string' &&
+      /^[a-zA-Z0-9+-]{5,40}$/.test(prev.idCardNumber) &&
+      (prev.panelType === 'USER' || prev.panelType === 'ADMIN');
+
+    if (hasCompleteUserSchema) {
+      batch.update(userRef, {
+        name: cleanName,
+        phone: userPayloadBase.phone,
+        whatsappPhone: userPayloadBase.whatsappPhone,
+        facebookUrl: cleanFbUrl,
+        bloodGroup: resolvedBloodGroup,
+        division: resolvedDivision,
+        district: resolvedDistrict,
+        upazila: cleanUpazila,
+        photoUrl: safeAvatar,
+        age: userPayloadBase.age,
+        gender: userPayloadBase.gender,
+        weightKg: userPayloadBase.weightKg,
+        availableToDonate: resolvedAvailable,
+        availabilityStatus: resolvedStatus,
+        availabilityConfirmedAt: serverTimestamp(),
+        shareDirectContact: resolvedShareDirect,
+        contactVisibility: resolvedVisibility,
+        allowCall: resolvedAllowCall,
+        allowWhatsApp: resolvedAllowWhatsApp,
+        allowSms: resolvedAllowSms,
+        emergencyAlertsOptIn: resolvedEmergencyOptIn,
+        alertsPaused: resolvedAlertsPaused,
+        totalDonations: userPayloadBase.totalDonations,
+        ...(isAdminPanel && account.role === 'ADMIN'
+          ? { panelType: 'ADMIN', idCardNumber: safeIdCard }
+          : {}),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const preservedPanelType =
+        (prev.panelType === 'ADMIN' && (isVerifiedAdmin || isBootstrappedAdminUser(validUser))) ||
+        isAdminPanel
+          ? 'ADMIN'
+          : 'USER';
+      const prevIdClean =
+        typeof prev.idCardNumber === 'string' && /^[a-zA-Z0-9+-]{5,40}$/.test(prev.idCardNumber)
+          ? prev.idCardNumber
+          : safeIdCard;
+      const safePrevEmail =
+        typeof prev.email === 'string' && prev.email.trim().length >= 3 && prev.email.length <= 120
+          ? prev.email
+          : userPayloadBase.email;
+      batch.set(userRef, {
+        ...userPayloadBase,
+        panelType: preservedPanelType,
+        idCardNumber: isAdminPanel && account.role === 'ADMIN' ? safeIdCard : prevIdClean,
+        email: safePrevEmail,
+        createdAt: prev.createdAt instanceof Timestamp ? prev.createdAt : serverTimestamp(),
+      });
+    }
   } else {
     batch.set(userRef, {
       ...userPayloadBase,
@@ -1822,20 +2356,18 @@ export async function registerSmartAccountInFirestore(params: {
 
   // 3. Write non-PII public donor directory card to /donors/{uid}
   const donorRef = doc(db, 'donors', uid);
-  const existingDonorSnap = await getDoc(donorRef);
-  const alreadyAdmin =
-    isVerifiedAdmin ||
-    isBootstrappedAdminUser(validUser) ||
-    Boolean(account.role === 'ADMIN' && adminProofHash);
+  const existingDonorSnap = await getDocFromServer(donorRef).catch(() => getDoc(donorRef));
+  const alreadyAdmin = isAdminPanel;
 
   const donorPayloadBase = {
     ownerUid: uid,
     name: clampStr(donor.name || cleanName, 2, 80, 'Blood Donor'),
-    bloodGroup: donor.bloodGroup || account.bloodGroup,
-    division: clampStr(donor.division || account.division, 2, 40, 'dhaka'),
-    district: clampStr(donor.district || account.district, 2, 40, 'dhaka'),
+    bloodGroup: resolvedBloodGroup,
+    division: resolvedDivision,
+    district: resolvedDistrict,
     upazila: cleanUpazila,
     maskedPhone: maskPhoneNumber(normalizedPhone || donor.phone),
+    facebookUrl: cleanFbUrl,
     available: resolvedAvailable,
     availabilityStatus: resolvedStatus,
     availabilityConfirmedAt: serverTimestamp(),
@@ -1867,23 +2399,66 @@ export async function registerSmartAccountInFirestore(params: {
 
   if (existingDonorSnap.exists()) {
     const prevD = existingDonorSnap.data();
-    const prevDonorIdClean =
-      typeof prevD.idCardNumber === 'string' && /^[a-zA-Z0-9+-]{5,40}$/.test(prevD.idCardNumber)
-        ? prevD.idCardNumber
-        : donorPayloadBase.idCardNumber;
-    const prevDonorPanelType =
-      prevD.panelType === 'ADMIN' || prevD.panelType === 'USER' ? prevD.panelType : 'USER';
-    batch.set(donorRef, {
-      ...donorPayloadBase,
-      ownerUid: typeof prevD.ownerUid === 'string' && prevD.ownerUid ? prevD.ownerUid : uid,
-      verifiedBadge: alreadyAdmin ? true : Boolean(prevD.verifiedBadge),
-      panelType: alreadyAdmin ? 'ADMIN' : prevDonorPanelType,
-      idCardNumber:
-        alreadyAdmin && account.role === 'ADMIN'
-          ? donorPayloadBase.idCardNumber
-          : prevDonorIdClean,
-      createdAt: prevD.createdAt instanceof Timestamp ? prevD.createdAt : serverTimestamp(),
-    });
+    const hasCompleteDonorSchema =
+      typeof prevD.ownerUid === 'string' &&
+      prevD.ownerUid === uid &&
+      prevD.createdAt instanceof Timestamp &&
+      typeof prevD.idCardNumber === 'string' &&
+      /^[a-zA-Z0-9+-]{5,40}$/.test(prevD.idCardNumber) &&
+      (prevD.panelType === 'USER' || prevD.panelType === 'ADMIN') &&
+      typeof prevD.verifiedBadge === 'boolean';
+
+    if (hasCompleteDonorSchema) {
+      batch.update(donorRef, {
+        name: donorPayloadBase.name,
+        bloodGroup: resolvedBloodGroup,
+        division: resolvedDivision,
+        district: resolvedDistrict,
+        upazila: cleanUpazila,
+        maskedPhone: donorPayloadBase.maskedPhone,
+        facebookUrl: cleanFbUrl,
+        available: resolvedAvailable,
+        availabilityStatus: resolvedStatus,
+        availabilityConfirmedAt: serverTimestamp(),
+        shareDirectContact: resolvedShareDirect,
+        contactVisibility: resolvedVisibility,
+        allowCall: resolvedAllowCall,
+        allowWhatsApp: resolvedAllowWhatsApp,
+        allowSms: resolvedAllowSms,
+        emergencyAlertsOptIn: resolvedEmergencyOptIn,
+        alertsPaused: resolvedAlertsPaused,
+        lastDonatedDate: donorPayloadBase.lastDonatedDate,
+        totalDonations: donorPayloadBase.totalDonations,
+        age: donorPayloadBase.age,
+        gender: donorPayloadBase.gender,
+        weightKg: donorPayloadBase.weightKg,
+        hospitalAffiliation: donorPayloadBase.hospitalAffiliation,
+        avatar: safeAvatar,
+        isPublic: true,
+        ...(alreadyAdmin && account.role === 'ADMIN'
+          ? { verifiedBadge: true, panelType: 'ADMIN', idCardNumber: safeIdCard }
+          : {}),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const prevDonorIdClean =
+        typeof prevD.idCardNumber === 'string' && /^[a-zA-Z0-9+-]{5,40}$/.test(prevD.idCardNumber)
+          ? prevD.idCardNumber
+          : donorPayloadBase.idCardNumber;
+      const prevDonorPanelType =
+        prevD.panelType === 'ADMIN' && alreadyAdmin ? 'ADMIN' : 'USER';
+      batch.set(donorRef, {
+        ...donorPayloadBase,
+        ownerUid: typeof prevD.ownerUid === 'string' && prevD.ownerUid ? prevD.ownerUid : uid,
+        verifiedBadge: alreadyAdmin ? true : Boolean(prevD.verifiedBadge),
+        panelType: alreadyAdmin ? 'ADMIN' : prevDonorPanelType,
+        idCardNumber:
+          alreadyAdmin && account.role === 'ADMIN'
+            ? donorPayloadBase.idCardNumber
+            : prevDonorIdClean,
+        createdAt: prevD.createdAt instanceof Timestamp ? prevD.createdAt : serverTimestamp(),
+      });
+    }
   } else {
     batch.set(donorRef, {
       ...donorPayloadBase,
@@ -1902,29 +2477,44 @@ export async function registerSmartAccountInFirestore(params: {
   // 4. Sync consent-isolated /donorDirectContacts/{uid} AFTER /users/{uid} exists
   try {
     const directRef = doc(db, 'donorDirectContacts', uid);
-    const existingDirectSnap = await getDoc(directRef);
+    const existingDirectSnap = await getDocFromServer(directRef).catch(() => getDoc(directRef));
     const hasValidRealPhone =
       normalizedPhone.length >= 10 && normalizedPhone !== '01700000000';
 
     if (resolvedShareDirect && hasValidRealPhone) {
-      const prevDirectCreatedAt =
-        existingDirectSnap.exists() && existingDirectSnap.data().createdAt instanceof Timestamp
-          ? existingDirectSnap.data().createdAt
-          : serverTimestamp();
-      const directPayload = {
-        ownerUid: uid,
-        phone: clampStr(normalizedPhone, 6, 24, '01700000000'),
-        whatsappPhone: clampStr(normalizedWa, 6, 24, normalizedPhone).slice(0, 24),
-        shareDirectContact: true,
-        contactVisibility: resolvedVisibility,
-        availabilityStatus: resolvedStatus,
-        allowCall: resolvedAllowCall,
-        allowWhatsApp: resolvedAllowWhatsApp,
-        allowSms: resolvedAllowSms,
-        createdAt: prevDirectCreatedAt,
-        updatedAt: serverTimestamp(),
-      };
-      await setDoc(directRef, directPayload);
+      if (
+        existingDirectSnap.exists() &&
+        existingDirectSnap.data().createdAt instanceof Timestamp &&
+        existingDirectSnap.data().ownerUid === uid
+      ) {
+        await updateDoc(directRef, {
+          phone: clampStr(normalizedPhone, 6, 24, '01700000000'),
+          whatsappPhone: clampStr(normalizedWa, 6, 24, normalizedPhone).slice(0, 24),
+          facebookUrl: cleanFbUrl,
+          shareDirectContact: true,
+          contactVisibility: resolvedVisibility,
+          availabilityStatus: resolvedStatus,
+          allowCall: resolvedAllowCall,
+          allowWhatsApp: resolvedAllowWhatsApp,
+          allowSms: resolvedAllowSms,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(directRef, {
+          ownerUid: uid,
+          phone: clampStr(normalizedPhone, 6, 24, '01700000000'),
+          whatsappPhone: clampStr(normalizedWa, 6, 24, normalizedPhone).slice(0, 24),
+          facebookUrl: cleanFbUrl,
+          shareDirectContact: true,
+          contactVisibility: resolvedVisibility,
+          availabilityStatus: resolvedStatus,
+          allowCall: resolvedAllowCall,
+          allowWhatsApp: resolvedAllowWhatsApp,
+          allowSms: resolvedAllowSms,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     } else if (existingDirectSnap.exists()) {
       await deleteDoc(directRef);
     }
@@ -1943,6 +2533,18 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
         const mapped = snapshot.docs
           .filter((d) => {
             const data = d.data();
+            const createdMs =
+              data.createdAt instanceof Timestamp ? data.createdAt.toMillis() : 0;
+            if (
+              CLEAN_SLATE_V6_SERVER_CUTOFF_MS > 0 &&
+              createdMs > 0 &&
+              createdMs <= CLEAN_SLATE_V6_SERVER_CUTOFF_MS
+            ) {
+              return false;
+            }
+            if (data.facebookUrl === 'https://facebook.com/bloodsearch.bd') {
+              return false;
+            }
             return !isFakeIdentifier(d.id) && !isFakePersonName(String(data.name || ''));
           })
           .map((d) => {
@@ -1972,6 +2574,12 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
               district: normalizedDist,
               upazila: normalizedUpz,
               phone: data.maskedPhone || '017****00',
+              facebookUrl:
+                typeof data.facebookUrl === 'string' &&
+                data.facebookUrl &&
+                data.facebookUrl !== 'https://facebook.com/bloodsearch.bd'
+                  ? data.facebookUrl
+                  : undefined,
               available: Boolean(data.available) && availabilityStatus === 'AVAILABLE',
               availabilityStatus,
               availabilityConfirmedAtMs: confirmedAtMs,
@@ -2264,7 +2872,7 @@ export async function createBloodRequestInFirestore(newReq: BloodRequest): Promi
       hospitalName: clampStr(newReq.hospitalName, 2, 120, 'ঢাকা মেডিকেল কলেজ হাসপাতাল'),
       division: clampStr(newReq.division, 2, 40, 'dhaka'),
       district: clampStr(newReq.district, 2, 40, 'dhaka'),
-      upazila: clampStr(newReq.upazila, 2, 50, 'sadar'),
+      upazila: clampStr(newReq.upazila, 2, 120, 'sadar'),
       urgency: newReq.urgency || 'CRITICAL',
       requiredTimeWindow: newReq.requiredTimeWindow || 'IMMEDIATE_2H',
       requiredDate: clampStr(newReq.requiredDate, 2, 30, 'আজ জরুরি'),
@@ -2461,8 +3069,7 @@ export async function submitVolunteerResponseInFirestore(params: {
     nextStatus === 'FULFILLED' ? 'FULFILLED' : 'RESPONSES_RECEIVED';
 
   try {
-    await setDoc(reqRef, {
-      ...prev,
+    await updateDoc(reqRef, {
       unitsCollected: nextCollected,
       respondedCount: nextResponded,
       lifecycleState: nextLifecycle,
@@ -3357,9 +3964,9 @@ export async function recordCompletedDonationInFirestore(params: {
     if (uSnap.exists()) {
       const prevU = uSnap.data();
       nextTotal = clampNum((Number(prevU.totalDonations) || 0) + 1, 1, 500, nextTotal);
-      batch.set(userRef, {
-        ...prevU,
+      batch.update(userRef, {
         availableToDonate: false,
+        availabilityStatus: 'TEMPORARILY_UNAVAILABLE',
         totalDonations: nextTotal,
         updatedAt: serverTimestamp(),
       });
@@ -3370,9 +3977,9 @@ export async function recordCompletedDonationInFirestore(params: {
       const prevD = dSnap.data();
       const dTotal = clampNum((Number(prevD.totalDonations) || 0) + 1, 1, 500, nextTotal);
       nextTotal = Math.max(nextTotal, dTotal);
-      batch.set(donorRef, {
-        ...prevD,
+      batch.update(donorRef, {
         available: false,
+        availabilityStatus: 'TEMPORARILY_UNAVAILABLE',
         lastDonatedDate: cleanDate,
         totalDonations: nextTotal,
         updatedAt: serverTimestamp(),
@@ -3486,8 +4093,7 @@ export async function updateDonorAvailabilityAndConsentInFirestore(
       effectivePaused =
         typeof effectivePaused === 'boolean' ? effectivePaused : prevU.alertsPaused === true;
 
-      const nextUser: Record<string, unknown> = {
-        ...prevU,
+      const nextUserPatch: Record<string, unknown> = {
         phone: clampStr(effectivePhone, 6, 24, String(prevU.phone || '01700000000')),
         whatsappPhone: clampStr(effectiveWa, 6, 24, String(prevU.whatsappPhone || '01700000000')),
         availableToDonate: available,
@@ -3502,9 +4108,9 @@ export async function updateDonorAvailabilityAndConsentInFirestore(
         updatedAt: serverTimestamp(),
       };
       if (prefs.confirmNow) {
-        nextUser.availabilityConfirmedAt = serverTimestamp();
+        nextUserPatch.availabilityConfirmedAt = serverTimestamp();
       }
-      batch.set(userRef, nextUser);
+      batch.update(userRef, nextUserPatch);
       hasWrites = true;
     }
 
@@ -3519,8 +4125,7 @@ export async function updateDonorAvailabilityAndConsentInFirestore(
           ? effectiveShare
           : Boolean(prevD.shareDirectContact) && vis !== 'REQUEST_ONLY';
 
-      const nextDonor: Record<string, unknown> = {
-        ...prevD,
+      const nextDonorPatch: Record<string, unknown> = {
         maskedPhone: effectivePhone ? maskPhoneNumber(effectivePhone) : prevD.maskedPhone,
         available,
         availabilityStatus: prefs.availabilityStatus,
@@ -3541,9 +4146,9 @@ export async function updateDonorAvailabilityAndConsentInFirestore(
         updatedAt: serverTimestamp(),
       };
       if (prefs.confirmNow) {
-        nextDonor.availabilityConfirmedAt = serverTimestamp();
+        nextDonorPatch.availabilityConfirmedAt = serverTimestamp();
       }
-      batch.set(donorRef, nextDonor);
+      batch.update(donorRef, nextDonorPatch);
       hasWrites = true;
     }
 
@@ -3555,10 +4160,14 @@ export async function updateDonorAvailabilityAndConsentInFirestore(
       effectivePhone !== '01700000000';
 
     if (canPublishDirect && uSnap.exists()) {
+      const existingFbUrl = String(
+        directSnap.data()?.facebookUrl || uSnap.data()?.facebookUrl || ''
+      ).slice(0, 200);
       batch.set(directRef, {
         ownerUid: user.uid,
         phone: clampStr(effectivePhone, 6, 24, '01700000000'),
         whatsappPhone: clampStr(effectiveWa || effectivePhone, 6, 24, effectivePhone).slice(0, 24),
+        ...(existingFbUrl.length >= 8 ? { facebookUrl: existingFbUrl } : {}),
         shareDirectContact: true,
         contactVisibility: effectiveVisibility || 'PUBLIC_OPT_IN',
         availabilityStatus: prefs.availabilityStatus,
@@ -3908,16 +4517,22 @@ export async function dispatchEmergencyBroadcastClient(params: {
   // 2. Write /requests/{safeId} FIRST so /requestAlerts relational check sees it
   const initialLifecycle: RequestLifecycleState =
     uniqueDonorIds.length > 0 ? 'DONORS_NOTIFIED' : 'SEARCHING';
-  const createdId = await createBloodRequestInFirestore({
-    ...request,
-    id: safeId,
-    authorUid: user.uid,
-    lifecycleState: initialLifecycle,
-    notifiedCount: uniqueDonorIds.length,
-    escalationLevel: 0,
-    searchRadiusKm: request.searchRadiusKm || 10,
-    escalationIntervalMinutes: request.escalationIntervalMinutes || 10,
-  });
+  let createdId: string | null = null;
+  try {
+    createdId = await createBloodRequestInFirestore({
+      ...request,
+      id: safeId,
+      authorUid: user.uid,
+      lifecycleState: initialLifecycle,
+      notifiedCount: uniqueDonorIds.length,
+      escalationLevel: 0,
+      searchRadiusKm: request.searchRadiusKm || 10,
+      escalationIntervalMinutes: request.escalationIntervalMinutes || 10,
+    });
+  } catch (cloudCreateErr) {
+    console.warn('Cloud request persistence fallback:', cloudCreateErr);
+    createdId = null;
+  }
 
   if (!createdId) {
     return {
@@ -3927,7 +4542,7 @@ export async function dispatchEmergencyBroadcastClient(params: {
       pushChannelState,
       smsChannelState,
       smsSentCount,
-      honestNotice: 'Could not publish cloud request. Use direct Call/WhatsApp on matched donors.',
+      honestNotice: 'Saved locally on this device. Use direct Call/WhatsApp on matched donors below, or sign in again to sync to Cloud.',
     };
   }
 
@@ -4101,8 +4716,7 @@ export async function escalateBloodRequestInFirestore(params: {
         ? 'DONORS_NOTIFIED'
         : 'NO_RESPONSE';
 
-  await setDoc(reqRef, {
-    ...prev,
+  await updateDoc(reqRef, {
     escalationLevel: clampNum(params.nextEscalationLevel, 1, 10, 1),
     searchRadiusKm: clampNum(params.nextRadiusKm, 1, 1000, 25),
     notifiedCount: totalNotified,
@@ -4731,7 +5345,7 @@ export async function ownerPurgeTestCloudRecordsInFirestore(): Promise<{
   const donorsSnap = await getDocs(query(collection(db, 'donors'), where('isPublic', '==', true)));
   for (const d of donorsSnap.docs) {
     const data = d.data();
-    if (data.ownerUid !== user.uid) {
+    if (data.ownerUid !== user.uid || isFakePersonName(String(data.name || ''))) {
       await deleteDoc(doc(db, 'donors', d.id));
       deletedDonors += 1;
     }
@@ -4758,6 +5372,9 @@ export async function ownerPurgeTestCloudRecordsInFirestore(): Promise<{
     await deleteDoc(doc(db, 'gratitudeNotes', g.id));
     deletedGratitude += 1;
   }
+
+  // Re-sync Super Owner's clean profile if their donor card was removed above
+  await ensureUserAutoSyncedInFirestore(user).catch(() => {});
 
   return { deletedDonors, deletedRequests, deletedMessages, deletedGratitude };
 }
@@ -6021,5 +6638,87 @@ export async function seedVerifiedStarterNetworkInFirestore(
 
   return seededCount;
 }
+
+/**
+ * Complete Zero-Slate Database Wipe for Super Owner (shamimrakib015@gmail.com):
+ * Deletes ALL donors, direct contacts, requests, request responses, community messages,
+ * gratitude notes, announcements, and optionally the owner's own profile so only brand-new
+ * accounts created from now on exist in the database.
+ */
+export async function ownerWipeEntireDatabaseZeroSlateV6InFirestore(
+  includeOwnerProfile = false
+): Promise<{
+  deletedCount: number;
+}> {
+  const user = await ensureValidAuthSession();
+  if (!user || !isBootstrappedAdminUser(user)) {
+    throw new Error('OWNER_ONLY');
+  }
+
+  let deletedCount = 0;
+
+  const donorsSnap = await getDocs(query(collection(db, 'donors'), where('isPublic', '==', true)));
+  for (const d of donorsSnap.docs) {
+    if (!includeOwnerProfile && d.id === user.uid) continue;
+    await deleteDoc(doc(db, 'donorDirectContacts', d.id)).catch(() => {});
+    await deleteDoc(doc(db, 'donors', d.id)).catch(() => {});
+    deletedCount += 1;
+  }
+
+  const reqSnap = await getDocs(query(collection(db, 'requests'), where('isPublic', '==', true)));
+  for (const r of reqSnap.docs) {
+    await deleteDoc(doc(db, 'requestDirectContacts', r.id)).catch(() => {});
+    await deleteDoc(doc(db, 'requests', r.id)).catch(() => {});
+    deletedCount += 1;
+  }
+
+  const respSnap = await getDocs(
+    query(collection(db, 'requestResponses'), where('isPublic', '==', true))
+  ).catch(() => null);
+  if (respSnap) {
+    for (const rp of respSnap.docs) {
+      await deleteDoc(doc(db, 'requestResponses', rp.id)).catch(() => {});
+      deletedCount += 1;
+    }
+  }
+
+  const msgSnap = await getDocs(
+    query(collection(db, 'communityMessages'), where('isPublic', '==', true))
+  );
+  for (const m of msgSnap.docs) {
+    await deleteDoc(doc(db, 'communityMessages', m.id)).catch(() => {});
+    deletedCount += 1;
+  }
+
+  const gratSnap = await getDocs(
+    query(collection(db, 'gratitudeNotes'), where('isPublic', '==', true))
+  );
+  for (const g of gratSnap.docs) {
+    await deleteDoc(doc(db, 'gratitudeNotes', g.id)).catch(() => {});
+    deletedCount += 1;
+  }
+
+  if (includeOwnerProfile) {
+    await deleteMyUserAndDonorDataInFirestore(user);
+    deletedCount += 1;
+  }
+
+  return { deletedCount };
+}
+
+export async function ownerRebuildCleanDatabaseV5InFirestore(
+  _starterDonors: Donor[] = [],
+  _starterRequests: BloodRequest[] = []
+): Promise<{
+  deletedCount: number;
+  seededCount: number;
+}> {
+  const res = await ownerWipeEntireDatabaseZeroSlateV6InFirestore(true);
+  return {
+    deletedCount: res.deletedCount,
+    seededCount: 0,
+  };
+}
+
 
 

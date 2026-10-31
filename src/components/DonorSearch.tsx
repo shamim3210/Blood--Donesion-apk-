@@ -7,7 +7,13 @@ import {
 import { DISTRICTS } from '../data/bangladeshGeo';
 import { ALL_BLOOD_GROUPS } from '../data/compatibility';
 import { getTranslation } from '../utils/translations';
-import { auth, fetchUnmaskedDonorContactIfAuthorized } from '../firebase';
+import {
+  auth,
+  isUserVerifiedForWrites,
+  getStoredDevOtpSandboxSession,
+  fetchUnmaskedDonorContactIfAuthorized,
+  normalizeFacebookProfileUrl,
+} from '../firebase';
 import {
   requestRealDeviceGPSWithStatus,
   requestFreshHighAccuracyGPS,
@@ -53,6 +59,7 @@ import {
   ChevronDown,
   ChevronUp,
   Hospital,
+  ExternalLink,
   X,
 } from 'lucide-react';
 
@@ -164,6 +171,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
       {
         phone: string;
         whatsappPhone?: string;
+        facebookUrl?: string;
         allowCall?: boolean;
         allowWhatsApp?: boolean;
       }
@@ -171,7 +179,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   >({});
 
   const isVerifiedSeeker = Boolean(
-    auth.currentUser && (auth.currentUser.emailVerified || auth.currentUser.phoneNumber)
+    isUserVerifiedForWrites(auth.currentUser) || getStoredDevOtpSandboxSession()
   );
 
   useEffect(() => {
@@ -183,7 +191,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     }
   }, [presetGroup, presetDistrict, presetNonce]);
 
-  // Attempt live GPS silently on load
+  // Keep manual/user-entered search mode by default unless user explicitly clicks GPS button
   useEffect(() => {
     let active = true;
     requestRealDeviceGPSWithStatus()
@@ -191,12 +199,10 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
         if (!active) return;
         setUserCoords(coords);
         setGpsAvailable(isRealGps);
-        setLocationMode(isRealGps ? 'GPS' : 'MANUAL');
       })
       .catch(() => {
         if (active) {
           setGpsAvailable(false);
-          setLocationMode('MANUAL');
         }
       });
     return () => {
@@ -548,6 +554,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
           patch[item.id] = {
             phone: item.contact.phone,
             whatsappPhone: item.contact.whatsappPhone,
+            facebookUrl: item.contact.facebookUrl,
             allowCall: item.contact.allowCall,
             allowWhatsApp: item.contact.allowWhatsApp,
           };
@@ -582,15 +589,15 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
 
       {/* CLEAN 2-STEP EASY DONOR FINDER CARD */}
       <div className="surface-card rounded-3xl overflow-hidden transition-colors">
-        <div className="banner-brand-strip text-white px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="section-jewel-ocean text-white px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-lg sm:text-xl font-black tracking-tight text-white">
-              {lang === 'bn' ? 'রক্তদাতা খুঁজুন (সহজ সার্চ)' : 'Find Blood Donors Easily'}
+              {lang === 'bn' ? 'রক্তদাতা খুঁজুন (নিজের মতো সার্চ)' : 'Find Blood Donors Easily'}
             </h1>
-            <p className="text-xs text-slate-200 mt-0.5">
+            <p className="text-xs text-sky-100/90 mt-0.5">
               {lang === 'bn'
-                ? '১) রক্তের গ্রুপ চাপুন · ২) হাসপাতালের নাম বা এলাকা লিখলেই সবচেয়ে কাছের ডোনার পাবেন'
-                : '1) Tap blood group · 2) Type hospital or area to see closest ready donors'}
+                ? '১) রক্তের গ্রুপ বেছে নিন · ২) নিজের মতো হাসপাতাল, এলাকা বা জেলা লিখে খুঁজুন'
+                : '1) Pick blood group · 2) Enter your own hospital, area, or district'}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -1188,6 +1195,10 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                   ? donor.whatsappPhone
                   : effectiveRawPhone);
 
+              const effectiveFacebookUrl = consentCheck.allowed
+                ? normalizeFacebookProfileUrl(cachedDirect?.facebookUrl || donor.facebookUrl || '')
+                : '';
+
               const allowCall = cachedDirect?.allowCall ?? donor.allowCall !== false;
               const allowWhatsApp =
                 cachedDirect?.allowWhatsApp ?? donor.allowWhatsApp !== false;
@@ -1413,7 +1424,17 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           </button>
                         )}
 
-                        {effectiveRawPhone ? (
+                        {effectiveFacebookUrl ? (
+                          <a
+                            href={effectiveFacebookUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                            <span>Facebook</span>
+                          </a>
+                        ) : effectiveRawPhone ? (
                           <button
                             type="button"
                             onClick={() => handleCopyDirectPhone(donor.id, effectiveRawPhone)}

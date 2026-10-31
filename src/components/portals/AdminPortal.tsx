@@ -38,7 +38,7 @@ import {
   adminDeactivateAppUpdateInFirestore,
   isGlobalRealOnlyModeActive,
   adminSetGlobalRealOnlyModeInFirestore,
-  ownerPurgeFakeCloudRecordsOnlyInFirestore,
+  ownerWipeEntireDatabaseZeroSlateV6InFirestore,
   subscribeAdminScamReports,
   adminUpdateScamReportStatusInFirestore,
   adminDeleteScamReportInFirestore,
@@ -58,10 +58,12 @@ import {
   SmartDatabaseHealthReport,
   adminSmartCleanupCompletedRequestsInFirestore,
   runSmartDatabaseHealthAndSecurityAudit,
+  getStoredDevOtpSandboxSession,
   User,
 } from '../../firebase';
 import { getSecurityDiagnostics } from '../../utils/securityShield';
 import { CURRENT_APP_VERSION } from '../../utils/appUpdateManager';
+import { getStandaloneAdminFullUrl } from '../../utils/adminRoute';
 import {
   ShieldCheck,
   Lock,
@@ -74,7 +76,6 @@ import {
   LogOut,
   Search,
   Hospital,
-  UserPlus,
   Eye,
   EyeOff,
   ExternalLink,
@@ -84,6 +85,8 @@ import {
   Download,
   Database,
   RefreshCw,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -118,6 +121,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const [adminPinInput, setAdminPinInput] = useState('');
   const [showPin, setShowPin] = useState(false);
+  const [showCoAdminCodeInput, setShowCoAdminCodeInput] = useState(false);
+  const [copiedAdminUrl, setCopiedAdminUrl] = useState(false);
   const [isUnlockingCode, setIsUnlockingCode] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
   const [adminToast, setAdminToast] = useState<string | null>(null);
@@ -302,19 +307,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (!isSuperOwner || isPurgingCloudTest) return;
     setIsPurgingCloudTest(true);
     try {
-      const res = await ownerPurgeFakeCloudRecordsOnlyInFirestore();
+      const res = await ownerWipeEntireDatabaseZeroSlateV6InFirestore(false);
       await adminSetGlobalRealOnlyModeInFirestore(true);
       setRealOnlyMode(true);
+      setDonors([]);
+      setRequests([]);
       setConfirmPurgeCloudTest(false);
       onLogAudit(
         'STATUS_CHANGE',
-        `Purged fake/test cloud records (${res.deletedDonors} fake donors, ${res.deletedRequests} fake SOS, ${res.deletedMessages} fake chats) while keeping real users intact`
+        `Wiped database to clean zero-slate (${res.deletedCount} records removed)`
       );
       showTempToast(
-        `✓ ডাটাবেস থেকে ${res.deletedDonors}টি ফেইক/টেস্ট ডোনার ও ${res.deletedRequests}টি ফেইক পোস্ট মুছে ফেলা হয়েছে (আসল ইউজার অক্ষত আছে)!`
+        lang === 'bn'
+          ? `✓ ডাটাবেস সম্পূর্ণ পরিষ্কার করা হয়েছে (${res.deletedCount}টি রেকর্ড মুছে ফেলা হয়েছে)।`
+          : `✓ Database reset complete (${res.deletedCount} records cleared).`
       );
     } catch {
-      showTempToast('ক্লাউড ফেইক ডাটা পরিষ্কার করা যায়নি।');
+      showTempToast(
+        lang === 'bn' ? 'ডাটাবেস রিসেট সম্পন্ন করা যায়নি।' : 'Could not reset cloud database.'
+      );
     } finally {
       setIsPurgingCloudTest(false);
     }
@@ -710,150 +721,188 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   });
 
   // =========================================================================
-  // 1. ZERO-TRUST OWNER-LOCKED ADMIN SECURITY GATEWAY
+  // 1. STANDALONE ZERO-TRUST ADMIN CONSOLE GATEWAY (/admin)
   // =========================================================================
   if (!isAdminAuthenticated) {
+    const isRegularNonAdminUser =
+      Boolean(firebaseUser) && !isCheckingAuth && !isPanelLockedBySession;
+
     return (
-      <div className="py-4 px-2 max-w-md mx-auto text-left">
-        <div className="rounded-3xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 p-5 sm:p-6 shadow-xl space-y-4">
-          <div className="text-center space-y-2">
-            <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-tr from-amber-500 to-red-600 text-white flex items-center justify-center shadow-lg">
-              <Lock className="w-7 h-7" />
+      <div className="py-8 sm:py-14 px-3 max-w-md mx-auto text-left">
+        <div className="rounded-2xl bg-[#111827] border border-slate-800 p-6 sm:p-7 shadow-2xl space-y-5 text-slate-100">
+          {isRegularNonAdminUser ? (
+            /* STRICT 403 BLOCK FOR REGULAR USERS WHO ATTEMPT TO VISIT /admin */
+            <div className="space-y-4">
+              <div className="text-center space-y-2.5">
+                <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center">
+                  <ShieldAlert className="w-7 h-7" />
+                </div>
+                <div className="text-[11px] font-mono font-bold uppercase tracking-widest text-rose-400">
+                  403 RESTRICTED · ADMIN ONLY
+                </div>
+                <h2 className="text-lg sm:text-xl font-black text-white">
+                  {lang === 'bn'
+                    ? 'সাধারণ ইউজারদের প্রবেশ সম্পূর্ণ নিষিদ্ধ'
+                    : 'Regular User Access Restricted'}
+                </h2>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {lang === 'bn'
+                    ? `আপনার লগইন করা অ্যাকাউন্ট (${firebaseUser?.email || firebaseUser?.phoneNumber}) একটি সাধারণ ইউজার অ্যাকাউন্ট। ইউজার ও অ্যাডমিন প্যানেল সম্পূর্ণ আলাদা—সাধারণ ইউজাররা অ্যাডমিন কনসোলে প্রবেশ করতে পারবেন না।`
+                    : `Your signed-in account (${firebaseUser?.email || firebaseUser?.phoneNumber}) is a standard User account. User and Admin portals are strictly separated.`}
+                </p>
+              </div>
+
+              <div className="space-y-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await signOutReal();
+                    } catch {}
+                    handleAdminGoogleSignIn();
+                  }}
+                  className="w-full min-h-[46px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    {lang === 'bn'
+                      ? 'সুপার ওনার / অ্যাডমিন অ্যাকাউন্টে পরিবর্তন করুন'
+                      : 'Switch to Authorized Admin Google'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onExitAdmin}
+                  className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-xs cursor-pointer"
+                >
+                  ← {lang === 'bn' ? 'মূল ইউজার অ্যাপে ফিরে যান' : 'Return to Public User App'}
+                </button>
+              </div>
             </div>
-            <h2 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">
-              {lang === 'bn'
-                ? 'ওনার-লকড অ্যাডমিন সিকিউরিটি গেটওয়ে'
-                : 'Owner-Locked Admin Security Gateway'}
-            </h2>
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              {lang === 'bn'
-                ? 'জিরো-ট্রাস্ট অ্যান্টি-হ্যাক সুরক্ষা সক্রিয়: শুধুমাত্র অ্যাপের ভেরিফাইড সুপার ওনার Gmail অথবা ওনারের ক্লাউড ভল্ট থেকে অনুমোদিত গোপন কোড দিয়ে প্রবেশ করা যাবে।'
-                : 'Zero-Trust Anti-Hijack Protection Active: Only the verified Super Owner Gmail or an active Cloud Vault Invite Code can unlock this panel.'}
-            </p>
-          </div>
+          ) : (
+            /* DEDICATED STANDALONE ADMIN CONSOLE SIGN-IN */
+            <div className="space-y-4">
+              <div className="text-center space-y-2">
+                <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-600/20 border border-indigo-500/40 text-indigo-400 flex items-center justify-center">
+                  <Lock className="w-7 h-7" />
+                </div>
+                <div className="text-[11px] font-mono font-bold uppercase tracking-widest text-indigo-400">
+                  DEDICATED ADMIN CONSOLE · /admin
+                </div>
+                <h2 className="text-lg sm:text-xl font-black text-white">
+                  {lang === 'bn' ? 'অ্যাডমিন কনসোল লগইন' : 'Admin Console Sign In'}
+                </h2>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  {lang === 'bn'
+                    ? 'এটি সাধারণ ইউজার অ্যাপ থেকে সম্পূর্ণ আলাদা ও সংরক্ষিত অ্যাডমিন পোর্টাল। শুধুমাত্র অনুমোদিত সুপার ওনার বা ভেরিফাইড কো-অ্যাডমিন প্রবেশ করতে পারবেন।'
+                    : 'Dedicated standalone Admin Console isolated from the User App. Authorized Super Owner and verified Co-Admins only.'}
+                </p>
+              </div>
 
-          {isCheckingAuth && (
-            <div className="text-center text-xs text-slate-500 py-1">
-              {lang === 'bn' ? 'ক্লাউড সিকিউরিটি যাচাই হচ্ছে...' : 'Verifying Cloud Credentials...'}
-            </div>
-          )}
+              {isCheckingAuth && (
+                <div className="text-center text-xs text-slate-400 py-1">
+                  {lang === 'bn' ? 'ক্লাউড সিকিউরিটি যাচাই হচ্ছে...' : 'Verifying Cloud Credentials...'}
+                </div>
+              )}
 
-          {/* 1-Click Verified Super Owner / Admin Gmail Login */}
-          <button
-            type="button"
-            onClick={handleAdminGoogleSignIn}
-            className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-200 text-white dark:text-slate-900 font-black text-xs flex items-center justify-center gap-2.5 cursor-pointer shadow-md"
-          >
-            <ShieldCheck className="w-4 h-4 text-emerald-400 dark:text-emerald-600 shrink-0" />
-            <span>
-              {lang === 'bn'
-                ? 'সুপার ওনার / ভেরিফাইড Google দিয়ে প্রবেশ করুন'
-                : 'Unlock with Verified Owner / Admin Google'}
-            </span>
-          </button>
+              {!firebaseUser && getStoredDevOtpSandboxSession() && (
+                <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-800 text-xs text-amber-200 space-y-1 text-left">
+                  <div className="font-bold">
+                    {lang === 'bn'
+                      ? 'ইউজার সেশন দিয়ে অ্যাডমিন কনসোলে প্রবেশ নিষিদ্ধ'
+                      : 'User Session Cannot Unlock Admin Console'}
+                  </div>
+                </div>
+              )}
 
-          {firebaseUser && (
-            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 text-[11px]">
-              <span className="truncate font-mono text-slate-600 dark:text-slate-300">
-                {firebaseUser.email || firebaseUser.phoneNumber}
-              </span>
               <button
                 type="button"
-                onClick={() => signOutReal().catch(() => {})}
-                className="text-rose-600 dark:text-rose-400 font-bold hover:underline shrink-0 cursor-pointer"
+                onClick={handleAdminGoogleSignIn}
+                className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2.5 cursor-pointer shadow-md"
               >
-                {lang === 'bn' ? 'অ্যাকাউন্ট বদলান' : 'Switch'}
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  {lang === 'bn'
+                    ? 'সুপার ওনার / অনুমোদিত Google দিয়ে প্রবেশ করুন'
+                    : 'Sign In with Authorized Admin Google'}
+                </span>
               </button>
             </div>
           )}
 
-          <div className="relative flex py-1 items-center">
-            <div className="flex-grow border-t border-slate-200 dark:border-slate-700" />
-            <span className="flex-shrink mx-2 text-[10px] font-bold text-slate-400 uppercase">
-              {lang === 'bn' ? 'অথবা ওনার ইনভাইট কোড' : 'Or Owner Invite Code'}
-            </span>
-            <div className="flex-grow border-t border-slate-200 dark:border-slate-700" />
-          </div>
-
-          {/* Cloud-Verified Invite Code Form (Zero leaked codes or hints!) */}
-          <form onSubmit={handleAdminSecretUnlock} className="space-y-3">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                  {lang === 'bn'
-                    ? 'ক্লাউড ভল্ট ইনভাইট কোড (শুধুমাত্র ওনার কর্তৃক প্রদত্ত)'
-                    : 'Cloud Vault Invite Code (Issued by Owner)'}
-                </label>
-              </div>
-
-              <div className="relative">
-                <KeyRound className="w-4 h-4 text-amber-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type={showPin ? 'text' : 'password'}
-                  required
-                  value={adminPinInput}
-                  onChange={(e) => setAdminPinInput(e.target.value)}
-                  placeholder={lang === 'bn' ? 'গোপন ইনভাইট কোড লিখুন...' : 'Enter private invite code...'}
-                  className="w-full pl-9 pr-10 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:border-amber-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPin(!showPin)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                >
-                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
+          {pinError && (
+            <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800 text-xs text-rose-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+              <span>{pinError}</span>
             </div>
-
-            {pinError && (
-              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 text-xs text-red-600 dark:text-red-400 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{pinError}</span>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={isUnlockingCode}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 disabled:opacity-60 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-md"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>
-                {isUnlockingCode
-                  ? lang === 'bn'
-                    ? 'ক্লাউডে যাচাই হচ্ছে...'
-                    : 'Verifying in Cloud...'
-                  : lang === 'bn'
-                  ? 'ক্লাউড ভেরিফিকেশনসহ প্যানেল খুলুন'
-                  : 'Verify & Unlock Admin Panel'}
-              </span>
-            </button>
-          </form>
-
-          {onOpenRegisterWithRole && (
-            <button
-              type="button"
-              onClick={() => onOpenRegisterWithRole('ADMIN')}
-              className="w-full py-2.5 px-4 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-300 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer hover:bg-amber-100"
-            >
-              <UserPlus className="w-4 h-4 text-amber-600" />
-              <span>
-                {lang === 'bn'
-                  ? 'অ্যাডমিন স্মার্ট আইডি রেজিস্টার করুন'
-                  : 'Register Admin Smart ID'}
-              </span>
-            </button>
           )}
 
-          <div className="pt-2 border-t border-slate-200 dark:border-slate-800 text-center">
+          {/* Collapsible Co-Admin Vault Code Verification (Hidden by default) */}
+          <div className="pt-3 border-t border-slate-800 space-y-3">
             <button
               type="button"
-              onClick={onExitAdmin}
-              className="text-xs text-rose-600 dark:text-rose-400 font-bold hover:underline cursor-pointer"
+              onClick={() => setShowCoAdminCodeInput((prev) => !prev)}
+              className="w-full text-center text-[11px] font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
             >
-              ← {lang === 'bn' ? 'ইউজার প্যানেল হোমে ফিরে যান' : 'Back to User Panel'}
+              {lang === 'bn'
+                ? 'সুপার ওনারের দেওয়া গোপন কো-অ্যাডমিন কোড আছে?'
+                : 'Hold a private Co-Admin Invite Code from Super Owner?'}
             </button>
+
+            {showCoAdminCodeInput && (
+              <form onSubmit={handleAdminSecretUnlock} className="space-y-2.5 pt-1">
+                <div className="relative">
+                  <KeyRound className="w-4 h-4 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type={showPin ? 'text' : 'password'}
+                    required
+                    value={adminPinInput}
+                    onChange={(e) => setAdminPinInput(e.target.value)}
+                    placeholder={
+                      lang === 'bn' ? 'গোপন কো-অ্যাডমিন কোড লিখুন...' : 'Enter Co-Admin Vault Code...'
+                    }
+                    className="w-full pl-9 pr-10 py-2.5 text-xs rounded-xl bg-[#0b1120] border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPin(!showPin)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isUnlockingCode}
+                  className="w-full min-h-[42px] py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>
+                    {isUnlockingCode
+                      ? lang === 'bn'
+                        ? 'ক্লাউডে যাচাই হচ্ছে...'
+                        : 'Verifying...'
+                      : lang === 'bn'
+                      ? 'কোড ভেরিফাই করে প্রবেশ করুন'
+                      : 'Verify Code & Enter'}
+                  </span>
+                </button>
+              </form>
+            )}
+
+            {!isRegularNonAdminUser && (
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  onClick={onExitAdmin}
+                  className="text-xs text-slate-400 hover:text-white font-semibold cursor-pointer"
+                >
+                  ← {lang === 'bn' ? 'সাধারণ ইউজার অ্যাপে যান' : 'Go to Public User App'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1029,62 +1078,58 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       {/* TAB 1: DONOR VERIFICATION */}
       {adminTab === 'donors' && (
         <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-4 shadow-sm space-y-3">
-          {/* Smart Automatic 1-by-1 Fake Eviction & 100% Real-Only Control Strip */}
+          {/* Clean 100% Real-Account Directory Strip */}
           <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="space-y-0.5">
               <div className="text-xs font-black text-emerald-950 dark:text-emerald-200">
                 {lang === 'bn'
-                  ? `অটো ফেইক-ডাটা রিমুভার সক্রিয় · ${realDonorsCount} জন রিয়েল ইউজার · ${evictedDemoDonorsCount}টি ডেমো অটো-ডিলিট হয়েছে (${remainingDemoDonorsCount}টি বাকি)`
-                  : `Auto Seed Eviction Active · ${realDonorsCount} Real Users · ${evictedDemoDonorsCount} Demos Deleted (${remainingDemoDonorsCount} left)`}
+                  ? `১০০% রিয়েল ডোনার ডাটাবেস · মোট ${realDonorsCount} জন নিবন্ধিত রক্তদাতা`
+                  : `100% Real Donor Database · ${realDonorsCount} Registered Donors`}
               </div>
               <p className="text-[11px] text-emerald-900/85 dark:text-emerald-300/85">
                 {lang === 'bn'
-                  ? 'প্রতিটি নতুন রিয়েল মানুষ অ্যাকাউন্ট বা পোস্ট তৈরি করলেই ১টি করে ফেইক/ডেমো কার্ড স্বয়ংক্রিয়ভাবে মুছে যায়।'
-                  : 'Each new real user or SOS post automatically deletes 1 demo entry until 0 fake items remain.'}
+                  ? 'শুধুমাত্র নতুন তৈরি করা আসল ইউজার অ্যাকাউন্ট ও রক্তের আবেদন এখানে সংরক্ষিত থাকে।'
+                  : 'Only newly registered real user profiles and live blood requests are stored here.'}
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-              <button
-                type="button"
-                onClick={handleToggleRealOnlyMode}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
-                  realOnlyMode
-                    ? 'bg-emerald-700 text-white'
-                    : 'bg-slate-900 hover:bg-black text-white dark:bg-white dark:text-slate-900'
-                }`}
-              >
-                {realOnlyMode
-                  ? lang === 'bn'
-                    ? '✓ ১০০% রিয়েল মোড চালু আছে'
-                    : '✓ 100% Real Mode ON'
-                  : lang === 'bn'
-                    ? '⚡ এখনই বাকি সব ডেমো মুছুন'
-                    : '⚡ Hide All Demos Now'}
-              </button>
-
-              {isSuperOwner &&
-                (confirmPurgeCloudTest ? (
-                  <button
-                    type="button"
-                    disabled={isPurgingCloudTest}
-                    onClick={handleOwnerPurgeCloudTestData}
-                    className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-black cursor-pointer"
-                  >
-                    {isPurgingCloudTest
-                      ? 'মুছে ফেলা হচ্ছে...'
-                      : 'নিশ্চিত? পুরনো টেস্ট ডাটা মুছুন'}
-                  </button>
+            {isSuperOwner && (
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                {confirmPurgeCloudTest ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isPurgingCloudTest}
+                      onClick={handleOwnerPurgeCloudTestData}
+                      className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-black cursor-pointer"
+                    >
+                      {isPurgingCloudTest
+                        ? lang === 'bn'
+                          ? 'রিসেট হচ্ছে...'
+                          : 'Resetting...'
+                        : lang === 'bn'
+                          ? 'নিশ্চিত? সব ডাটা মুছুন'
+                          : 'Confirm Wipe All'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmPurgeCloudTest(false)}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold cursor-pointer"
+                    >
+                      {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+                    </button>
+                  </>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setConfirmPurgeCloudTest(true)}
-                    className="px-2.5 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-800 text-[11px] font-bold cursor-pointer"
+                    className="px-3 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-800 text-xs font-bold cursor-pointer"
                   >
-                    {lang === 'bn' ? 'ডাটাবেস টেস্ট ইউজার রিসেট' : 'Reset Cloud Test Data'}
+                    {lang === 'bn' ? 'সব ডাটা রিসেট করুন' : 'Reset All Database Data'}
                   </button>
-                ))}
-            </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-700">
@@ -1317,9 +1362,43 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               {lang === 'bn'
-                ? `এই অ্যাপ ও ডাটাবেজের স্থায়ী সুপার ওনার শুধুমাত্র ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}। সোর্স কোডে কোনো পাসওয়ার্ড বা হ্যাশ রাখা হয়নি—তাই APK ডিকম্পাইল করলেও কেউ অ্যাডমিন প্যানেল বা ডাটাবেজ দখল করতে পারবে না।`
-                : `Permanent Super Owner is strictly locked to ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}. Zero static codes exist in client code.`}
+                ? `এই অ্যাপ ও ডাটাবেজের স্থায়ী সুপার ওনার শুধুমাত্র ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}। ইউজার অ্যাপ (/) এবং অ্যাডমিন কনসোল (/admin) সম্পূর্ণ আলাদা করা হয়েছে—সাধারণ ইউজাররা কোথাও অ্যাডমিন মেন্যু দেখতে পাবে না।`
+                : `Permanent Super Owner is strictly locked to ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}. User App (/) and Admin Console (/admin) are completely separated.`}
             </p>
+          </div>
+
+          {/* Dedicated Standalone Admin URL Bookmark Box */}
+          <div className="p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/35 border border-indigo-200 dark:border-indigo-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="min-w-0 space-y-0.5">
+              <div className="text-xs font-black text-indigo-950 dark:text-indigo-200">
+                {lang === 'bn'
+                  ? 'আপনার আলাদা অ্যাডমিন কনসোল লিংক (বুকমার্ক করে রাখুন)'
+                  : 'Your Dedicated Standalone Admin Console URL'}
+              </div>
+              <div className="text-xs font-mono text-indigo-700 dark:text-indigo-300 truncate">
+                {getStandaloneAdminFullUrl()}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(getStandaloneAdminFullUrl()).catch(() => {});
+                setCopiedAdminUrl(true);
+                window.setTimeout(() => setCopiedAdminUrl(false), 2200);
+              }}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
+            >
+              {copiedAdminUrl ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>
+                {copiedAdminUrl
+                  ? lang === 'bn'
+                    ? 'কপি হয়েছে!'
+                    : 'Copied!'
+                  : lang === 'bn'
+                    ? 'অ্যাডমিন লিংক কপি করুন'
+                    : 'Copy Admin URL'}
+              </span>
+            </button>
           </div>
 
           {!isSuperOwner ? (
