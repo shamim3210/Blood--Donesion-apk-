@@ -909,12 +909,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   if (!isAdminAuthenticated) {
     const isRegularNonAdminUser =
       Boolean(firebaseUser) && !isCheckingAuth && !isPanelLockedBySession;
+    const isEmbeddedIframe =
+      typeof window !== 'undefined' &&
+      (() => {
+        try {
+          return window.self !== window.top;
+        } catch {
+          return true;
+        }
+      })();
+    const fullAdminTabUrl = getStandaloneAdminFullUrl();
 
     return (
       <div className="py-8 sm:py-14 px-3 max-w-md mx-auto text-left">
         <div className="rounded-2xl bg-[#111827] border border-slate-800 p-6 sm:p-7 shadow-2xl space-y-5 text-slate-100">
           {isRegularNonAdminUser ? (
-            /* STRICT 403 BLOCK FOR REGULAR USERS WHO ATTEMPT TO VISIT /admin */
+            /* SIGNED-IN NON-OWNER SCREEN: 403 NOTICE + OPTIONAL CO-ADMIN INVITE CODE REDEMPTION */
             <div className="space-y-4">
               <div className="text-center space-y-2.5">
                 <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center">
@@ -925,15 +935,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
                 <h2 className="text-lg sm:text-xl font-black text-white">
                   {lang === 'bn'
-                    ? 'সাধারণ ইউজারদের প্রবেশ সম্পূর্ণ নিষিদ্ধ'
+                    ? 'সাধারণ ইউজারদের প্রবেশ নিষিদ্ধ'
                     : 'Regular User Access Restricted'}
                 </h2>
                 <p className="text-xs text-slate-300 leading-relaxed">
                   {lang === 'bn'
-                    ? `আপনার লগইন করা অ্যাকাউন্ট (${firebaseUser?.email || firebaseUser?.phoneNumber}) একটি সাধারণ ইউজার অ্যাকাউন্ট। ইউজার ও অ্যাডমিন প্যানেল সম্পূর্ণ আলাদা—সাধারণ ইউজাররা অ্যাডমিন কনসোলে প্রবেশ করতে পারবেন না।`
-                    : `Your signed-in account (${firebaseUser?.email || firebaseUser?.phoneNumber}) is a standard User account. User and Admin portals are strictly separated.`}
+                    ? `আপনার বর্তমান অ্যাকাউন্ট (${firebaseUser?.email || firebaseUser?.phoneNumber}) সুপার ওনার নয়। সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) অ্যাকাউন্টে পরিবর্তন করুন, অথবা ওনারের দেওয়া কো-অ্যাডমিন কোড থাকলে নিচে দিন।`
+                    : `Your signed-in account (${firebaseUser?.email || firebaseUser?.phoneNumber}) is not the Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}). Switch to Super Owner or enter an Owner-issued Co-Admin Invite Code below.`}
                 </p>
               </div>
+
+              {pinError && (
+                <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800 text-xs text-rose-300 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  <span>{pinError}</span>
+                </div>
+              )}
 
               <div className="space-y-2.5 pt-1">
                 <button
@@ -942,17 +959,69 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     try {
                       await signOutReal();
                     } catch {}
-                    handleAdminGoogleSignIn();
                   }}
-                  className="w-full min-h-[46px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                  className="w-full min-h-[46px] py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
                 >
-                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
                   <span>
                     {lang === 'bn'
-                      ? 'সুপার ওনার / অ্যাডমিন অ্যাকাউন্টে পরিবর্তন করুন'
-                      : 'Switch to Authorized Admin Google'}
+                      ? `সাইন আউট করে সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) দিয়ে লগইন করুন`
+                      : `Sign Out & Log In as Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL})`}
                   </span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowCoAdminCodeInput((prev) => !prev)}
+                  className="w-full py-2 px-3 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-[11px] font-bold text-amber-300 cursor-pointer"
+                >
+                  {lang === 'bn'
+                    ? 'সুপার ওনারের দেওয়া কো-অ্যাডমিন ইনভাইট কোড আছে?'
+                    : 'Have a Co-Admin Invite Code created by Super Owner?'}
+                </button>
+
+                {showCoAdminCodeInput && (
+                  <form onSubmit={handleAdminSecretUnlock} className="space-y-2.5 pt-1">
+                    <div className="relative">
+                      <KeyRound className="w-4 h-4 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type={showPin ? 'text' : 'password'}
+                        required
+                        value={adminPinInput}
+                        onChange={(e) => setAdminPinInput(e.target.value)}
+                        placeholder={
+                          lang === 'bn'
+                            ? 'ওনারের তৈরি কো-অ্যাডমিন কোড লিখুন...'
+                            : 'Enter Owner-created Co-Admin Code...'
+                        }
+                        className="w-full pl-9 pr-10 py-2.5 text-xs rounded-xl bg-[#0b1120] border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPin(!showPin)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                      >
+                        {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isUnlockingCode}
+                      className="w-full min-h-[42px] py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>
+                        {isUnlockingCode
+                          ? lang === 'bn'
+                            ? 'ক্লাউডে যাচাই হচ্ছে...'
+                            : 'Verifying...'
+                          : lang === 'bn'
+                            ? 'কোড ভেরিফাই করে প্রবেশ করুন'
+                            : 'Verify Code & Enter'}
+                      </span>
+                    </button>
+                  </form>
+                )}
 
                 <button
                   type="button"
@@ -964,7 +1033,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </div>
             </div>
           ) : (
-            /* DEDICATED STANDALONE ADMIN CONSOLE SIGN-IN */
+            /* DEDICATED STANDALONE SUPER ADMIN CONSOLE SIGN-IN (NO VAULT CODE NEEDED FOR SUPER OWNER!) */
             <div className="space-y-4">
               <div className="text-center space-y-2">
                 <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-600/20 border border-indigo-500/40 text-indigo-400 flex items-center justify-center">
@@ -974,12 +1043,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   DEDICATED ADMIN CONSOLE · /admin
                 </div>
                 <h2 className="text-lg sm:text-xl font-black text-white">
-                  {lang === 'bn' ? 'অ্যাডমিন কনসোল লগইন' : 'Admin Console Sign In'}
+                  {lang === 'bn' ? 'সুপার অ্যাডমিন লগইন' : 'Super Admin Sign In'}
                 </h2>
-                <p className="text-xs text-slate-400 leading-relaxed">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-950/60 border border-emerald-700/60 text-[11px] font-mono font-bold text-emerald-300">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span>{BOOTSTRAPPED_SUPER_ADMIN_EMAIL}</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
                   {lang === 'bn'
-                    ? 'এটি সাধারণ ইউজার অ্যাপ থেকে সম্পূর্ণ আলাদা ও সংরক্ষিত অ্যাডমিন পোর্টাল। শুধুমাত্র অনুমোদিত সুপার ওনার বা ভেরিফাইড কো-অ্যাডমিন প্রবেশ করতে পারবেন।'
-                    : 'Dedicated standalone Admin Console isolated from the User App. Authorized Super Owner and verified Co-Admins only.'}
+                    ? 'আপনি সুপার ওনার—আপনার কোনো Vault Code লাগবে না! নিচে ইমেইল ও পাসওয়ার্ড দিয়ে অথবা নতুন ব্রাউজার ট্যাবে Google দিয়ে ১-ক্লিকে প্রবেশ করুন।'
+                    : 'As Super Owner, NO Vault Code is required! Sign in below with Email & Password, or open in a full browser tab for 1-click Google Sign-In.'}
                 </p>
               </div>
 
@@ -989,52 +1062,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               )}
 
-              {!firebaseUser && getStoredDevOtpSandboxSession() && (
-                <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-800 text-xs text-amber-200 space-y-1 text-left">
-                  <div className="font-bold">
-                    {lang === 'bn'
-                      ? 'ইউজার সেশন দিয়ে অ্যাডমিন কনসোলে প্রবেশ নিষিদ্ধ'
-                      : 'User Session Cannot Unlock Admin Console'}
-                  </div>
-                </div>
-              )}
-
-              {/* 1. Iframe-Safe Embedded Official Google Sign-In Button (Works even when browser blocks popups!) */}
-              <div className="space-y-2.5">
-                <div
-                  ref={gsiAdminRef}
-                  className="w-full flex items-center justify-center min-h-[44px]"
-                />
-
-                {!gsiAdminReady && (
-                  <button
-                    type="button"
-                    onClick={handleAdminGoogleSignIn}
-                    className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2.5 cursor-pointer shadow-md"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>
-                      {lang === 'bn'
-                        ? 'সুপার ওনার Google দিয়ে প্রবেশ করুন'
-                        : 'Sign In with Authorized Admin Google'}
-                    </span>
-                  </button>
-                )}
-              </div>
-
-              <div className="relative flex py-0.5 items-center">
-                <div className="flex-grow border-t border-slate-800" />
-                <span className="flex-shrink mx-2.5 text-[10px] font-bold text-slate-500 uppercase">
-                  {lang === 'bn' ? 'অথবা অ্যাডমিন ইমেইল ও পাসওয়ার্ড' : 'Or Admin Email & Password'}
-                </span>
-                <div className="flex-grow border-t border-slate-800" />
-              </div>
-
-              {/* 2. Direct Popup-Free Admin Email & Password Login */}
-              <form onSubmit={handleAdminEmailPasswordSignIn} className="space-y-2.5">
+              {/* Option A: Direct Popup-Free Admin Email & Password Login (Works Inside Preview iFrame!) */}
+              <form onSubmit={handleAdminEmailPasswordSignIn} className="space-y-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                    {lang === 'bn' ? 'অ্যাডমিন ইমেইল (Super Owner ID)' : 'Admin Email (Super Owner ID)'}
+                    {lang === 'bn' ? 'সুপার অ্যাডমিন ইমেইল' : 'Super Admin Email'}
                   </label>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1057,11 +1089,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <button
                       type="button"
                       onClick={handleSendAdminPasswordSetupEmail}
-                      className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 hover:underline cursor-pointer"
+                      className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer"
                     >
                       {lang === 'bn'
-                        ? 'ইমেইলে নতুন পাসওয়ার্ড সেট/রিসেট করুন'
-                        : 'Set / Reset Password via Email'}
+                        ? 'পাসওয়ার্ড নেই? Gmail-এ সেট লিংক পাঠান'
+                        : 'No password yet? Send Setup Link to Gmail'}
                     </button>
                   </div>
                   <div className="relative">
@@ -1071,7 +1103,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       required
                       value={adminPasswordInput}
                       onChange={(e) => setAdminPasswordInput(e.target.value)}
-                      placeholder={lang === 'bn' ? 'আপনার অ্যাডমিন পাসওয়ার্ড...' : 'Enter your Admin password...'}
+                      placeholder={
+                        lang === 'bn'
+                          ? 'আপনার পাসওয়ার্ড লিখুন (কমপক্ষে ৬ অক্ষর)...'
+                          : 'Enter your Admin password (min 6 chars)...'
+                      }
                       className="w-full h-11 pl-9 pr-10 text-xs rounded-xl bg-[#0b1120] border border-slate-700 text-white font-semibold focus:outline-none focus:border-indigo-500"
                     />
                     <button
@@ -1100,110 +1136,114 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         : 'Sign In with Admin Email & Password'}
                   </span>
                 </button>
-              </form>
-            </div>
-          )}
-
-          {adminEmailNotice && (
-            <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-700 text-xs text-emerald-200 space-y-2.5">
-              <div>{adminEmailNotice}</div>
-              {pendingEmailVerifyCheck && (
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        const refreshed = await refreshVerifiedEmailSessionWithPassword(
-                          adminEmailInput,
-                          adminPasswordInput
-                        );
-                        await verifySignedInAdminCandidate(refreshed, 'Verified Admin Email');
-                      } catch (err: any) {
-                        const parsed = parseFirebaseAuthError(err);
-                        setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
-                      }
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer"
-                  >
-                    {lang === 'bn' ? '✓ ভেরিফাই সম্পন্ন — প্রবেশ করুন' : '✓ I Verified — Enter Console'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      resendVerificationEmailForCurrentUser().catch(() => {});
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs cursor-pointer"
-                  >
-                    {lang === 'bn' ? 'আবার লিংক পাঠান' : 'Resend Link'}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {pinError && (
-            <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800 text-xs text-rose-300 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-              <span>{pinError}</span>
-            </div>
-          )}
-
-          {/* Collapsible Co-Admin Vault Code Verification (Hidden by default) */}
-          <div className="pt-3 border-t border-slate-800 space-y-3">
-            <button
-              type="button"
-              onClick={() => setShowCoAdminCodeInput((prev) => !prev)}
-              className="w-full text-center text-[11px] font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
-            >
-              {lang === 'bn'
-                ? 'সুপার ওনারের দেওয়া গোপন কো-অ্যাডমিন কোড আছে?'
-                : 'Hold a private Co-Admin Invite Code from Super Owner?'}
-            </button>
-
-            {showCoAdminCodeInput && (
-              <form onSubmit={handleAdminSecretUnlock} className="space-y-2.5 pt-1">
-                <div className="relative">
-                  <KeyRound className="w-4 h-4 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type={showPin ? 'text' : 'password'}
-                    required
-                    value={adminPinInput}
-                    onChange={(e) => setAdminPinInput(e.target.value)}
-                    placeholder={
-                      lang === 'bn' ? 'গোপন কো-অ্যাডমিন কোড লিখুন...' : 'Enter Co-Admin Vault Code...'
-                    }
-                    className="w-full pl-9 pr-10 py-2.5 text-xs rounded-xl bg-[#0b1120] border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-amber-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPin(!showPin)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
-                  >
-                    {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
 
                 <button
-                  type="submit"
-                  disabled={isUnlockingCode}
-                  className="w-full min-h-[42px] py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer"
+                  type="button"
+                  onClick={handleSendAdminPasswordSetupEmail}
+                  className="w-full min-h-[40px] py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <ShieldCheck className="w-4 h-4" />
+                  <Mail className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    {isUnlockingCode
-                      ? lang === 'bn'
-                        ? 'ক্লাউডে যাচাই হচ্ছে...'
-                        : 'Verifying...'
-                      : lang === 'bn'
-                      ? 'কোড ভেরিফাই করে প্রবেশ করুন'
-                      : 'Verify Code & Enter'}
+                    {lang === 'bn'
+                      ? `${adminEmailInput || BOOTSTRAPPED_SUPER_ADMIN_EMAIL}-এ নতুন পাসওয়ার্ড সেট লিংক পাঠান`
+                      : `Send Password Setup Link to ${adminEmailInput || BOOTSTRAPPED_SUPER_ADMIN_EMAIL}`}
                   </span>
                 </button>
               </form>
-            )}
 
-            {!isRegularNonAdminUser && (
-              <div className="text-center pt-1">
+              <div className="relative flex py-0.5 items-center">
+                <div className="flex-grow border-t border-slate-800" />
+                <span className="flex-shrink mx-2.5 text-[10px] font-bold text-slate-500 uppercase">
+                  {lang === 'bn' ? 'অথবা ১-ক্লিকে Google লগইন' : 'Or 1-Click Google Sign-In'}
+                </span>
+                <div className="flex-grow border-t border-slate-800" />
+              </div>
+
+              {/* Option B: 1-Click Google Sign-In (Full Tab button when inside preview iframe so popups are NEVER blocked!) */}
+              <div className="space-y-2">
+                {isEmbeddedIframe ? (
+                  <a
+                    href={fullAdminTabUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full min-h-[46px] py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                  >
+                    <ExternalLink className="w-4 h-4 shrink-0" />
+                    <span>
+                      {lang === 'bn'
+                        ? 'নতুন ব্রাউজার ট্যাবে /admin খুলে Google লগইন করুন'
+                        : 'Open /admin in New Browser Tab for Google Login'}
+                    </span>
+                  </a>
+                ) : (
+                  <>
+                    <div
+                      ref={gsiAdminRef}
+                      className="w-full flex items-center justify-center min-h-[44px]"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAdminGoogleSignIn}
+                      className="w-full min-h-[46px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2.5 cursor-pointer shadow-md"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>
+                        {lang === 'bn'
+                          ? 'সুপার ওনার Google দিয়ে প্রবেশ করুন'
+                          : 'Sign In with Super Owner Google'}
+                      </span>
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {adminEmailNotice && (
+                <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-700 text-xs text-emerald-200 space-y-2.5">
+                  <div>{adminEmailNotice}</div>
+                  {pendingEmailVerifyCheck && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const refreshed = await refreshVerifiedEmailSessionWithPassword(
+                              adminEmailInput,
+                              adminPasswordInput
+                            );
+                            await verifySignedInAdminCandidate(refreshed, 'Verified Admin Email');
+                          } catch (err: any) {
+                            const parsed = parseFirebaseAuthError(err);
+                            setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer"
+                      >
+                        {lang === 'bn'
+                          ? '✓ ভেরিফাই সম্পন্ন — প্রবেশ করুন'
+                          : '✓ I Verified — Enter Console'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resendVerificationEmailForCurrentUser().catch(() => {});
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs cursor-pointer"
+                      >
+                        {lang === 'bn' ? 'আবার লিংক পাঠান' : 'Resend Link'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {pinError && (
+                <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800 text-xs text-rose-300 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  <span>{pinError}</span>
+                </div>
+              )}
+
+              <div className="pt-2 border-t border-slate-800 text-center">
                 <button
                   type="button"
                   onClick={onExitAdmin}
@@ -1212,8 +1252,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   ← {lang === 'bn' ? 'সাধারণ ইউজার অ্যাপে যান' : 'Go to Public User App'}
                 </button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );

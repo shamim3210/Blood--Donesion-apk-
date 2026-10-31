@@ -211,6 +211,9 @@ export function initAppUpdateManager(): void {
           latestBuildId: `${CURRENT_APP_VERSION}-sw`,
           source: 'SERVICE_WORKER',
         });
+        if (swUpdaterFn) {
+          swUpdaterFn(true).catch(() => {});
+        }
       },
       onRegisteredSW(_swUrl, registration) {
         if (registration) {
