@@ -1862,6 +1862,7 @@ export async function deleteMyUserAndDonorDataInFirestore(
   if (!validUser) return false;
   const uid = validUser.uid;
 
+  await wipeAllMyDirectChatsInFirestore(validUser).catch(() => 0);
   await deleteDoc(doc(db, 'donorDirectContacts', uid)).catch(() => {});
   await deleteDoc(doc(db, 'donors', uid)).catch(() => {});
   await deleteDoc(doc(db, 'users', uid)).catch(() => {});
@@ -1870,6 +1871,7 @@ export async function deleteMyUserAndDonorDataInFirestore(
     try {
       localStorage.removeItem('bloodsearch_current_user');
       localStorage.removeItem('bloodsearch_pending_profile_draft');
+      clearAllLocalSavedChats();
       window.dispatchEvent(new Event('bloodsearch_user_changed'));
     } catch {}
   }
@@ -3686,8 +3688,18 @@ export function subscribeMyDirectChats(
 
     const emitMerged = () => {
       const merged = new Map<string, DirectChatRoomItem>();
-      mapOne.forEach((v, k) => merged.set(k, v));
-      mapTwo.forEach((v, k) => merged.set(k, v));
+      const pushIfClean = (v: DirectChatRoomItem, k: string) => {
+        const peerIsOne = v.participantOneUid !== uid;
+        const peerUid = peerIsOne ? v.participantOneUid : v.participantTwoUid;
+        const peerName = peerIsOne ? v.participantOneName : v.participantTwoName;
+        if (isFakeIdentifier(peerUid) || isFakePersonName(peerName)) {
+          deleteDirectChatRoomInFirestore(k, auth.currentUser).catch(() => false);
+          return;
+        }
+        merged.set(k, v);
+      };
+      mapOne.forEach(pushIfClean);
+      mapTwo.forEach(pushIfClean);
       const sorted = Array.from(merged.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
       onData(sorted);
     };
@@ -3902,6 +3914,160 @@ export async function sendDirectMessageInFirestore(params: {
     return chatId;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `directChats/${chatId}`);
+  }
+}
+
+export function clearAllLocalSavedChats(specificRoomId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (specificRoomId) {
+      const raw = localStorage.getItem('bloodsearch_saved_direct_chat_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          delete parsed[specificRoomId];
+          localStorage.setItem('bloodsearch_saved_direct_chat_v1', JSON.stringify(parsed));
+        }
+      }
+    } else {
+      localStorage.removeItem('bloodsearch_saved_community_chat_v1');
+      localStorage.removeItem('bloodsearch_saved_direct_chat_v1');
+    }
+    window.dispatchEvent(
+      new CustomEvent('bloodsearch_local_chats_cleared', {
+        detail: { roomId: specificRoomId || 'ALL' },
+      })
+    );
+  } catch {}
+}
+
+export async function deleteDirectMessageInFirestore(
+  chatId: string,
+  messageId: string
+): Promise<boolean> {
+  if (!chatId || !messageId) return false;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('bloodsearch_saved_direct_chat_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed[chatId])) {
+          parsed[chatId] = parsed[chatId].filter((m: any) => m?.id !== messageId);
+          localStorage.setItem('bloodsearch_saved_direct_chat_v1', JSON.stringify(parsed));
+        }
+      }
+    } catch {}
+  }
+
+  if (messageId.startsWith('local_')) return true;
+
+  const user = await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return false;
+
+  try {
+    await deleteDoc(doc(db, 'directChats', chatId, 'messages', messageId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteDirectChatRoomInFirestore(
+  chatId: string,
+  targetUser?: User | null
+): Promise<boolean> {
+  if (!chatId) return false;
+  clearAllLocalSavedChats(chatId);
+
+  const user = targetUser
+    ? await validateOrClearBrokenAuthToken(targetUser)
+    : await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return false;
+
+  const uid = sanitizeFirestoreIdPart(user.uid);
+  const parts = chatId.split('__');
+  const candidateFields: ('participantOneUid' | 'participantTwoUid')[] =
+    parts.length === 2 && parts[0] === uid
+      ? ['participantOneUid']
+      : parts.length === 2 && parts[1] === uid
+        ? ['participantTwoUid']
+        : ['participantOneUid', 'participantTwoUid'];
+
+  for (const fieldName of candidateFields) {
+    try {
+      const msgSnap = await getDocs(
+        query(collection(db, 'directChats', chatId, 'messages'), where(fieldName, '==', user.uid))
+      );
+      for (const m of msgSnap.docs) {
+        await deleteDoc(doc(db, 'directChats', chatId, 'messages', m.id)).catch(() => {});
+      }
+    } catch {}
+  }
+
+  await deleteDoc(doc(db, 'directChats', chatId)).catch(() => {});
+  return true;
+}
+
+const inFlightChatWipeUids = new Set<string>();
+
+/**
+ * Deletes ALL 1-to-1 Direct Chat rooms & subcollection messages for the user,
+ * wipes local saved chat history, and deletes community messages sent by the user
+ * (or ALL community messages if the user is a verified Admin / Super Owner).
+ */
+export async function wipeAllMyDirectChatsInFirestore(
+  targetUser?: User | null
+): Promise<number> {
+  clearAllLocalSavedChats();
+
+  const user = targetUser
+    ? await validateOrClearBrokenAuthToken(targetUser)
+    : await ensureValidAuthSession();
+  if (!user || !isUserVerifiedForWrites(user)) return 0;
+
+  if (inFlightChatWipeUids.has(user.uid)) return 0;
+  inFlightChatWipeUids.add(user.uid);
+
+  let deletedCount = 0;
+  try {
+    const [snapOne, snapTwo] = await Promise.all([
+      getDocs(query(collection(db, 'directChats'), where('participantOneUid', '==', user.uid))).catch(
+        () => null
+      ),
+      getDocs(query(collection(db, 'directChats'), where('participantTwoUid', '==', user.uid))).catch(
+        () => null
+      ),
+    ]);
+
+    const roomIds = new Set<string>();
+    snapOne?.docs.forEach((d) => roomIds.add(d.id));
+    snapTwo?.docs.forEach((d) => roomIds.add(d.id));
+
+    for (const roomId of roomIds) {
+      await deleteDirectChatRoomInFirestore(roomId, user).catch(() => false);
+      deletedCount += 1;
+    }
+
+    // Also delete own community messages (or all community messages if Admin)
+    try {
+      const isAdmin = await checkIsVerifiedAdminInFirestore(user);
+      const commSnap = await getDocs(
+        query(collection(db, 'communityMessages'), where('isPublic', '==', true))
+      ).catch(() => null);
+      if (commSnap) {
+        for (const cm of commSnap.docs) {
+          const data = cm.data();
+          if (isAdmin || data.senderUid === user.uid || isFakePersonName(String(data.senderName || ''))) {
+            await deleteDoc(doc(db, 'communityMessages', cm.id)).catch(() => {});
+            deletedCount += 1;
+          }
+        }
+      }
+    } catch {}
+
+    return deletedCount;
+  } finally {
+    inFlightChatWipeUids.delete(user.uid);
   }
 }
 
@@ -6689,6 +6855,8 @@ export async function ownerWipeEntireDatabaseZeroSlateV6InFirestore(
     await deleteDoc(doc(db, 'communityMessages', m.id)).catch(() => {});
     deletedCount += 1;
   }
+
+  deletedCount += await wipeAllMyDirectChatsInFirestore(user).catch(() => 0);
 
   const gratSnap = await getDocs(
     query(collection(db, 'gratitudeNotes'), where('isPublic', '==', true))

@@ -69,6 +69,7 @@ import {
   isBootstrappedAdminUser,
   ownerPurgeFakeCloudRecordsOnlyInFirestore,
   ownerWipeEntireDatabaseZeroSlateV6InFirestore,
+  wipeAllMyDirectChatsInFirestore,
   upsertLiveDonorTripInFirestore,
   updateLiveDonorTripStatusInFirestore,
   subscribeLiveTripsForSeeker,
@@ -633,6 +634,14 @@ export default function App() {
               await ownerWipeEntireDatabaseZeroSlateV6InFirestore(!hasFreshDraft).catch(() => {});
               localStorage.setItem(zeroSlateKey, 'done');
             }
+          }
+
+          // One-time v7 Chat Zero-Slate Purge: wipe all legacy 1-to-1 direct chats & saved chat history
+          const chatZeroKey = `bloodsearch_cloud_chat_zero_v7_${u.uid}`;
+          if (localStorage.getItem(chatZeroKey) !== 'done') {
+            await wipeAllMyDirectChatsInFirestore(u).catch(() => 0);
+            localStorage.setItem(chatZeroKey, 'done');
+            setUnreadChatCount(0);
           }
 
           const syncedProfile = await ensureUserAutoSyncedInFirestore(u);

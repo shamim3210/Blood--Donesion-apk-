@@ -72,6 +72,17 @@ export const LEGACY_FAKE_NAMES: ReadonlySet<string> = new Set([
   'মোহাম্মদ রফিক (md. rafiq)',
   'আফসানা রহমান (afsana rahman)',
   'আব্দুল কাদের (abdul kader)',
+  'dr. nusrat tazin',
+  'nusrat tazin',
+  'ডা. নুসরাত তাজিন',
+  'tasnim ferdousi',
+  'তাসনিম ফেরদৌসী',
+  'dr. mahbub alam',
+  'mahbub alam',
+  'kamrul hasan',
+  'sabbir hossain',
+  'farzana yasmin',
+  'tareq rahman',
 ]);
 
 export const SEED_DONOR_IDS: ReadonlySet<string> = LEGACY_FAKE_DONOR_IDS;
@@ -164,6 +175,13 @@ export function scrubFakeLocalStorageOnBoot(): void {
       localStorage.removeItem('bloodsearch_verified_cloud_seeded_v4');
       localStorage.removeItem('bloodsearch_clean_cloud_rebuild_v5');
       localStorage.setItem('bloodsearch_zero_slate_v6', 'done');
+    }
+
+    // One-time v7 Chat Zero-Slate Reset: wipe all cached local & WhatsApp-synced chat history
+    if (localStorage.getItem('bloodsearch_chat_zero_slate_v7') !== 'done') {
+      localStorage.removeItem('bloodsearch_saved_community_chat_v1');
+      localStorage.removeItem('bloodsearch_saved_direct_chat_v1');
+      localStorage.setItem('bloodsearch_chat_zero_slate_v7', 'done');
     }
 
     const rawDonors = localStorage.getItem('bloodsearch_donors');

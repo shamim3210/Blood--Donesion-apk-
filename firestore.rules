@@ -1415,7 +1415,7 @@ service cloud.firestore {
         );
 
       allow delete: if isVerifiedUser() && isValidId(chatId) && (
-        isBootstrappedSuperAdmin() ||
+        isAdmin() ||
         existing().participantOneUid == request.auth.uid ||
         existing().participantTwoUid == request.auth.uid
       );
@@ -1461,11 +1461,12 @@ service cloud.firestore {
         allow delete: if isVerifiedUser()
           && isValidId(chatId)
           && isValidId(messageId)
-          && exists(/databases/$(database)/documents/directChats/$(chatId))
           && (
-            isBootstrappedSuperAdmin() ||
+            isAdmin() ||
+            existing().participantOneUid == request.auth.uid ||
+            existing().participantTwoUid == request.auth.uid ||
             (
-              existing().senderUid == request.auth.uid && (
+              exists(/databases/$(database)/documents/directChats/$(chatId)) && (
                 get(/databases/$(database)/documents/directChats/$(chatId)).data.participantOneUid == request.auth.uid ||
                 get(/databases/$(database)/documents/directChats/$(chatId)).data.participantTwoUid == request.auth.uid
               )

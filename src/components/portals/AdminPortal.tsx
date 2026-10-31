@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Donor, BloodRequest, AuditLogEntry, BloodGroup, Language } from '../../types';
 import { ALL_BLOOD_GROUPS } from '../../data/compatibility';
 import {
@@ -12,6 +12,12 @@ import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
+  signInWithGoogleIdToken,
+  GOOGLE_OAUTH_CLIENT_ID,
+  registerOrLoginRealEmailPassword,
+  refreshVerifiedEmailSessionWithPassword,
+  sendRealPasswordReset,
+  resendVerificationEmailForCurrentUser,
   signOutReal,
   computeAdminProofHashSync,
   grantAdminAccessWithInviteCode,
@@ -87,6 +93,7 @@ import {
   RefreshCw,
   Copy,
   Check,
+  Mail,
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -118,6 +125,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
   const [isPanelLockedBySession, setIsPanelLockedBySession] = useState<boolean>(false);
+
+  const gsiAdminRef = useRef<HTMLDivElement | null>(null);
+  const [gsiAdminReady, setGsiAdminReady] = useState(false);
+
+  const [adminEmailInput, setAdminEmailInput] = useState(BOOTSTRAPPED_SUPER_ADMIN_EMAIL);
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
+  const [isEmailSigningIn, setIsEmailSigningIn] = useState(false);
+  const [adminEmailNotice, setAdminEmailNotice] = useState<string | null>(null);
+  const [pendingEmailVerifyCheck, setPendingEmailVerifyCheck] = useState(false);
 
   const [adminPinInput, setAdminPinInput] = useState('');
   const [showPin, setShowPin] = useState(false);
@@ -516,29 +533,195 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
+  const verifySignedInAdminCandidate = useCallback(
+    async (u: User, methodLabel: string) => {
+      setFirebaseUser(u);
+      setIsPanelLockedBySession(false);
+      const verifiedAdmin = await checkIsVerifiedAdminInFirestore(u);
+      if (verifiedAdmin) {
+        setIsAdminAuthenticated(true);
+        setPinError(null);
+        setAdminEmailNotice(null);
+        setPendingEmailVerifyCheck(false);
+        onLogAudit('STATUS_CHANGE', `Verified Admin signed in (${methodLabel}): ${u.email}`);
+        return true;
+      }
+
+      if (
+        u.email?.toLowerCase() === BOOTSTRAPPED_SUPER_ADMIN_EMAIL.toLowerCase() &&
+        !u.emailVerified
+      ) {
+        setPendingEmailVerifyCheck(true);
+        setAdminEmailNotice(
+          lang === 'bn'
+            ? `আপনার ${u.email} ইনবক্সে একটি ভেরিফিকেশন লিংক পাঠানো হয়েছে। ইমেইল খুলে লিংকটিতে ১ বার ক্লিক করে নিচের "ভেরিফাই সম্পন্ন — প্রবেশ করুন" বাটনে চাপুন, অথবা উপরের সাদা Google বাটনটি ব্যবহার করুন।`
+            : `A verification link was sent to ${u.email}. Click the link in your inbox once, then click "I Verified — Enter Console" below, or use the embedded Google button above.`
+        );
+        return false;
+      }
+
+      setPinError(
+        lang === 'bn'
+          ? `আপনার অ্যাকাউন্ট (${u.email}) অ্যাডমিন তালিকায় নেই। শুধুমাত্র সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) সরাসরি প্রবেশ করতে পারবেন, অথবা নিচে ওনারের দেওয়া কো-অ্যাডমিন কোড দিন।`
+          : `Your account (${u.email}) is not authorized as Admin. Only Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) or holders of an active Co-Admin code may enter.`
+      );
+      return false;
+    },
+    [lang, onLogAudit]
+  );
+
+  // Mount iframe-safe Google Identity Services button on /admin so blocked popups never stop Admin login
+  useEffect(() => {
+    if (isAdminAuthenticated || !GOOGLE_OAUTH_CLIENT_ID) return;
+    let cancelled = false;
+
+    const mountAdminGsi = () => {
+      if (cancelled || !window.google?.accounts?.id || !gsiAdminRef.current) return;
+      try {
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_OAUTH_CLIENT_ID,
+          ux_mode: 'popup',
+          cancel_on_tap_outside: false,
+          callback: async (resp) => {
+            if (!resp?.credential) return;
+            setPinError(null);
+            setAdminEmailNotice(null);
+            try {
+              const u = await signInWithGoogleIdToken(resp.credential);
+              await verifySignedInAdminCandidate(u, 'Embedded Google GSI');
+            } catch (err: any) {
+              const parsed = parseFirebaseAuthError(err);
+              setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+            }
+          },
+        });
+        gsiAdminRef.current.innerHTML = '';
+        window.google.accounts.id.renderButton(gsiAdminRef.current, {
+          theme: 'filled_blue',
+          size: 'large',
+          text: 'continue_with',
+          shape: 'rectangular',
+          width: 340,
+        });
+        setGsiAdminReady(true);
+      } catch {
+        setGsiAdminReady(false);
+      }
+    };
+
+    if (window.google?.accounts?.id) {
+      mountAdminGsi();
+    } else {
+      const existingScript = document.getElementById(
+        'google-gsi-client-script'
+      ) as HTMLScriptElement | null;
+      if (existingScript) {
+        existingScript.addEventListener('load', mountAdminGsi);
+        return () => {
+          cancelled = true;
+          existingScript.removeEventListener('load', mountAdminGsi);
+        };
+      }
+      const script = document.createElement('script');
+      script.id = 'google-gsi-client-script';
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = mountAdminGsi;
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminAuthenticated, firebaseUser, isPanelLockedBySession, lang, verifySignedInAdminCandidate]);
+
   const handleAdminGoogleSignIn = () => {
     const popupPromise = signInWithGoogleReal();
     setPinError(null);
+    setAdminEmailNotice(null);
     setIsPanelLockedBySession(false);
     popupPromise
       .then(async (u) => {
-        setFirebaseUser(u);
-        const verifiedAdmin = await checkIsVerifiedAdminInFirestore(u);
-        if (verifiedAdmin) {
-          setIsAdminAuthenticated(true);
-          onLogAudit('STATUS_CHANGE', `Verified Admin signed in via Google: ${u.email}`);
-        } else {
-          setPinError(
-            lang === 'bn'
-              ? `আপনার Gmail (${u.email}) অ্যাডমিন তালিকায় নেই। শুধুমাত্র সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) সরাসরি প্রবেশ করতে পারবেন, অথবা ওনারের দেওয়া সক্রিয় ইনভাইট কোড নিচে দিন।`
-              : `Your Gmail (${u.email}) is not authorized as Admin. Only the Super Owner or holders of an active Owner Invite Code may enter.`
-          );
-        }
+        await verifySignedInAdminCandidate(u, 'Google Popup');
       })
       .catch((err: any) => {
         const parsed = parseFirebaseAuthError(err);
         setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
       });
+  };
+
+  const handleAdminEmailPasswordSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinError(null);
+    setAdminEmailNotice(null);
+    setIsPanelLockedBySession(false);
+
+    const cleanEmail = adminEmailInput.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setPinError(
+        lang === 'bn' ? 'সঠিক অ্যাডমিন ইমেইল লিখুন।' : 'Please enter a valid Admin email.'
+      );
+      return;
+    }
+    if (adminPasswordInput.length < 6) {
+      setPinError(
+        lang === 'bn'
+          ? 'পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে (পাসওয়ার্ড সেট না থাকলে নিচে "ইমেইলে পাসওয়ার্ড সেট করুন" বাটনে চাপুন)।'
+          : 'Password must be at least 6 characters (or click "Set / Reset Password via Email" below).'
+      );
+      return;
+    }
+
+    setIsEmailSigningIn(true);
+    try {
+      const res = await registerOrLoginRealEmailPassword(
+        cleanEmail,
+        adminPasswordInput,
+        false,
+        'Super Admin'
+      );
+      await verifySignedInAdminCandidate(res.user, 'Admin Email & Password');
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+        setPinError(
+          lang === 'bn'
+            ? 'পাসওয়ার্ড মেলেনি বা আগে শুধু Google দিয়ে লগইন করা হয়েছিল। নিচের "ইমেইলে নতুন পাসওয়ার্ড সেট করুন" বাটনে চাপলে আপনার Gmail-এ পাসওয়ার্ড সেট করার লিংক চলে যাবে, অথবা উপরের Google বাটনে চাপুন।'
+            : 'Incorrect password (or this Gmail previously used Google Sign-In only). Click "Set / Reset Password via Email" below to set your Admin password via Gmail, or tap the Google button above.'
+        );
+      } else {
+        const parsed = parseFirebaseAuthError(err);
+        setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+      }
+    } finally {
+      setIsEmailSigningIn(false);
+    }
+  };
+
+  const handleSendAdminPasswordSetupEmail = async () => {
+    setPinError(null);
+    setAdminEmailNotice(null);
+    const cleanEmail = adminEmailInput.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setPinError(
+        lang === 'bn'
+          ? 'আগে উপরে আপনার অ্যাডমিন ইমেইল লিখুন।'
+          : 'Enter your Admin email address above first.'
+      );
+      return;
+    }
+    try {
+      await sendRealPasswordReset(cleanEmail);
+      setAdminEmailNotice(
+        lang === 'bn'
+          ? `✓ পাসওয়ার্ড সেট/রিসেট করার লিংক ${cleanEmail}-এ পাঠানো হয়েছে! আপনার Gmail ইনবক্স (বা Spam) থেকে লিংকে ক্লিক করে নতুন পাসওয়ার্ড সেট করে এখানে লগইন করুন।`
+          : `✓ Password setup/reset link sent to ${cleanEmail}! Open your Gmail inbox, set your password, and sign in above.`
+      );
+    } catch (err: any) {
+      const parsed = parseFirebaseAuthError(err);
+      setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+    }
   };
 
   const handleAdminSecretUnlock = async (e: React.FormEvent) => {
@@ -816,18 +999,145 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={handleAdminGoogleSignIn}
-                className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2.5 cursor-pointer shadow-md"
-              >
-                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  {lang === 'bn'
-                    ? 'সুপার ওনার / অনুমোদিত Google দিয়ে প্রবেশ করুন'
-                    : 'Sign In with Authorized Admin Google'}
+              {/* 1. Iframe-Safe Embedded Official Google Sign-In Button (Works even when browser blocks popups!) */}
+              <div className="space-y-2.5">
+                <div
+                  ref={gsiAdminRef}
+                  className="w-full flex items-center justify-center min-h-[44px]"
+                />
+
+                {!gsiAdminReady && (
+                  <button
+                    type="button"
+                    onClick={handleAdminGoogleSignIn}
+                    className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs flex items-center justify-center gap-2.5 cursor-pointer shadow-md"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>
+                      {lang === 'bn'
+                        ? 'সুপার ওনার Google দিয়ে প্রবেশ করুন'
+                        : 'Sign In with Authorized Admin Google'}
+                    </span>
+                  </button>
+                )}
+              </div>
+
+              <div className="relative flex py-0.5 items-center">
+                <div className="flex-grow border-t border-slate-800" />
+                <span className="flex-shrink mx-2.5 text-[10px] font-bold text-slate-500 uppercase">
+                  {lang === 'bn' ? 'অথবা অ্যাডমিন ইমেইল ও পাসওয়ার্ড' : 'Or Admin Email & Password'}
                 </span>
-              </button>
+                <div className="flex-grow border-t border-slate-800" />
+              </div>
+
+              {/* 2. Direct Popup-Free Admin Email & Password Login */}
+              <form onSubmit={handleAdminEmailPasswordSignIn} className="space-y-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    {lang === 'bn' ? 'অ্যাডমিন ইমেইল (Super Owner ID)' : 'Admin Email (Super Owner ID)'}
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="email"
+                      required
+                      value={adminEmailInput}
+                      onChange={(e) => setAdminEmailInput(e.target.value)}
+                      placeholder={BOOTSTRAPPED_SUPER_ADMIN_EMAIL}
+                      className="w-full h-11 pl-9 pr-3 text-xs rounded-xl bg-[#0b1120] border border-slate-700 text-white font-mono font-semibold focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="text-[11px] font-bold text-slate-300">
+                      {lang === 'bn' ? 'অ্যাডমিন পাসওয়ার্ড' : 'Admin Password'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleSendAdminPasswordSetupEmail}
+                      className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 hover:underline cursor-pointer"
+                    >
+                      {lang === 'bn'
+                        ? 'ইমেইলে নতুন পাসওয়ার্ড সেট/রিসেট করুন'
+                        : 'Set / Reset Password via Email'}
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type={showAdminPassword ? 'text' : 'password'}
+                      required
+                      value={adminPasswordInput}
+                      onChange={(e) => setAdminPasswordInput(e.target.value)}
+                      placeholder={lang === 'bn' ? 'আপনার অ্যাডমিন পাসওয়ার্ড...' : 'Enter your Admin password...'}
+                      className="w-full h-11 pl-9 pr-10 text-xs rounded-xl bg-[#0b1120] border border-slate-700 text-white font-semibold focus:outline-none focus:border-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminPassword((p) => !p)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      {showAdminPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isEmailSigningIn}
+                  className="w-full min-h-[46px] py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                >
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span>
+                    {isEmailSigningIn
+                      ? lang === 'bn'
+                        ? 'যাচাই হচ্ছে...'
+                        : 'Signing In...'
+                      : lang === 'bn'
+                        ? 'ইমেইল ও পাসওয়ার্ড দিয়ে প্রবেশ করুন'
+                        : 'Sign In with Admin Email & Password'}
+                  </span>
+                </button>
+              </form>
+            </div>
+          )}
+
+          {adminEmailNotice && (
+            <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-700 text-xs text-emerald-200 space-y-2.5">
+              <div>{adminEmailNotice}</div>
+              {pendingEmailVerifyCheck && (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const refreshed = await refreshVerifiedEmailSessionWithPassword(
+                          adminEmailInput,
+                          adminPasswordInput
+                        );
+                        await verifySignedInAdminCandidate(refreshed, 'Verified Admin Email');
+                      } catch (err: any) {
+                        const parsed = parseFirebaseAuthError(err);
+                        setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer"
+                  >
+                    {lang === 'bn' ? '✓ ভেরিফাই সম্পন্ন — প্রবেশ করুন' : '✓ I Verified — Enter Console'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resendVerificationEmailForCurrentUser().catch(() => {});
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs cursor-pointer"
+                  >
+                    {lang === 'bn' ? 'আবার লিংক পাঠান' : 'Resend Link'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

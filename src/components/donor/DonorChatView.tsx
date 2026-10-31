@@ -4,7 +4,7 @@ import {
   requestFreshHighAccuracyGPS,
   reverseGeocodeBangladeshCoords,
 } from '../../utils/geolocation';
-import { isFakePersonName } from '../../data/mockDonors';
+import { isFakeIdentifier, isFakePersonName } from '../../data/mockDonors';
 import {
   auth,
   onAuthStateChanged,
@@ -20,6 +20,10 @@ import {
   subscribeMyDirectChats,
   subscribeDirectChatMessages,
   sendDirectMessageInFirestore,
+  clearAllLocalSavedChats,
+  deleteDirectMessageInFirestore,
+  deleteDirectChatRoomInFirestore,
+  wipeAllMyDirectChatsInFirestore,
   buildDirectChatId,
   buildWhatsAppChatUrl,
   sanitizeFirestoreIdPart,
@@ -201,6 +205,12 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
   const [directMessages, setDirectMessages] = useState<DirectMessageItem[]>([]);
   const [localSavedCommunity, setLocalSavedCommunity] = useState<CommunityMessageItem[]>(() => {
     try {
+      if (localStorage.getItem('bloodsearch_chat_zero_slate_v7') !== 'done') {
+        localStorage.removeItem('bloodsearch_saved_community_chat_v1');
+        localStorage.removeItem('bloodsearch_saved_direct_chat_v1');
+        localStorage.setItem('bloodsearch_chat_zero_slate_v7', 'done');
+        return [];
+      }
       const raw = localStorage.getItem('bloodsearch_saved_community_chat_v1');
       return raw ? JSON.parse(raw) : [];
     } catch {
@@ -237,6 +247,82 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
   const [syncWhatsAppOnSend, setSyncWhatsAppOnSend] = useState(false);
   const [visibleMsgLimit, setVisibleMsgLimit] = useState<number>(50);
   const [visibleDirLimit, setVisibleDirLimit] = useState<number>(40);
+  const [confirmClearAllChats, setConfirmClearAllChats] = useState<boolean>(false);
+  const [isWipingChats, setIsWipingChats] = useState<boolean>(false);
+
+  // Sync React local chat caches whenever clearAllLocalSavedChats() runs
+  useEffect(() => {
+    const onLocalCleared = (ev: Event) => {
+      const roomId = (ev as CustomEvent<{ roomId?: string }>)?.detail?.roomId || 'ALL';
+      if (roomId === 'ALL') {
+        setLocalSavedCommunity([]);
+        setLocalSavedDirectByRoom({});
+      } else {
+        setLocalSavedDirectByRoom((prev) => {
+          const next = { ...prev };
+          delete next[roomId];
+          return next;
+        });
+      }
+    };
+    window.addEventListener('bloodsearch_local_chats_cleared', onLocalCleared);
+    return () => window.removeEventListener('bloodsearch_local_chats_cleared', onLocalCleared);
+  }, []);
+
+  // Automatic one-time v7 Cloud Direct Chat purge when signed-in user opens Chat
+  useEffect(() => {
+    if (!firebaseUser) return;
+    const chatZeroKey = `bloodsearch_cloud_chat_zero_v7_${firebaseUser.uid}`;
+    if (localStorage.getItem(chatZeroKey) === 'done') return;
+
+    localStorage.setItem(chatZeroKey, 'done');
+    clearAllLocalSavedChats();
+    setDirectRooms([]);
+    setDirectMessages([]);
+    setActivePeer(null);
+    setSelectedRoomId(COMMUNITY_ROOM_ID);
+    wipeAllMyDirectChatsInFirestore(firebaseUser).catch(() => 0);
+  }, [firebaseUser]);
+
+  const handleDeleteDirectRoom = async (roomId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setDirectRooms((prev) => prev.filter((r) => r.id !== roomId));
+    setLocalSavedDirectByRoom((prev) => {
+      const next = { ...prev };
+      delete next[roomId];
+      return next;
+    });
+    if (selectedRoomId === roomId || activePeer?.chatId === roomId) {
+      setDirectMessages([]);
+      setActivePeer(null);
+      setSelectedRoomId(COMMUNITY_ROOM_ID);
+      setShowMobileRoom(false);
+    }
+    await deleteDirectChatRoomInFirestore(roomId, firebaseUser).catch(() => false);
+  };
+
+  const handleClearAllChats = async () => {
+    if (!confirmClearAllChats) {
+      setConfirmClearAllChats(true);
+      return;
+    }
+    setIsWipingChats(true);
+    setConfirmClearAllChats(false);
+    try {
+      clearAllLocalSavedChats();
+      setLocalSavedCommunity([]);
+      setLocalSavedDirectByRoom({});
+      setDirectRooms([]);
+      setDirectMessages([]);
+      setActivePeer(null);
+      setSelectedRoomId(COMMUNITY_ROOM_ID);
+      if (firebaseUser) {
+        await wipeAllMyDirectChatsInFirestore(firebaseUser).catch(() => 0);
+      }
+    } finally {
+      setIsWipingChats(false);
+    }
+  };
 
   const appendLocalCommunityMessage = (msg: CommunityMessageItem) => {
     setLocalSavedCommunity((prev) => {
@@ -789,8 +875,14 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
 
   const filteredDirectRooms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return directRooms;
-    return directRooms.filter((r) => {
+    const cleanRooms = directRooms.filter((r) => {
+      const peerIsOne = r.participantOneUid !== myUid;
+      const pUid = peerIsOne ? r.participantOneUid : r.participantTwoUid;
+      const pName = peerIsOne ? r.participantOneName : r.participantTwoName;
+      return !isFakeIdentifier(pUid) && !isFakePersonName(pName);
+    });
+    if (!q) return cleanRooms;
+    return cleanRooms.filter((r) => {
       const peerIsOne = r.participantOneUid !== myUid;
       const pName = (peerIsOne ? r.participantOneName : r.participantTwoName).toLowerCase();
       const pGrp = (peerIsOne ? r.participantOneGroup : r.participantTwoGroup).toLowerCase();
@@ -1066,6 +1158,50 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 </div>
               </button>
 
+              {(filteredDirectRooms.length > 0 || mergedCommunityMessages.length > 0) && (
+                <div className="px-3 py-2 bg-slate-50 dark:bg-[#182229] flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                    {lang === 'bn' ? 'চ্যাট তালিকা' : 'Conversations'}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {confirmClearAllChats && (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmClearAllChats(false)}
+                        className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-[10px] font-bold cursor-pointer"
+                      >
+                        {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={isWipingChats}
+                      onClick={handleClearAllChats}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                        confirmClearAllChats
+                          ? 'bg-red-600 hover:bg-red-700 text-white'
+                          : 'bg-red-50 hover:bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-300 border border-red-200 dark:border-red-900'
+                      }`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>
+                        {isWipingChats
+                          ? lang === 'bn'
+                            ? 'মুছে ফেলা হচ্ছে...'
+                            : 'Deleting...'
+                          : confirmClearAllChats
+                            ? lang === 'bn'
+                              ? 'নিশ্চিত সব মুছুন'
+                              : 'Confirm Delete All'
+                            : lang === 'bn'
+                              ? 'সব চ্যাট মুছুন'
+                              : 'Clear All Chats'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {filteredDirectRooms.map((room) => {
                 const peerIsOne = room.participantOneUid !== myUid;
                 const pUid = peerIsOne ? room.participantOneUid : room.participantTwoUid;
@@ -1077,57 +1213,70 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 const isSelected = selectedRoomId === room.id;
 
                 return (
-                  <button
+                  <div
                     key={room.id}
-                    type="button"
-                    onClick={() =>
-                      openDirectChatWithUser({
-                        uid: pUid,
-                        name: pName,
-                        bloodGroup: pGrp,
-                        avatar: pAvatar,
-                        whatsapp: pWa,
-                        fb: pFb,
-                        subtitle: lang === 'bn' ? 'ব্যক্তিগত ১-টু-১ চ্যাট' : 'Direct 1-to-1 Chat',
-                      })
-                    }
-                    className={`w-full p-3 text-left flex items-start gap-3 transition-colors cursor-pointer ${
+                    className={`w-full p-3 text-left flex items-center gap-2.5 transition-colors ${
                       isSelected
                         ? 'bg-emerald-50/90 dark:bg-[#202c33]'
                         : 'hover:bg-slate-50 dark:hover:bg-[#202c33]/60'
                     }`}
                   >
-                    <div className="relative shrink-0">
-                      <img
-                        src={pAvatar || DEFAULT_AVATAR_DATA_URI}
-                        loading="lazy"
-                        decoding="async"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
-                        }}
-                        alt={pName}
-                        className="w-11 h-11 rounded-2xl object-cover ring-1 ring-slate-200 dark:ring-slate-700"
-                      />
-                      <span className="absolute -bottom-0.5 -right-0.5 px-1 rounded bg-rose-600 text-white text-[9px] font-black">
-                        {pGrp}
-                      </span>
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="font-bold text-xs text-slate-900 dark:text-white truncate">
-                          {pName}
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono shrink-0">
-                          {room.timeLabel}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openDirectChatWithUser({
+                          uid: pUid,
+                          name: pName,
+                          bloodGroup: pGrp,
+                          avatar: pAvatar,
+                          whatsapp: pWa,
+                          fb: pFb,
+                          subtitle: lang === 'bn' ? 'ব্যক্তিগত ১-টু-১ চ্যাট' : 'Direct 1-to-1 Chat',
+                        })
+                      }
+                      className="flex-1 min-w-0 text-left flex items-start gap-3 cursor-pointer"
+                    >
+                      <div className="relative shrink-0">
+                        <img
+                          src={pAvatar || DEFAULT_AVATAR_DATA_URI}
+                          loading="lazy"
+                          decoding="async"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_DATA_URI;
+                          }}
+                          alt={pName}
+                          className="w-11 h-11 rounded-2xl object-cover ring-1 ring-slate-200 dark:ring-slate-700"
+                        />
+                        <span className="absolute -bottom-0.5 -right-0.5 px-1 rounded bg-rose-600 text-white text-[9px] font-black">
+                          {pGrp}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                        {room.lastSenderUid === myUid ? '✓✓ আপনি: ' : ''}
-                        {parseRichChatText(room.lastMessage).cleanBody || '📍 লোকেশন / 📷 স্লিপ'}
-                      </p>
-                    </div>
-                  </button>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-bold text-xs text-slate-900 dark:text-white truncate">
+                            {pName}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                            {room.timeLabel}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                          {room.lastSenderUid === myUid ? '✓✓ আপনি: ' : ''}
+                          {parseRichChatText(room.lastMessage).cleanBody || '📍 লোকেশন / 📷 স্লিপ'}
+                        </p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteDirectRoom(room.id, e)}
+                      className="p-2 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer shrink-0"
+                      title={lang === 'bn' ? 'এই চ্যাট ডিলিট করুন' : 'Delete conversation'}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 );
               })}
 
@@ -1371,6 +1520,17 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                   <Phone className="w-3.5 h-3.5" />
                 </a>
               )}
+
+            {!isCommunityActive && enrichedPeer && (
+              <button
+                type="button"
+                onClick={() => handleDeleteDirectRoom(enrichedPeer.chatId)}
+                className="p-2 rounded-xl bg-red-600/85 hover:bg-red-600 text-white transition-colors cursor-pointer"
+                title={lang === 'bn' ? 'এই সম্পূর্ণ চ্যাট ডিলিট করুন' : 'Delete entire conversation'}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -1573,6 +1733,24 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                         >
                           WA
                         </a>
+                        {isMe && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const roomKey = msg.chatId || activePeer?.chatId || selectedRoomId;
+                              setLocalSavedDirectByRoom((prev) => ({
+                                ...prev,
+                                [roomKey]: (prev[roomKey] || []).filter((m) => m.id !== msg.id),
+                              }));
+                              setDirectMessages((prev) => prev.filter((m) => m.id !== msg.id));
+                              deleteDirectMessageInFirestore(roomKey, msg.id).catch(() => false);
+                            }}
+                            className="text-red-500 hover:text-red-700 cursor-pointer"
+                            title={lang === 'bn' ? 'মেসেজ মুছুন' : 'Delete message'}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
                         <span className="font-mono">{msg.timeLabel}</span>
                         {isMe && <CheckCheck className="w-3.5 h-3.5 text-sky-500" />}
                       </div>
