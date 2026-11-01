@@ -1,4 +1,10 @@
-import { BOOTSTRAPPED_SUPER_ADMIN_EMAIL, FIREBASE_PROJECT_ID } from '../firebase';
+import {
+  auth,
+  BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
+  FIREBASE_PROJECT_ID,
+  isBootstrappedAdminUser,
+  onAuthStateChanged,
+} from '../firebase';
 
 export interface SecurityDiagnostics {
   origin: string;
@@ -7,11 +13,58 @@ export interface SecurityDiagnostics {
   isStandaloneApp: boolean;
   isInIframe: boolean;
   isTrustedEnvironment: boolean;
+  runtimeShieldActive: boolean;
   ownerEmail: string;
   firebaseProjectId: string;
 }
 
 let initialized = false;
+let verifiedCloudAdminUid: string | null = null;
+
+/**
+ * Marks a Firebase UID as verified Cloud Admin for local cache consistency.
+ * Even if tampered in memory, all Firestore writes & reads remain enforced server-side by firestore.rules.
+ */
+export function markRuntimeVerifiedAdminUid(uid: string | null): void {
+  verifiedCloudAdminUid = uid;
+}
+
+function scrubForgedLocalRoleEscalation(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem('bloodsearch_admin_auth');
+    localStorage.removeItem('bloodsearch_admin_auth');
+
+    const raw = localStorage.getItem('bloodsearch_current_user');
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return;
+
+    const hasAdminClaim =
+      parsed.role === 'ADMIN' || parsed.panelType === 'ADMIN';
+    if (!hasAdminClaim) return;
+
+    const currentUser = auth.currentUser;
+    const isLegitAdminSession =
+      Boolean(currentUser) &&
+      (isBootstrappedAdminUser(currentUser) ||
+        (verifiedCloudAdminUid !== null && currentUser?.uid === verifiedCloudAdminUid));
+
+    if (!isLegitAdminSession) {
+      const sanitized = {
+        ...parsed,
+        role: 'USER',
+        panelType: 'USER',
+      };
+      localStorage.setItem('bloodsearch_current_user', JSON.stringify(sanitized));
+    }
+  } catch {
+    // Ignore malformed JSON and remove tampered payload
+    try {
+      localStorage.removeItem('bloodsearch_current_user');
+    } catch {}
+  }
+}
 
 export function initRuntimeSecurityShield(): void {
   if (initialized || typeof window === 'undefined') return;
@@ -30,11 +83,63 @@ export function initRuntimeSecurityShield(): void {
     );
   } catch {}
 
-  // 2. Purge any legacy insecure client-only admin unlock flags from storage
+  // 2. Purge insecure client-only admin flags & watch localStorage against DevTools / APK WebView role spoofing
+  scrubForgedLocalRoleEscalation();
+  window.addEventListener('storage', () => {
+    scrubForgedLocalRoleEscalation();
+  });
+  window.addEventListener('bloodsearch_user_changed', () => {
+    scrubForgedLocalRoleEscalation();
+  });
   try {
-    sessionStorage.removeItem('bloodsearch_admin_auth');
-    localStorage.removeItem('bloodsearch_admin_auth');
+    onAuthStateChanged(auth, (u) => {
+      if (!u) {
+        verifiedCloudAdminUid = null;
+      }
+      scrubForgedLocalRoleEscalation();
+    });
   } catch {}
+
+  // 3. APK WebView & Browser Reverse-Tabnabbing + Dangerous URI Scheme Firewall
+  const guardAnchorClicks = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    const anchor = target?.closest?.('a') as HTMLAnchorElement | null;
+    if (!anchor) return;
+
+    const rawHref = (anchor.getAttribute('href') || '').trim();
+    if (/^(javascript|vbscript|data\s*:\s*text\/html)\s*:/i.test(rawHref)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (anchor.target === '_blank') {
+      const existingRel = (anchor.getAttribute('rel') || '').toLowerCase();
+      if (!existingRel.includes('noopener') || !existingRel.includes('noreferrer')) {
+        anchor.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+  };
+  document.addEventListener('click', guardAnchorClicks, true);
+  document.addEventListener('auxclick', guardAnchorClicks, true);
+
+  // 4. Block untrusted Drag-and-Drop HTML/URI injection into APK WebViews & Browser Windows
+  const blockUntrustedDrop = (e: DragEvent) => {
+    const el = e.target as HTMLElement | null;
+    if (el && el.tagName === 'INPUT' && (el as HTMLInputElement).type === 'file') {
+      return;
+    }
+    if (e.dataTransfer) {
+      const uri = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain') || '';
+      if (/^(javascript|vbscript|data)\s*:/i.test(uri.trim()) || e.type === 'drop') {
+        e.preventDefault();
+      } else if (e.type === 'dragover') {
+        e.preventDefault();
+      }
+    }
+  };
+  window.addEventListener('dragover', blockUntrustedDrop, false);
+  window.addEventListener('drop', blockUntrustedDrop, false);
 }
 
 export function getSecurityDiagnostics(): SecurityDiagnostics {
@@ -46,6 +151,7 @@ export function getSecurityDiagnostics(): SecurityDiagnostics {
       isStandaloneApp: false,
       isInIframe: false,
       isTrustedEnvironment: true,
+      runtimeShieldActive: true,
       ownerEmail: BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
       firebaseProjectId: FIREBASE_PROJECT_ID,
     };
@@ -86,6 +192,7 @@ export function getSecurityDiagnostics(): SecurityDiagnostics {
     isStandaloneApp,
     isInIframe,
     isTrustedEnvironment: isTrustedHost && isHttpsOrLocal,
+    runtimeShieldActive: initialized,
     ownerEmail: BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
     firebaseProjectId: FIREBASE_PROJECT_ID,
   };

@@ -68,7 +68,6 @@ export default defineConfig(() => {
           'assets/aistudio/image_771fa3d8.png',
           'assets/bloodsearch-emblem-mark.png',
           'assets/bloodsearch-logo-squircle.png',
-          '.well-known/assetlinks.json',
         ],
         manifest: {
           id: '/',
@@ -137,8 +136,8 @@ export default defineConfig(() => {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           skipWaiting: true,
           clientsClaim: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,json}'],
-          globIgnores: ['**/version.json'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webmanifest}'],
+          globIgnores: ['**/version.json', '**/firebase-applet-config.json', '**/.env*', '**/assetlinks.json'],
           cleanupOutdatedCaches: true,
           // Never intercept API routes, live version manifest, Firebase Auth handler, or Android TWA assetlinks
           navigateFallbackDenylist: [/^\/api\//, /^\/version\.json/, /^\/__/, /^\/\.well-known\//],
@@ -185,6 +184,7 @@ export default defineConfig(() => {
         'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'strict-origin-when-cross-origin',
+        'Permissions-Policy': 'camera=(), usb=(), payment=(), serial=(), bluetooth=(), geolocation=(self), microphone=(self)',
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

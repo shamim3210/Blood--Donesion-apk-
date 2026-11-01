@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 export interface VerifiedCaller {
   uid: string;
   emailVerified: boolean;
+  rawEmailVerified?: boolean;
   emailHash: string;
 }
 
@@ -140,13 +141,90 @@ export function createEmergencyApiApp(options?: {
   otpServiceOptions?: OtpServiceOptions;
 }) {
   const app = express();
-  app.use((_req, res, next) => {
+  app.disable('x-powered-by');
+
+  const isProd = process.env.NODE_ENV === 'production';
+  const cspDirectives = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://www.google.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: blob: https:",
+    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com",
+    "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://www.google.com",
+    "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+
+  app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Permissions-Policy',
+      'camera=(), usb=(), payment=(), serial=(), bluetooth=(), midi=(), geolocation=(self), microphone=(self)'
+    );
+    res.setHeader('Content-Security-Policy', cspDirectives);
+    if (isProd) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+
+    // Block path traversal & sensitive server/config file probing (allow /.well-known/assetlinks.json for verified Android TWA APK)
+    const lowerPath = (req.path || '').toLowerCase();
+    const isWellKnownAssetLinks = lowerPath === '/.well-known/assetlinks.json';
+    const isBlockedSensitiveFile =
+      !isWellKnownAssetLinks &&
+      (lowerPath.includes('..') ||
+        lowerPath.startsWith('/.env') ||
+        lowerPath.startsWith('/.git') ||
+        lowerPath === '/firebase-applet-config.json' ||
+        lowerPath === '/firebase-blueprint.json' ||
+        lowerPath === '/firestore.rules' ||
+        lowerPath === '/server.ts' ||
+        lowerPath === '/package.json' ||
+        lowerPath === '/package-lock.json');
+
+    if (isBlockedSensitiveFile) {
+      res.status(403).json({ ok: false, code: 'FORBIDDEN_RESOURCE' });
+      return;
+    }
+
     next();
   });
+
+  // Dynamic Cryptographic Android APK / TWA Digital Asset Links Endpoint
+  app.get('/.well-known/assetlinks.json', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    const pkgName = (process.env.ANDROID_APK_PACKAGE_NAME || 'bd.bloodsearch.app').trim();
+    const rawCerts = (process.env.ANDROID_APK_SHA256_FINGERPRINT || '').trim();
+    const validCerts = rawCerts
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(s) && !/^00(:00){31}$/.test(s));
+
+    if (validCerts.length === 0 || !/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(pkgName)) {
+      res.json([]);
+      return;
+    }
+
+    res.json([
+      {
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: pkgName,
+          sha256_cert_fingerprints: validCerts,
+        },
+      },
+    ]);
+  });
+
   app.use(express.json({ limit: '64kb' }));
 
   const firebaseApiKey = loadFirebaseWebApiKey();
@@ -209,12 +287,14 @@ export function createEmergencyApiApp(options?: {
       };
       const user = data.users?.[0];
       if (!user?.localId) return null;
+      const rawEmailVerified = Boolean(user.emailVerified);
       const emailVerified = Boolean(
-        user.emailVerified || user.phoneNumber || (user.email && user.email.includes('@'))
+        rawEmailVerified || user.phoneNumber || (user.email && user.email.includes('@'))
       );
       return {
         uid: user.localId,
         emailVerified,
+        rawEmailVerified,
         emailHash: user.email ? sha256Short(user.email.toLowerCase()) : 'phone-user',
       };
     } catch {
@@ -337,7 +417,13 @@ export function createEmergencyApiApp(options?: {
     }
   }
 
-  app.get('/api/capabilities', (_req: Request, res: Response) => {
+  app.get('/api/capabilities', (req: Request, res: Response) => {
+    const ipKey = req.ip || 'unknown-ip';
+    const capRate = checkRateLimit(`caps:ip:${ipKey}`, 60, 60 * 1000);
+    if (!capRate.allowed) {
+      res.status(429).json({ ok: false, code: 'RATE_LIMITED', retryAfterSec: capRate.retryAfterSec });
+      return;
+    }
     res.json({
       ok: true,
       capabilities: getNotificationCapabilities(),
@@ -775,7 +861,13 @@ export function createEmergencyApiApp(options?: {
     res.json({ ok: true });
   });
 
-  app.get('/api/app-version', (_req: Request, res: Response) => {
+  app.get('/api/app-version', (req: Request, res: Response) => {
+    const clientIp = extractClientIp(req);
+    const verRate = checkRateLimit(`ver:ip:${clientIp}`, 60, 60 * 1000);
+    if (!verRate.allowed) {
+      res.status(429).json({ ok: false, code: 'RATE_LIMITED', retryAfterSec: verRate.retryAfterSec });
+      return;
+    }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     let pkgVersion = '2.5.0';
     let distBuildId = '';
@@ -802,18 +894,26 @@ export function createEmergencyApiApp(options?: {
   });
 
   app.get('/api/audit/summary', async (req: Request, res: Response) => {
+    const clientIp = extractClientIp(req);
+    const audRate = checkRateLimit(`audit:ip:${clientIp}`, 30, 60 * 1000);
+    if (!audRate.allowed) {
+      res.status(429).json({ ok: false, code: 'RATE_LIMITED', retryAfterSec: audRate.retryAfterSec });
+      return;
+    }
     const caller = await verifyBearerToken(req);
     if (!caller || !caller.emailVerified) {
       res.status(401).json({ ok: false, code: 'UNAUTHORIZED' });
       return;
     }
     const superAdminEmailHash = sha256Short('shamimrakib015@gmail.com');
-    const isSuperOwner = caller.emailHash === superAdminEmailHash;
+    const isSuperOwner =
+      caller.rawEmailVerified !== false && caller.emailHash === superAdminEmailHash;
     const callerUidHash = sha256Short(caller.uid);
     const visibleEvents = isSuperOwner
       ? auditTrail
       : auditTrail.filter((ev) => ev.actorUidHash === callerUidHash);
 
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       ok: true,
       totalEvents: visibleEvents.length,

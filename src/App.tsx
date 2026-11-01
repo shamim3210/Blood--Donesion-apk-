@@ -39,7 +39,8 @@ import {
   navigateToPublicUserApp,
   PORTAL_ROUTE_EVENT,
 } from './utils/adminRoute';
-import { ShieldCheck, ArrowUpRight, Sun, Moon } from 'lucide-react';
+import { ArrowUpRight, Sun, Moon } from 'lucide-react';
+import { markRuntimeVerifiedAdminUid } from './utils/securityShield';
 import {
   canDonorGiveToPatient,
   playEmergencySosChime,
@@ -185,6 +186,12 @@ export default function App() {
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     const saved = localStorage.getItem('bloodsearch_dark_mode');
     return saved !== null ? saved === 'true' : false;
+  });
+
+  // Standalone Admin Suite defaults to signature Executive Obsidian theme independently of User App
+  const [adminDarkMode, setAdminDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bloodsearch_admin_dark_mode');
+    return saved !== null ? saved === 'true' : true;
   });
 
   const [lang, setLang] = useState<Language>(() => {
@@ -646,6 +653,9 @@ export default function App() {
 
           const syncedProfile = await ensureUserAutoSyncedInFirestore(u);
           if (syncedProfile) {
+            const isSyncedAdmin = await checkIsVerifiedAdminInFirestore(u);
+            markRuntimeVerifiedAdminUid(isSyncedAdmin ? u.uid : null);
+            if (isSyncedAdmin) syncedProfile.role = 'ADMIN';
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(syncedProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
 
@@ -714,6 +724,7 @@ export default function App() {
               return;
             }
             const isAdmin = await checkIsVerifiedAdminInFirestore(u);
+            markRuntimeVerifiedAdminUid(isAdmin ? u.uid : null);
             if (isAdmin) liveProfile.role = 'ADMIN';
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(liveProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
@@ -873,10 +884,16 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       const action = params.get('action');
       const groupParam = params.get('group') as BloodGroup | null;
-      const districtParam = params.get('district');
+      const rawDistrictParam = params.get('district');
+      const districtParam =
+        rawDistrictParam && /^[a-zA-Z0-9 _-]{2,40}$/.test(rawDistrictParam.trim())
+          ? rawDistrictParam.trim()
+          : null;
       const validGroups: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+      const validActions = new Set(['sos', 'search', 'chat', 'care']);
+      const safeAction = action && validActions.has(action) ? action : null;
 
-      if (action || (groupParam && validGroups.includes(groupParam))) {
+      if (safeAction || (groupParam && validGroups.includes(groupParam))) {
         if (groupParam && validGroups.includes(groupParam)) {
           setSearchPreset((prev) => ({
             bloodGroup: groupParam,
@@ -885,17 +902,17 @@ export default function App() {
           }));
           setActiveTab('search');
         }
-        if (action === 'sos') {
+        if (safeAction === 'sos') {
           setSosPreset({
             bloodGroup: groupParam && validGroups.includes(groupParam) ? groupParam : undefined,
             district: districtParam || undefined,
           });
           setIsSOSWizardOpen(true);
-        } else if (action === 'search') {
+        } else if (safeAction === 'search') {
           setActiveTab('search');
-        } else if (action === 'chat') {
+        } else if (safeAction === 'chat') {
           setActiveTab('chat');
-        } else if (action === 'care') {
+        } else if (safeAction === 'care') {
           setCareSuiteTab('maternity');
         }
         params.delete('action');
@@ -908,13 +925,17 @@ export default function App() {
     } catch {}
   }, []);
 
-  // Apply dark mode class to <html>
+  // Synchronize <html> .dark class & mobile/APK status-bar theme-color with active portal route (User App vs /admin)
   useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
+    const effectiveDark = isAdminPortalRoute ? adminDarkMode : darkMode;
+    document.documentElement.classList.toggle('dark', effectiveDark);
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) {
+      metaTheme.setAttribute('content', effectiveDark ? '#070b14' : '#ffffff');
     }
+  }, [darkMode, adminDarkMode, isAdminPortalRoute]);
+
+  useEffect(() => {
     localStorage.setItem('bloodsearch_dark_mode', String(darkMode));
   }, [darkMode]);
 
@@ -1512,28 +1533,31 @@ export default function App() {
   if (isAdminPortalRoute) {
     return (
       <div
-        className={`min-h-dvh w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#070d19] text-slate-100 ${
-          darkMode ? 'dark' : 'dark'
+        className={`min-h-dvh w-full max-w-[100vw] overflow-x-clip flex flex-col transition-colors duration-200 ${
+          adminDarkMode
+            ? 'dark bg-[#070b14] text-slate-100'
+            : 'bg-[#f4f6fb] text-slate-900'
         }`}
       >
-        <header className="sticky top-0 z-40 w-full bg-[#0b1324]/95 backdrop-blur-md border-b border-slate-800">
-          <div className="h-[3px] w-full bg-gradient-to-r from-indigo-500 via-amber-500 to-emerald-500" />
-          <div className="max-w-6xl mx-auto h-16 px-4 sm:px-6 flex items-center justify-between gap-3">
+        <header className="sticky top-0 z-40 w-full bg-white/95 dark:bg-[#090e1a]/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800/90 text-slate-900 dark:text-slate-100 shadow-xs transition-colors">
+          <div className="max-w-[1360px] mx-auto h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-white p-1 flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-white p-1 flex items-center justify-center shrink-0 border border-slate-200 dark:border-transparent shadow-xs">
                 <BrandLogo size="sm" />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span className="font-black text-sm sm:text-base tracking-tight text-white truncate">
-                    {lang === 'bn' ? 'BloodSearch অ্যাডমিন কনসোল' : 'BloodSearch Admin Console'}
+                  <span className="font-extrabold text-sm sm:text-base tracking-tight text-slate-900 dark:text-white truncate">
+                    {lang === 'bn' ? 'BloodSearch কমান্ড সুইট' : 'BloodSearch Command Suite'}
+                  </span>
+                  <span className="hidden sm:inline text-xs text-amber-600 dark:text-amber-400 font-mono font-semibold">
+                    · /admin
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-400 font-mono truncate">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                   {lang === 'bn'
-                    ? 'স্বতন্ত্র অ্যাডমিন পোর্টাল · সাধারণ ইউজার অ্যাপ থেকে সম্পূর্ণ আলাদা'
-                    : 'Standalone Restricted Portal · Isolated from Public User App'}
+                    ? 'স্বতন্ত্র অ্যাডমিন ওয়ার্কস্পেস · পাবলিক ইউজার অ্যাপ থেকে সম্পূর্ণ আলাদা'
+                    : 'Isolated Executive Console · Separated from Public User App'}
                 </p>
               </div>
             </div>
@@ -1542,36 +1566,56 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setLang(lang === 'bn' ? 'en' : 'bn')}
-                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200 cursor-pointer whitespace-nowrap"
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700/90 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer whitespace-nowrap transition-colors"
               >
-                {lang === 'bn' ? 'EN' : 'বাংলা'}
+                {lang === 'bn' ? 'English' : 'বাংলা'}
               </button>
 
               <button
                 type="button"
-                onClick={() => setDarkMode(!darkMode)}
-                className="min-h-[38px] min-w-[38px] rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center text-slate-200 cursor-pointer"
-                aria-label="Toggle Theme"
+                onClick={() => {
+                  const next = !adminDarkMode;
+                  setAdminDarkMode(next);
+                  localStorage.setItem('bloodsearch_admin_dark_mode', String(next));
+                }}
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700/90 inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer transition-colors"
+                aria-label="Toggle Admin Theme"
+                title={adminDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               >
-                {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
+                {adminDarkMode ? (
+                  <>
+                    <Sun className="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0" />
+                    <span className="hidden sm:inline">
+                      {lang === 'bn' ? 'লাইট থিম' : 'Light'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4 text-slate-700 shrink-0" />
+                    <span className="hidden sm:inline">
+                      {lang === 'bn' ? 'ডার্ক থিম' : 'Dark'}
+                    </span>
+                  </>
+                )}
               </button>
 
               <button
                 type="button"
                 onClick={navigateToPublicUserApp}
-                className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               >
-                <span>{lang === 'bn' ? 'ইউজার অ্যাপ' : 'User App'}</span>
+                <span>{lang === 'bn' ? 'পাবলিক অ্যাপ' : 'Public App'}</span>
                 <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
               </button>
             </div>
           </div>
         </header>
 
-        <main className="flex-1 w-full max-w-6xl mx-auto px-3.5 sm:px-6 py-5 sm:py-6">
+        <main className="flex-1 w-full max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
           <Suspense fallback={<ViewFallback lang={lang} />}>
             <AdminPortal
               lang={lang}
+              darkMode={adminDarkMode}
               donors={donors}
               setDonors={setDonors}
               requests={requests}

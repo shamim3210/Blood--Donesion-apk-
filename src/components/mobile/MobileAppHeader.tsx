@@ -1,16 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { ActiveTab, Language } from '../../types';
 import { BrandLogo } from '../BrandLogo';
 import { useBrandConfig } from '../../config/brandConfig';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
-import {
-  auth,
-  onAuthStateChanged,
-  checkIsVerifiedAdminInFirestore,
-  isBootstrappedAdminUser,
-  grantAdminAccessWithInviteCode,
-  signInWithGoogleReal,
-} from '../../firebase';
 import {
   ArrowLeft,
   Home,
@@ -20,7 +12,6 @@ import {
   MessageSquare,
   Sun,
   Moon,
-  Shield,
   Users,
   CheckCircle2,
   Menu,
@@ -29,12 +20,8 @@ import {
   LogOut,
   UserPlus,
   Layers,
-  Lock,
-  KeyRound,
-  AlertCircle,
   Download,
   Type,
-  PackageCheck,
   PlusCircle,
   RefreshCw,
   Volume2,

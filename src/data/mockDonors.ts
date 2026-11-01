@@ -184,6 +184,33 @@ export function scrubFakeLocalStorageOnBoot(): void {
       localStorage.setItem('bloodsearch_chat_zero_slate_v7', 'done');
     }
 
+    // One-time v8 Zero-Unique-Seed Scrub: purge any legacy seed family or thalassemia items
+    if (localStorage.getItem('bloodsearch_zero_unique_v8') !== 'done') {
+      try {
+        const rawFam = localStorage.getItem('bloodsearch_family_members');
+        if (rawFam) {
+          const parsedFam = JSON.parse(rawFam);
+          if (Array.isArray(parsedFam)) {
+            const cleanFam = parsedFam.filter(
+              (m) => m && typeof m.id === 'string' && !/^fam-[1-4]$/.test(m.id)
+            );
+            localStorage.setItem('bloodsearch_family_members', JSON.stringify(cleanFam));
+          }
+        }
+        const rawThal = localStorage.getItem('bloodsearch_thalassemia_patients');
+        if (rawThal) {
+          const parsedThal = JSON.parse(rawThal);
+          if (Array.isArray(parsedThal)) {
+            const cleanThal = parsedThal.filter(
+              (p) => p && typeof p.id === 'string' && !/^th-[1-2]$/.test(p.id)
+            );
+            localStorage.setItem('bloodsearch_thalassemia_patients', JSON.stringify(cleanThal));
+          }
+        }
+      } catch {}
+      localStorage.setItem('bloodsearch_zero_unique_v8', 'done');
+    }
+
     const rawDonors = localStorage.getItem('bloodsearch_donors');
     if (rawDonors) {
       const parsed = JSON.parse(rawDonors);

@@ -147,14 +147,26 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
-.surface-card {
+.section-jewel-sapphire {
+  background-image:
+    radial-gradient(560px 250px at 92% 10%, rgba(56, 189, 248, 0.26), transparent 65%),
+    linear-gradient(132deg, #081c36 0%, #0e3460 54%, #1d4ed8 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 14px 32px -10px rgba(8, 28, 54, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.surface-card,
+.glass-card-adaptive {
   background-color: #ffffff;
-  border: 1px solid rgba(203, 213, 225, 0.82);
+  border: 1px solid rgba(203, 213, 225, 0.85);
   box-shadow:
     0 6px 20px -6px rgba(11, 34, 57, 0.065),
     0 1px 3px rgba(11, 34, 57, 0.04);
 }
-.dark .surface-card {
+.dark .surface-card,
+.dark .glass-card-adaptive {
   background-color: #0f172a;
   border: 1px solid rgba(51, 65, 85, 0.85);
   box-shadow:
