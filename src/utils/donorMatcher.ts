@@ -99,7 +99,6 @@ export function resolveDonorCoordinates(donor: Pick<Donor, 'id' | 'district' | '
     district: donor.district,
     upazila: donor.upazila,
     division: donor.division,
-    seedKey: donor.id,
   });
 }
 

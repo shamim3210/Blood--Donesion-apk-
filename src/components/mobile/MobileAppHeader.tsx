@@ -12,20 +12,18 @@ import {
   MessageSquare,
   Sun,
   Moon,
-  Users,
   CheckCircle2,
   Menu,
   X,
   LogIn,
   LogOut,
   UserPlus,
-  Layers,
   Download,
   Type,
   PlusCircle,
-  RefreshCw,
   Volume2,
   VolumeX,
+  ShieldCheck,
   User as UserIcon,
 } from 'lucide-react';
 
@@ -47,6 +45,7 @@ interface MobileAppHeaderProps {
   isDeckMode: boolean;
   onExitDeckMode: () => void;
   liveUserLabel?: string | null;
+  userRole?: 'USER' | 'ADMIN';
   onSignOut?: () => void;
   seniorMode?: boolean;
   setSeniorMode?: (enabled: boolean) => void;
@@ -66,14 +65,11 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
   onOpenSOSModal,
   onOpenAuthModal,
   onOpenRegisterModal,
-  onOpenFamilyModal,
-  onOpenArchitectureModal,
-  onOpenSlideDeck,
   onOpenPlayStoreModal,
-  onOpenCommercialModal,
   isDeckMode,
   onExitDeckMode,
   liveUserLabel,
+  userRole = 'USER',
   onSignOut,
   seniorMode = false,
   setSeniorMode,
@@ -85,8 +81,6 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
   const brand = useBrandConfig();
   const { isInstallable, isInstalled, promptInstall } = usePWAInstall();
   const [menuOpen, setMenuOpen] = useState(false);
-
-
 
   const getScreenTitle = () => {
     if (isDeckMode) return lang === 'bn' ? 'প্রেজেন্টেশন ওভারভিউ' : 'Presentation Deck';
@@ -119,6 +113,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
 
   const showMobileBackButton = isDeckMode || activeTab !== 'home';
 
+  // Distinct signature color per navigation action
   const desktopNavItems: Array<{
     id: ActiveTab;
     labelBn: string;
@@ -135,10 +130,10 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
       labelEn: 'Home',
       icon: Home,
       activeClass:
-        'bg-[#dc2626] border-[#b91c1c] text-white shadow-[0_6px_16px_-3px_rgba(220,38,38,0.45)]',
+        'bg-[#4f46e5] border-[#4338ca] text-white shadow-[0_6px_16px_-3px_rgba(79,70,229,0.45)]',
       hoverClass:
-        'hover:bg-[#dc2626] hover:border-[#b91c1c] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(220,38,38,0.4)] hover:-translate-y-0.5',
-      iconTint: 'text-rose-600 dark:text-rose-400 group-hover:text-white',
+        'hover:bg-[#4f46e5] hover:border-[#4338ca] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(79,70,229,0.4)] hover:-translate-y-0.5',
+      iconTint: 'text-indigo-600 dark:text-indigo-400 group-hover:text-white',
     },
     {
       id: 'search',
@@ -157,15 +152,15 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
       labelEn: 'Requests',
       icon: Droplet,
       activeClass:
-        'bg-[#be123c] border-[#9f1239] text-white shadow-[0_6px_16px_-3px_rgba(190,18,60,0.45)]',
+        'bg-[#ea580c] border-[#c2410c] text-white shadow-[0_6px_16px_-3px_rgba(234,88,12,0.45)]',
       hoverClass:
-        'hover:bg-[#be123c] hover:border-[#9f1239] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(190,18,60,0.4)] hover:-translate-y-0.5',
-      iconTint: 'text-rose-600 dark:text-rose-400 group-hover:text-white',
+        'hover:bg-[#ea580c] hover:border-[#c2410c] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(234,88,12,0.4)] hover:-translate-y-0.5',
+      iconTint: 'text-orange-600 dark:text-amber-400 group-hover:text-white',
       badge: unreadSosCount > 0 ? unreadSosCount : undefined,
     },
     {
       id: 'map',
-      labelBn: 'ম্যাপ',
+      labelBn: 'লাইভ ম্যাপ',
       labelEn: 'Live Map',
       icon: MapPin,
       activeClass:
@@ -180,19 +175,21 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
       labelEn: 'Chat',
       icon: MessageSquare,
       activeClass:
-        'bg-[#059669] border-[#047857] text-white shadow-[0_6px_16px_-3px_rgba(5,150,105,0.45)]',
+        'bg-[#7c3aed] border-[#6d28d9] text-white shadow-[0_6px_16px_-3px_rgba(124,58,237,0.45)]',
       hoverClass:
-        'hover:bg-[#059669] hover:border-[#047857] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(5,150,105,0.4)] hover:-translate-y-0.5',
-      iconTint: 'text-emerald-600 dark:text-emerald-400 group-hover:text-white',
+        'hover:bg-[#7c3aed] hover:border-[#6d28d9] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(124,58,237,0.4)] hover:-translate-y-0.5',
+      iconTint: 'text-violet-600 dark:text-violet-400 group-hover:text-white',
       badge: unreadChatCount > 0 ? unreadChatCount : undefined,
     },
   ];
 
+  const isAdminAccount = userRole === 'ADMIN';
+
   return (
     <header className="sticky top-0 z-40 w-full bg-white/95 dark:bg-[#091120]/95 backdrop-blur-md border-b border-slate-200/90 dark:border-slate-800/90 shadow-[0_4px_18px_-4px_rgba(11,34,57,0.08)] transition-colors">
-      <div className="h-[3px] w-full bg-gradient-to-r from-[#dc2626] via-[#0284c7] to-[#059669]" />
+      <div className="h-[3px] w-full bg-gradient-to-r from-[#4f46e5] via-[#0284c7] via-[#0d9488] to-[#dc2626]" />
       <div className="max-w-6xl mx-auto h-16 px-3.5 sm:px-6 flex items-center justify-between gap-3 lg:gap-4">
-        {/* Zone 1: Clean 1-Line Brand Wordmark (Desktop & Home) or Back Button (Mobile Sub-Views) */}
+        {/* Zone 1: Brand Wordmark or Mobile Back Button */}
         <div className="flex items-center gap-2.5 min-w-0 shrink-0">
           {showMobileBackButton ? (
             <>
@@ -231,7 +228,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
           )}
         </div>
 
-        {/* Zone 2: Individual Square-Shaped Menu Tiles with Vivid Hover Color Change */}
+        {/* Zone 2: Individual Color-Coded Desktop Navigation Buttons */}
         {!isDeckMode && (
           <nav
             aria-label="Desktop Navigation"
@@ -247,7 +244,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`group relative min-h-[42px] px-3.5 py-2 rounded-lg border text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all duration-200 ${
+                  className={`group relative min-h-[42px] px-3.5 py-2 rounded-xl border text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all duration-200 ${
                     isActive
                       ? item.activeClass
                       : `bg-slate-50/95 dark:bg-slate-900/90 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 ${item.hoverClass}`
@@ -276,12 +273,12 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
           </nav>
         )}
 
-        {/* Right Zone: Square-Edged Primary CTA + Account Tile + Square Menu Toggle */}
+        {/* Zone 3: Emergency Request CTA + Distinct User vs Admin Account Tile + Settings Menu */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={onOpenSOSModal}
-            className="hidden sm:inline-flex min-h-[42px] px-3.5 py-2 rounded-lg bg-[#dc2626] hover:bg-[#991b1b] border border-[#b91c1c] text-white text-xs font-extrabold items-center gap-1.5 shadow-sm hover:shadow-[0_6px_16px_-3px_rgba(220,38,38,0.45)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer whitespace-nowrap shrink-0"
+            className="hidden sm:inline-flex min-h-[42px] px-3.5 py-2 rounded-xl btn-crimson text-xs font-extrabold items-center gap-1.5 hover:-translate-y-0.5 transition-all duration-200 cursor-pointer whitespace-nowrap shrink-0"
           >
             <PlusCircle className="w-4 h-4 shrink-0" />
             <span>{lang === 'bn' ? 'জরুরি রক্ত চাই' : 'Request Blood'}</span>
@@ -291,43 +288,61 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('profile')}
-              className={`group min-h-[42px] px-3 sm:px-3.5 py-2 rounded-lg border text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all duration-200 ${
-                activeTab === 'profile'
-                  ? 'bg-[#4f46e5] border-[#4338ca] text-white shadow-[0_6px_16px_-3px_rgba(79,70,229,0.45)]'
-                  : 'bg-slate-50/95 dark:bg-slate-900/90 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 hover:bg-[#4f46e5] hover:border-[#4338ca] hover:text-white hover:shadow-[0_6px_16px_-3px_rgba(79,70,229,0.4)] hover:-translate-y-0.5'
+              className={`group min-h-[42px] px-3 sm:px-3.5 py-2 rounded-xl border text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all duration-200 ${
+                isAdminAccount
+                  ? activeTab === 'profile'
+                    ? 'bg-[#d97706] border-[#b45309] text-white shadow-[0_6px_16px_-3px_rgba(217,119,6,0.45)]'
+                    : 'bg-amber-50/95 dark:bg-amber-950/45 border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 hover:bg-[#d97706] hover:border-[#b45309] hover:text-white hover:-translate-y-0.5'
+                  : activeTab === 'profile'
+                    ? 'bg-[#059669] border-[#047857] text-white shadow-[0_6px_16px_-3px_rgba(5,150,105,0.45)]'
+                    : 'bg-emerald-50/90 dark:bg-emerald-950/35 border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-emerald-200 hover:bg-[#059669] hover:border-[#047857] hover:text-white hover:-translate-y-0.5'
               }`}
-              title={liveUserLabel}
+              title={
+                isAdminAccount
+                  ? `${liveUserLabel} (Admin)`
+                  : `${liveUserLabel} (Donor)`
+              }
             >
-              <UserIcon
-                className={`w-3.5 h-3.5 shrink-0 transition-colors ${
-                  activeTab === 'profile'
-                    ? 'text-white'
-                    : 'text-emerald-600 dark:text-emerald-400 group-hover:text-white'
-                }`}
-              />
-              <span className="max-w-[92px] sm:max-w-[120px] truncate">{liveUserLabel}</span>
+              {isAdminAccount ? (
+                <ShieldCheck
+                  className={`w-3.5 h-3.5 shrink-0 transition-colors ${
+                    activeTab === 'profile'
+                      ? 'text-white'
+                      : 'text-amber-600 dark:text-amber-400 group-hover:text-white'
+                  }`}
+                />
+              ) : (
+                <UserIcon
+                  className={`w-3.5 h-3.5 shrink-0 transition-colors ${
+                    activeTab === 'profile'
+                      ? 'text-white'
+                      : 'text-emerald-600 dark:text-emerald-400 group-hover:text-white'
+                  }`}
+                />
+              )}
+              <span className="max-w-[92px] sm:max-w-[125px] truncate">{liveUserLabel}</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={onOpenAuthModal}
-              className="min-h-[42px] px-3.5 py-2 rounded-lg bg-[#0b2239] hover:bg-[#059669] border border-[#0b2239] hover:border-[#047857] text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-sm hover:shadow-[0_6px_16px_-3px_rgba(5,150,105,0.45)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer whitespace-nowrap shrink-0"
+              className="min-h-[42px] px-3.5 py-2 rounded-xl btn-indigo text-xs font-extrabold inline-flex items-center gap-1.5 hover:-translate-y-0.5 transition-all duration-200 cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogIn className="w-3.5 h-3.5 shrink-0" />
               <span>{lang === 'bn' ? 'সাইন ইন' : 'Sign In'}</span>
             </button>
           )}
 
-          {/* Crisp 42x42 Square Menu Button with Visible Hover Color Change */}
+          {/* Clean Settings Drawer Button */}
           <button
             type="button"
             onClick={() => setMenuOpen((prev) => !prev)}
-            aria-label="Open Quick Menu"
+            aria-label="Open Quick Settings"
             aria-expanded={menuOpen}
-            className={`min-h-[42px] min-w-[42px] rounded-lg border flex items-center justify-center cursor-pointer shrink-0 transition-all duration-200 ${
+            className={`min-h-[42px] min-w-[42px] rounded-xl border flex items-center justify-center cursor-pointer shrink-0 transition-all duration-200 ${
               menuOpen
                 ? 'bg-[#dc2626] border-[#b91c1c] text-white shadow-md'
-                : 'bg-slate-50/95 dark:bg-slate-900/90 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-[#0b2239] hover:border-[#0b2239] hover:text-white hover:-translate-y-0.5'
+                : 'bg-slate-50/95 dark:bg-slate-900/90 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-[#4f46e5] hover:border-[#4338ca] hover:text-white hover:-translate-y-0.5'
             }`}
           >
             {menuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
@@ -335,32 +350,20 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
         </div>
       </div>
 
-      {/* Clean, Well-Spaced Quick Settings & Tools Drawer */}
+      {/* Streamlined, Clutter-Free Quick Settings Drawer (Fixed Large Text <-> Normal Text Toggle!) */}
       {menuOpen && (
         <div className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0b1120] shadow-xl">
           <div className="max-w-6xl mx-auto px-3.5 sm:px-6 py-4 space-y-3">
-            {/* Quick Preferences Bar (Language, Theme, Large Text, Update Check) */}
+            {/* Row 1: Essential Display & Sound Toggles */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
                 {lang === 'bn' ? 'দ্রুত সেটিংস' : 'Quick Settings'}
               </span>
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
-                  onClick={() => {
-                    window.dispatchEvent(new Event('bloodsearch_manual_update_check'));
-                    setMenuOpen(false);
-                  }}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-soft-emerald text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 shrink-0" />
-                  <span>{lang === 'bn' ? 'অ্যাপ আপডেট চেক' : 'Check Updates'}</span>
-                </button>
-
-                <button
-                  type="button"
                   onClick={() => setLang(lang === 'bn' ? 'en' : 'bn')}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-surface text-xs font-bold cursor-pointer whitespace-nowrap"
+                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-sky text-xs font-bold cursor-pointer whitespace-nowrap"
                 >
                   {lang === 'bn' ? 'Language: English' : 'ভাষা: বাংলা'}
                 </button>
@@ -368,16 +371,18 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                 <button
                   type="button"
                   onClick={() => setDarkMode(!darkMode)}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-surface text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className={`min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                    darkMode ? 'btn-amber' : 'btn-obsidian'
+                  }`}
                 >
                   {darkMode ? (
                     <>
-                      <Sun className="w-3.5 h-3.5 text-amber-400" />
+                      <Sun className="w-3.5 h-3.5 shrink-0" />
                       <span>{lang === 'bn' ? 'লাইট থিম' : 'Light Mode'}</span>
                     </>
                   ) : (
                     <>
-                      <Moon className="w-3.5 h-3.5 text-slate-600" />
+                      <Moon className="w-3.5 h-3.5 text-sky-300 shrink-0" />
                       <span>{lang === 'bn' ? 'ডার্ক থিম' : 'Dark Mode'}</span>
                     </>
                   )}
@@ -387,12 +392,21 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   <button
                     type="button"
                     onClick={() => setSeniorMode(!seniorMode)}
+                    aria-pressed={seniorMode}
                     className={`min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                      seniorMode ? 'btn-emerald' : 'btn-surface'
+                      seniorMode ? 'btn-violet' : 'btn-surface'
                     }`}
                   >
-                    <Type className="w-3.5 h-3.5" />
-                    <span>{lang === 'bn' ? 'বড় অক্ষর (অ+)' : 'Large Text'}</span>
+                    <Type className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      {seniorMode
+                        ? lang === 'bn'
+                          ? 'স্বাভাবিক লেখা (অ-)'
+                          : 'Normal Text'
+                        : lang === 'bn'
+                          ? 'বড় লেখা (অ+)'
+                          : 'Large Text'}
+                    </span>
                   </button>
                 )}
 
@@ -401,7 +415,7 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                     type="button"
                     onClick={onToggleSosSound}
                     className={`min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                      sosSoundEnabled ? 'btn-soft-emerald' : 'btn-surface'
+                      sosSoundEnabled ? 'btn-soft-emerald' : 'btn-soft-rose'
                     }`}
                   >
                     {sosSoundEnabled ? (
@@ -415,15 +429,15 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                           ? 'সাউন্ড অন'
                           : 'Sound On'
                         : lang === 'bn'
-                        ? 'সাউন্ড মিউট'
-                        : 'Sound Muted'}
+                          ? 'সাউন্ড অফ'
+                          : 'Sound Muted'}
                     </span>
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Action Grid */}
+            {/* Row 2: Essential Actions Only (Clutter Removed, Color-Coded) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
               <button
                 type="button"
@@ -431,17 +445,19 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   onOpenRegisterModal('USER');
                   setMenuOpen(false);
                 }}
-                className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-crimson text-xs font-bold cursor-pointer whitespace-nowrap"
+                className={`min-h-[44px] flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-bold cursor-pointer whitespace-nowrap ${
+                  isAdminAccount ? 'btn-indigo' : 'btn-emerald'
+                }`}
               >
                 <UserPlus className="w-4 h-4 shrink-0" />
                 <span className="truncate">
                   {liveUserLabel
                     ? lang === 'bn'
-                      ? 'ডোনার প্রোফাইল ও আইডি আপডেট'
-                      : 'Update Donor Smart ID'
+                      ? 'ডোনার প্রোফাইল আপডেট'
+                      : 'Update Donor Profile'
                     : lang === 'bn'
-                      ? 'নতুন রক্তদাতা রেজিস্ট্রেশন'
-                      : 'Register as Blood Donor'}
+                      ? 'রক্তদাতা প্রোফাইল খুলুন'
+                      : 'Setup Donor Profile'}
                 </span>
               </button>
 
@@ -451,39 +467,11 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                   setActiveTab('eligibility');
                   setMenuOpen(false);
                 }}
-                className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
+                className="min-h-[44px] flex items-center gap-2 px-3.5 py-2.5 rounded-xl btn-teal text-xs font-bold cursor-pointer whitespace-nowrap"
               >
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span className="truncate">
                   {lang === 'bn' ? 'রক্তদানের যোগ্যতা যাচাই' : 'Eligibility Check'}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTab('compatibility');
-                  setMenuOpen(false);
-                }}
-                className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
-              >
-                <Layers className="w-4 h-4 text-rose-500 shrink-0" />
-                <span className="truncate">
-                  {lang === 'bn' ? 'রক্তের গ্রুপ সামঞ্জস্যতা চার্ট' : 'Compatibility Matrix'}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onOpenFamilyModal();
-                  setMenuOpen(false);
-                }}
-                className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-surface text-xs font-semibold cursor-pointer whitespace-nowrap"
-              >
-                <Users className="w-4 h-4 text-rose-500 shrink-0" />
-                <span className="truncate">
-                  {lang === 'bn' ? 'ফ্যামিলি রক্ত সুরক্ষা সার্কেল' : 'Family Safety Circle'}
                 </span>
               </button>
 
@@ -501,11 +489,11 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                     }
                     setMenuOpen(false);
                   }}
-                  className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-obsidian text-xs font-bold cursor-pointer whitespace-nowrap"
+                  className="min-h-[44px] flex items-center gap-2 px-3.5 py-2.5 rounded-xl btn-sky text-xs font-bold cursor-pointer whitespace-nowrap"
                 >
-                  <Download className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <Download className="w-4 h-4 shrink-0" />
                   <span className="truncate">
-                    {lang === 'bn' ? 'ফোনে অ্যাপ / APK ইনস্টল' : 'Install App / APK'}
+                    {lang === 'bn' ? 'অ্যাপ ইনস্টল করুন' : 'Install App'}
                   </span>
                 </button>
               )}
@@ -517,11 +505,11 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
                     onSignOut();
                     setMenuOpen(false);
                   }}
-                  className="min-h-[46px] flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl btn-soft-rose text-xs font-bold cursor-pointer whitespace-nowrap"
+                  className="min-h-[44px] flex items-center gap-2 px-3.5 py-2.5 rounded-xl btn-soft-rose text-xs font-bold cursor-pointer whitespace-nowrap"
                 >
                   <LogOut className="w-4 h-4 shrink-0" />
                   <span className="truncate">
-                    {lang === 'bn' ? 'অ্যাকাউন্ট লগআউট করুন' : 'Sign Out'}
+                    {lang === 'bn' ? 'লগআউট করুন' : 'Sign Out'}
                   </span>
                 </button>
               )}
@@ -532,3 +520,4 @@ export const MobileAppHeader: React.FC<MobileAppHeaderProps> = ({
     </header>
   );
 };
+

@@ -503,13 +503,14 @@ export default function App() {
               lastDonatedDate: parsed.lastDonationDate || existing?.lastDonatedDate || '',
               totalDonations: parsed.totalDonations ?? existing?.totalDonations ?? 0,
               verifiedBadge: parsed.role === 'ADMIN' || Boolean(existing?.verifiedBadge),
-              age: parsed.age || existing?.age || 25,
+              age: Number(parsed.age) || existing?.age || 0,
               gender: parsed.gender || existing?.gender || 'MALE',
-              weightKg: parsed.weightKg || existing?.weightKg || 62,
+              weightKg: Number(parsed.weightKg) || existing?.weightKg || 0,
               hospitalAffiliation:
                 parsed.role === 'ADMIN'
                   ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
                   : existing?.hospitalAffiliation || 'স্বেচ্ছাসেবী রক্তদাতা',
+              panelType: parsed.role === 'ADMIN' ? 'ADMIN' : 'USER',
               avatar: parsed.photoUrl || existing?.avatar || DEFAULT_AVATAR_DATA_URI,
             };
             const others = prev.filter((d) => !isSeedDonorId(d.id) && d.id !== parsed.id);
@@ -692,13 +693,14 @@ export default function App() {
                 verifiedBadge: syncedProfile.role === 'ADMIN' || Boolean(existing?.verifiedBadge),
                 rating: existing?.rating ?? 5.0,
                 reviewsCount: existing?.reviewsCount ?? 0,
-                age: syncedProfile.age || 25,
+                age: Number(syncedProfile.age) || 0,
                 gender: syncedProfile.gender || 'MALE',
-                weightKg: syncedProfile.weightKg || 62,
+                weightKg: Number(syncedProfile.weightKg) || 0,
                 hospitalAffiliation:
                   syncedProfile.role === 'ADMIN'
                     ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
                     : 'স্বেচ্ছাসেবী রক্তদাতা',
+                panelType: syncedProfile.role === 'ADMIN' ? 'ADMIN' : 'USER',
                 avatar: syncedProfile.photoUrl || DEFAULT_AVATAR_DATA_URI,
               };
               const others = prev.filter((d) => d.id !== syncedProfile.id);
@@ -939,9 +941,10 @@ export default function App() {
     localStorage.setItem('bloodsearch_dark_mode', String(darkMode));
   }, [darkMode]);
 
-  // Apply Senior Clear-Read Mode (112.5% font scaling) to <html>
+  // Apply Senior Clear-Read Mode (112.5% font scaling) to <html> and reset cleanly to 100% when disabled
   useEffect(() => {
     document.documentElement.classList.toggle('senior-text', seniorMode);
+    document.documentElement.classList.toggle('senior-mode', seniorMode);
     localStorage.setItem('bloodsearch_senior_mode', String(seniorMode));
   }, [seniorMode]);
 
@@ -1526,6 +1529,11 @@ export default function App() {
       ? savedDisplayName || `DEV · ${devOtpSession.phoneE164.slice(-6)}`
       : savedDisplayName || null;
 
+  const isVerifiedCurrentAdmin = Boolean(
+    liveFirebaseUser &&
+      (currentSavedUser?.role === 'ADMIN' || isBootstrappedAdminUser(liveFirebaseUser))
+  );
+
   // =========================================================================
   // DEDICATED STANDALONE ADMIN CONSOLE APPLICATION SHELL (/admin)
   // 100% Isolated from Public User App (Zero User Navbar / Bottom Nav / User Modals)
@@ -1669,6 +1677,7 @@ export default function App() {
         isDeckMode={viewMode === 'deck'}
         onExitDeckMode={() => setViewMode('app')}
         liveUserLabel={liveUserLabel}
+        userRole={isVerifiedCurrentAdmin ? 'ADMIN' : 'USER'}
         onSignOut={() => {
           signOutReal().catch(() => {});
         }}
@@ -2050,6 +2059,7 @@ export default function App() {
           activeTab={activeTab}
           setActiveTab={handleSelectTab}
           lang={lang}
+          userRole={isVerifiedCurrentAdmin ? 'ADMIN' : 'USER'}
           unreadSosCount={urgentRequests.length}
           unreadChatCount={unreadChatCount}
           onOpenSOSModal={() => setIsSOSWizardOpen(true)}

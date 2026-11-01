@@ -82,16 +82,17 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   onRevealPhone,
 }) => {
   const [submittedState, setSubmittedState] = useState<'FORM' | 'LIVE_SUCCESS'>('FORM');
-  const [bloodGroup, setBloodGroup] = useState<BloodGroup>(initialBloodGroup || 'O+');
+  const [bloodGroup, setBloodGroup] = useState<BloodGroup | ''>(initialBloodGroup || '');
   const [unitsNeeded, setUnitsNeeded] = useState<number>(1);
   const [hospitalName, setHospitalName] = useState(initialHospitalName || '');
   const [showHospitalSuggestions, setShowHospitalSuggestions] = useState(false);
   const [district, setDistrict] = useState(
-    initialDistrict && initialDistrict !== 'ALL' ? initialDistrict : 'dhaka'
+    initialDistrict && initialDistrict !== 'ALL' ? initialDistrict : ''
   );
   const [contactPhone, setContactPhone] = useState('');
+  const [savedProfilePhone, setSavedProfilePhone] = useState('');
 
-  // Optional collapsible details (smart defaults so stressed families don't get stuck!)
+  // Optional collapsible details
   const [showOptionalDetails, setShowOptionalDetails] = useState(false);
   const [urgency, setUrgency] = useState<UrgencyLevel>('CRITICAL');
   const [requiredTimeWindow, setRequiredTimeWindow] =
@@ -113,42 +114,38 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     isUserVerifiedForWrites(auth.currentUser) || devOtpSession
   );
 
-  // Prefill seeker phone, blood group, hospital & district from context or real logged-in profile
+  // Only apply explicit context passed by the user's current search/map action; never silently auto-fill personal defaults
   useEffect(() => {
     if (!isOpen) return;
     setSubmittedState('FORM');
     setValidationError(null);
-    if (initialBloodGroup) {
-      setBloodGroup(initialBloodGroup);
-    }
+    setBloodGroup(initialBloodGroup || '');
+    setHospitalName(initialHospitalName || '');
     if (initialHospitalName) {
-      setHospitalName(initialHospitalName);
       const matchedPlace = resolvePlaceOrHospitalQuery(initialHospitalName);
       if (matchedPlace) {
         setDistrict(matchedPlace.districtId);
+      } else {
+        setDistrict(initialDistrict && initialDistrict !== 'ALL' ? initialDistrict : '');
       }
-    }
-    if (initialDistrict && initialDistrict !== 'ALL') {
-      setDistrict(initialDistrict);
+    } else {
+      setDistrict(initialDistrict && initialDistrict !== 'ALL' ? initialDistrict : '');
     }
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed?.phone && parsed.phone !== '01700000000' && !contactPhone) {
-          setContactPhone(parsed.phone);
+        if (parsed?.phone && parsed.phone !== '01700000000') {
+          setSavedProfilePhone(String(parsed.phone));
+        } else {
+          setSavedProfilePhone('');
         }
-        if (!initialDistrict && !initialHospitalName && parsed?.district) {
-          const matched = DISTRICTS.find(
-            (d) =>
-              d.id === String(parsed.district).toLowerCase() ||
-              d.nameBn === parsed.district ||
-              d.nameEn.toLowerCase() === String(parsed.district).toLowerCase()
-          );
-          if (matched) setDistrict(matched.id);
-        }
+      } else {
+        setSavedProfilePhone('');
       }
-    } catch {}
+    } catch {
+      setSavedProfilePhone('');
+    }
   }, [isOpen, initialBloodGroup, initialDistrict, initialHospitalName]);
 
   // Auto-detect district whenever user types a recognized hospital (e.g. "Squire hospital" -> Dhaka, "CMCH" -> Chattogram)
@@ -193,6 +190,9 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
   // Compute concurrent matching opted-in donors for this request
   const initialEscalationPlan = useMemo(() => {
+    if (!bloodGroup || !district) {
+      return { eligibleDonorsToNotify: [], radiusKm: 15 };
+    }
     const origin = resolveBangladeshCoordinates({
       district,
       hospital: hospitalName || undefined,
@@ -212,14 +212,14 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
   // Top opted-in donors seeker can call immediately in parallel while alerts run
   const immediateDirectDonors = useMemo(() => {
     const origin = resolveBangladeshCoordinates({
-      district,
+      district: district || 'dhaka',
       hospital: hospitalName || undefined,
     });
     const ranked = rankDonorsForSeeker(donors, {
-      bloodGroup,
+      bloodGroup: bloodGroup || 'ALL',
       compatibleMatchEnabled: true,
       exchangeAllowed,
-      district,
+      district: district || 'ALL',
       urgency,
       requiredTimeWindow,
       originCoords: origin,
@@ -269,11 +269,27 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
     const cleanHospital = hospitalName.trim();
     const normalizedPhone = normalizeValidBangladeshMobileE164(contactPhone);
 
+    if (!bloodGroup) {
+      setValidationError(
+        lang === 'bn'
+          ? 'কোন গ্রুপের রক্ত লাগবে তা উপরে নির্বাচন করুন।'
+          : 'Please select which blood group is needed.'
+      );
+      return;
+    }
     if (cleanHospital.length < 2) {
       setValidationError(
         lang === 'bn'
           ? 'কোন হাসপাতালে বা এলাকায় রক্ত লাগবে তা লিখুন অথবা নিচের হাসপাতাল বাটনে চাপুন।'
           : 'Please enter or tap the hospital / area name.'
+      );
+      return;
+    }
+    if (!district) {
+      setValidationError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে জেলা নির্বাচন করুন।'
+          : 'Please select the district.'
       );
       return;
     }
@@ -571,9 +587,20 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn' ? '৪. মোবাইল নম্বর *' : '4. Callback Mobile Number *'}
-                </label>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    {lang === 'bn' ? '৪. মোবাইল নম্বর *' : '4. Callback Mobile Number *'}
+                  </label>
+                  {savedProfilePhone && contactPhone !== savedProfilePhone && (
+                    <button
+                      type="button"
+                      onClick={() => setContactPhone(savedProfilePhone)}
+                      className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+                    >
+                      {lang === 'bn' ? 'আমার সেভ করা নম্বর দিন' : 'Use Saved Phone'}
+                    </button>
+                  )}
+                </div>
                 <input
                   type="tel"
                   required
@@ -588,13 +615,17 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn' ? 'জেলা' : 'District'}
+                  {lang === 'bn' ? 'জেলা *' : 'District *'}
                 </label>
                 <select
+                  required
                   value={district}
                   onChange={(e) => setDistrict(e.target.value)}
                   className="w-full h-11 px-3 text-xs sm:text-sm font-semibold rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
                 >
+                  <option value="">
+                    {lang === 'bn' ? '-- জেলা নির্বাচন করুন --' : '-- Select District --'}
+                  </option>
                   {DISTRICTS.map((d) => (
                     <option key={d.id} value={d.id}>
                       {lang === 'bn' ? d.nameBn : d.nameEn}

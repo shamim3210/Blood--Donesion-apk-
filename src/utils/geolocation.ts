@@ -199,11 +199,31 @@ const UPAZILA_OR_AREA_COORDINATES: Record<string, Coordinates & { districtId?: s
   niketan: { latitude: 23.7794, longitude: 90.4116, districtId: 'dhaka' },
   'নিকেতন': { latitude: 23.7794, longitude: 90.4116, districtId: 'dhaka' },
   'গুলশান-১': { latitude: 23.7806, longitude: 90.4168, districtId: 'dhaka' },
+  'গুলশান ১': { latitude: 23.7806, longitude: 90.4168, districtId: 'dhaka' },
   'gulshan-1': { latitude: 23.7806, longitude: 90.4168, districtId: 'dhaka' },
   'gulshan 1': { latitude: 23.7806, longitude: 90.4168, districtId: 'dhaka' },
   'গুলশান-২': { latitude: 23.7947, longitude: 90.4143, districtId: 'dhaka' },
+  'গুলশান ২': { latitude: 23.7947, longitude: 90.4143, districtId: 'dhaka' },
   'gulshan-2': { latitude: 23.7947, longitude: 90.4143, districtId: 'dhaka' },
   'gulshan 2': { latitude: 23.7947, longitude: 90.4143, districtId: 'dhaka' },
+  'মিরপুর-১০': { latitude: 23.8069, longitude: 90.3687, districtId: 'dhaka' },
+  'মিরপুর ১০': { latitude: 23.8069, longitude: 90.3687, districtId: 'dhaka' },
+  'mirpur-10': { latitude: 23.8069, longitude: 90.3687, districtId: 'dhaka' },
+  'mirpur 10': { latitude: 23.8069, longitude: 90.3687, districtId: 'dhaka' },
+  'মিরপুর-১': { latitude: 23.7956, longitude: 90.3537, districtId: 'dhaka' },
+  'মিরপুর ১': { latitude: 23.7956, longitude: 90.3537, districtId: 'dhaka' },
+  'mirpur-1': { latitude: 23.7956, longitude: 90.3537, districtId: 'dhaka' },
+  'mirpur 1': { latitude: 23.7956, longitude: 90.3537, districtId: 'dhaka' },
+  'মিরপুর-১২': { latitude: 23.8282, longitude: 90.3644, districtId: 'dhaka' },
+  'মিরপুর ১২': { latitude: 23.8282, longitude: 90.3644, districtId: 'dhaka' },
+  'mirpur-12': { latitude: 23.8282, longitude: 90.3644, districtId: 'dhaka' },
+  'mirpur 12': { latitude: 23.8282, longitude: 90.3644, districtId: 'dhaka' },
+  'ধানমন্ডি ২৭': { latitude: 23.7549, longitude: 90.3762, districtId: 'dhaka' },
+  'dhanmondi 27': { latitude: 23.7549, longitude: 90.3762, districtId: 'dhaka' },
+  'ধানমন্ডি ৩২': { latitude: 23.7516, longitude: 90.3779, districtId: 'dhaka' },
+  'dhanmondi 32': { latitude: 23.7516, longitude: 90.3779, districtId: 'dhaka' },
+  'বসুন্ধরা আবাসিক': { latitude: 23.8162, longitude: 90.4310, districtId: 'dhaka' },
+  'bashundhara r/a': { latitude: 23.8162, longitude: 90.4310, districtId: 'dhaka' },
   banasree: { latitude: 23.7619, longitude: 90.4331, districtId: 'dhaka' },
   'বনশ্রী': { latitude: 23.7619, longitude: 90.4331, districtId: 'dhaka' },
   aftabnagar: { latitude: 23.7684, longitude: 90.4378, districtId: 'dhaka' },
@@ -598,6 +618,11 @@ const NORMALIZED_GEO_LOOKUP: Map<string, Coordinates> = (() => {
   return map;
 })();
 
+// Sort area entries by longest/most-specific key first so "নিকেতন, গুলশান-১" matches "নিকেতন" / "গুলশান-১" before generic "গুলশান"
+const SORTED_UPAZILA_AREA_ENTRIES = Object.entries(UPAZILA_OR_AREA_COORDINATES).sort(
+  (a, b) => b[0].length - a[0].length
+);
+
 function hashSeedOffset(seed: string): { dLat: number; dLng: number } {
   let h = 2166136261;
   for (let i = 0; i < seed.length; i++) {
@@ -605,7 +630,8 @@ function hashSeedOffset(seed: string): { dLat: number; dLng: number } {
     h = Math.imul(h, 16777619);
   }
   const angle = ((h >>> 0) % 360) * (Math.PI / 180);
-  const radius = 0.004 + (((h >>> 8) % 90) / 10000);
+  // Subtle ~45m-95m map pin separation so multiple pins in the same area don't stack on top of each other
+  const radius = 0.00045 + (((h >>> 8) % 50) / 100000);
   return {
     dLat: Number((Math.sin(angle) * radius).toFixed(5)),
     dLng: Number((Math.cos(angle) * radius).toFixed(5)),
@@ -661,8 +687,8 @@ export function resolvePlaceOrHospitalQuery(rawQuery?: string | null): ResolvedP
     }
   }
 
-  // 2. Check metro neighborhoods / upazilas
-  for (const [areaKey, info] of Object.entries(UPAZILA_OR_AREA_COORDINATES)) {
+  // 2. Check metro neighborhoods / upazilas (most specific keys first)
+  for (const [areaKey, info] of SORTED_UPAZILA_AREA_ENTRIES) {
     const keyLower = areaKey.toLowerCase();
     if (
       fullLower === keyLower ||
@@ -671,9 +697,12 @@ export function resolvePlaceOrHospitalQuery(rawQuery?: string | null): ResolvedP
     ) {
       const distId = info.districtId || 'dhaka';
       const distObj = DISTRICTS.find((d) => d.id === distId);
+      const displayArea = /^[a-z]/.test(areaKey)
+        ? areaKey.charAt(0).toUpperCase() + areaKey.slice(1)
+        : areaKey;
       return {
-        labelBn: `${areaKey}, ${distObj?.nameBn || 'ঢাকা'}`,
-        labelEn: `${areaKey}, ${distObj?.nameEn || 'Dhaka'}`,
+        labelBn: `${displayArea}, ${distObj?.nameBn || 'ঢাকা'}`,
+        labelEn: `${displayArea}, ${distObj?.nameEn || 'Dhaka'}`,
         districtId: distId,
         divisionId: distObj?.divisionId || 'dhaka',
         coords: { latitude: info.latitude, longitude: info.longitude },
@@ -898,8 +927,28 @@ export function resolveBangladeshCoordinates(params: {
 
   const combinedText = `${params.upazila || ''} ${params.district || ''}`.trim().toLowerCase();
 
-  // 1. Check neighborhood/upazila match first for city-level precision
-  for (const [areaKey, coords] of Object.entries(UPAZILA_OR_AREA_COORDINATES)) {
+  // 1. Check neighborhood/upazila match first (prioritizing upazila text & longest/most-specific keys first)
+  const upazilaLower = (params.upazila || '').trim().toLowerCase();
+  if (upazilaLower) {
+    // Prefer exact or primary neighborhood mentions (e.g. "Niketon, Gulshan-1" -> checks "niketon" first if listed first by user!)
+    const commaTokens = upazilaLower
+      .split(/[,/|]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 2);
+    for (const tok of commaTokens) {
+      for (const [areaKey, coords] of SORTED_UPAZILA_AREA_ENTRIES) {
+        if (tok === areaKey.toLowerCase() || tok.includes(areaKey.toLowerCase())) {
+          if (params.seedKey) {
+            const { dLat, dLng } = hashSeedOffset(params.seedKey);
+            return { latitude: coords.latitude + dLat, longitude: coords.longitude + dLng };
+          }
+          return { latitude: coords.latitude, longitude: coords.longitude };
+        }
+      }
+    }
+  }
+
+  for (const [areaKey, coords] of SORTED_UPAZILA_AREA_ENTRIES) {
     if (combinedText.includes(areaKey.toLowerCase())) {
       if (params.seedKey) {
         const { dLat, dLng } = hashSeedOffset(params.seedKey);
@@ -1278,44 +1327,26 @@ function getSavedUserFallbackCoords(): Coordinates | null {
   return null;
 }
 
+export function clearCachedDeviceGps(): void {
+  cachedDeviceCoords = null;
+  cachedIsRealGps = false;
+  pendingGpsPromise = null;
+}
+
 async function resolveBangladeshNetworkLocationFallback(): Promise<{
   coords: Coordinates;
-  resolved: boolean;
+  source: 'SAVED_PROFILE' | 'DEFAULT_DHAKA';
 }> {
-  if (typeof fetch !== 'undefined') {
-    const endpoints = ['https://ipwho.is/', 'https://get.geojs.io/v1/ip/geo.json'];
-    for (const url of endpoints) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2200);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (res.ok) {
-          const data = await res.json();
-          const lat = Number(data?.latitude ?? data?.lat);
-          const lng = Number(data?.longitude ?? data?.lon);
-          if (isWithinBangladeshBounds(lat, lng)) {
-            clearTimeout(timer);
-            return { coords: { latitude: lat, longitude: lng }, resolved: true };
-          }
-        }
-      } catch {
-        // Try next HTTPS geo provider
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-  }
-
   const savedCoords = getSavedUserFallbackCoords();
   if (savedCoords) {
-    return { coords: savedCoords, resolved: true };
+    return { coords: savedCoords, source: 'SAVED_PROFILE' };
   }
-
-  return { coords: DEFAULT_BANGLADESH_COORDS, resolved: true };
+  return { coords: DEFAULT_BANGLADESH_COORDS, source: 'DEFAULT_DHAKA' };
 }
 
 /**
- * Request real-time GPS coordinates from device with fast network/saved-area fallback.
+ * Request real-time GPS coordinates from device with honest status tracking.
+ * NEVER marks fallback coordinates as `isRealGps: true`!
  */
 export function requestRealDeviceGPS(): Promise<Coordinates> {
   if (cachedIsRealGps && cachedDeviceCoords) {
@@ -1329,7 +1360,7 @@ export function requestRealDeviceGPS(): Promise<Coordinates> {
     const finishWithFallback = async () => {
       const net = await resolveBangladeshNetworkLocationFallback();
       cachedDeviceCoords = net.coords;
-      cachedIsRealGps = net.resolved;
+      cachedIsRealGps = false;
       pendingGpsPromise = null;
       resolve(net.coords);
     };
@@ -1337,19 +1368,22 @@ export function requestRealDeviceGPS(): Promise<Coordinates> {
     if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          const coords = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          };
-          cachedDeviceCoords = coords;
-          cachedIsRealGps = true;
-          pendingGpsPromise = null;
-          resolve(coords);
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            const coords = { latitude: lat, longitude: lng };
+            cachedDeviceCoords = coords;
+            cachedIsRealGps = true;
+            pendingGpsPromise = null;
+            resolve(coords);
+          } else {
+            void finishWithFallback();
+          }
         },
         () => {
           void finishWithFallback();
         },
-        { enableHighAccuracy: true, maximumAge: 120000, timeout: 3500 }
+        { enableHighAccuracy: true, maximumAge: 60000, timeout: 4500 }
       );
     } else {
       void finishWithFallback();
@@ -1360,7 +1394,7 @@ export function requestRealDeviceGPS(): Promise<Coordinates> {
 }
 
 /**
- * Returns both resolved coordinates and boolean `isRealGps`.
+ * Returns both resolved coordinates and honest boolean `isRealGps` (true ONLY when hardware/browser GPS succeeded).
  */
 export async function requestRealDeviceGPSWithStatus(): Promise<{
   coords: Coordinates;
@@ -1374,8 +1408,8 @@ export async function requestRealDeviceGPSWithStatus(): Promise<{
 }
 
 /**
- * Actively requests high-accuracy live GPS when the user taps "Use My GPS / GPS On / Locate Me",
- * with fast indoor Wi-Fi retry + Bangladesh network/saved-area fallback when iframe/WebView blocks hardware GPS.
+ * Actively requests high-accuracy live GPS when the user taps "Use My GPS / Locate Me".
+ * Retries with indoor/Wi-Fi geolocation on timeout, and ONLY sets `isRealGps: true` when real device geolocation succeeds.
  */
 export function requestFreshHighAccuracyGPS(): Promise<{
   coords: Coordinates;
@@ -1383,13 +1417,13 @@ export function requestFreshHighAccuracyGPS(): Promise<{
   errorReason?: GpsErrorReason;
 }> {
   return new Promise((resolve) => {
-    const fallbackWithNetwork = async (reason?: GpsErrorReason) => {
+    const fallbackWithoutFakeGps = async (reason?: GpsErrorReason) => {
       const net = await resolveBangladeshNetworkLocationFallback();
       cachedDeviceCoords = net.coords;
-      cachedIsRealGps = net.resolved;
+      cachedIsRealGps = false;
       resolve({
         coords: net.coords,
-        isRealGps: net.resolved,
+        isRealGps: false,
         errorReason: reason,
       });
     };
@@ -1406,6 +1440,10 @@ export function requestFreshHighAccuracyGPS(): Promise<{
           resolve({ coords, isRealGps: true });
         },
         (err) => {
+          if (err.code === 1) {
+            void fallbackWithoutFakeGps('PERMISSION_DENIED');
+            return;
+          }
           navigator.geolocation.getCurrentPosition(
             (pos2) => {
               const coords = {
@@ -1423,15 +1461,15 @@ export function requestFreshHighAccuracyGPS(): Promise<{
                   : err2.code === 3
                     ? 'TIMEOUT'
                     : 'POSITION_UNAVAILABLE';
-              void fallbackWithNetwork(reason);
+              void fallbackWithoutFakeGps(reason);
             },
-            { enableHighAccuracy: false, maximumAge: 300000, timeout: 2200 }
+            { enableHighAccuracy: false, maximumAge: 180000, timeout: 4000 }
           );
         },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 3200 }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
       );
     } else {
-      void fallbackWithNetwork('UNSUPPORTED');
+      void fallbackWithoutFakeGps('UNSUPPORTED');
     }
   });
 }

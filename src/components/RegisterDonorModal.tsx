@@ -87,6 +87,13 @@ const QUICK_DISTRICTS = [
   { id: 'mymensingh', bn: 'ময়মনসিংহ', en: 'Mymensingh' },
 ];
 
+function parseBanglaOrAsciiNumber(raw: string): number {
+  const normalized = String(raw || '')
+    .replace(/[০-৯]/g, (ch) => String('০১২৩৪৫৬৭৮৯'.indexOf(ch)))
+    .replace(/[^0-9]/g, '');
+  return normalized ? parseInt(normalized, 10) : NaN;
+}
+
 export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   isOpen,
   onClose,
@@ -105,18 +112,20 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   const [isLocatingGps, setIsLocatingGps] = useState(false);
   const [gpsStatusNote, setGpsStatusNote] = useState<string | null>(null);
 
-  // Simple 1-screen core fields (including mandatory WhatsApp & Facebook)
+  // Zero auto-fill: every personal field starts blank until the user enters or selects it
   const [name, setName] = useState('');
-  const [bloodGroup, setBloodGroup] = useState<BloodGroup>('O+');
+  const [bloodGroup, setBloodGroup] = useState<BloodGroup | ''>('');
+  const [ageInput, setAgeInput] = useState('');
+  const [weightInput, setWeightInput] = useState('');
+  const [gender, setGender] = useState<'MALE' | 'FEMALE' | 'OTHER' | ''>('');
   const [phone, setPhone] = useState('');
   const [whatsappPhone, setWhatsappPhone] = useState('');
   const [facebookUrl, setFacebookUrl] = useState('');
-  const [district, setDistrict] = useState('dhaka');
+  const [district, setDistrict] = useState('');
   const [areaAddress, setAreaAddress] = useState('');
   const [showAreaSuggestions, setShowAreaSuggestions] = useState(false);
   const [available, setAvailable] = useState(true);
   const [shareDirectContact, setShareDirectContact] = useState(true);
-  const [gender, setGender] = useState<'MALE' | 'FEMALE' | 'OTHER'>('MALE');
   const [photoUrl, setPhotoUrl] = useState<string>(DEFAULT_AVATAR_DATA_URI);
 
   const [accountRole, setAccountRole] = useState<'USER' | 'ADMIN'>('USER');
@@ -155,14 +164,29 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         }
         if (source) {
           setName(source.name && !isFakePersonName(source.name) ? source.name : '');
-          setBloodGroup(source.bloodGroup || 'O+');
+          setBloodGroup(source.bloodGroup || '');
+          setAgeInput(
+            typeof source.age === 'number' && source.age >= 18 && source.age <= 65
+              ? String(source.age)
+              : ''
+          );
+          setWeightInput(
+            typeof source.weightKg === 'number' && source.weightKg >= 40 && source.weightKg <= 180
+              ? String(source.weightKg)
+              : ''
+          );
+          setGender(
+            source.gender && ['MALE', 'FEMALE', 'OTHER'].includes(source.gender)
+              ? source.gender
+              : ''
+          );
           const cleanSavedPhone =
             source.phone && source.phone !== '01700000000' ? source.phone : '';
           setPhone(cleanSavedPhone);
           setWhatsappPhone(
             source.whatsappPhone && source.whatsappPhone !== '01700000000'
               ? source.whatsappPhone
-              : cleanSavedPhone
+              : ''
           );
           setFacebookUrl(normalizeFacebookProfileUrl(source.facebookUrl) || '');
           if (source.district) {
@@ -172,9 +196,9 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 d.nameBn === source!.district ||
                 d.nameEn.toLowerCase() === String(source!.district).toLowerCase()
             );
-            setDistrict(matched ? matched.id : 'dhaka');
+            setDistrict(matched ? matched.id : '');
           } else {
-            setDistrict('dhaka');
+            setDistrict('');
           }
           setAreaAddress(
             source.upazila && source.upazila !== 'sadar' && source.upazila !== 'সদর'
@@ -189,15 +213,17 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
           } else if (source.contactVisibility) {
             setShareDirectContact(source.contactVisibility !== 'REQUEST_ONLY');
           }
-          if (source.gender) setGender(source.gender);
           if (source.photoUrl) setPhotoUrl(source.photoUrl);
         } else {
           setName('');
-          setBloodGroup('O+');
+          setBloodGroup('');
+          setAgeInput('');
+          setWeightInput('');
+          setGender('');
           setPhone('');
           setWhatsappPhone('');
           setFacebookUrl('');
-          setDistrict('dhaka');
+          setDistrict('');
           setAreaAddress('');
           setPhotoUrl(auth.currentUser?.photoURL || DEFAULT_AVATAR_DATA_URI);
         }
@@ -216,12 +242,13 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   }, []);
 
   const selectedDistrictObj = useMemo(
-    () => DISTRICTS.find((d) => d.id === district) || DISTRICTS[0],
+    () => (district ? DISTRICTS.find((d) => d.id === district) || null : null),
     [district]
   );
 
   // Quick selectable chips: Dhaka gets Niketon + popular neighborhoods; other districts get their real Upazilas
   const quickAreaChips = useMemo(() => {
+    if (!district) return [];
     if (district === 'dhaka') {
       return DHAKA_POPULAR_AREAS.map((a) => (lang === 'bn' ? a.bn : a.en));
     }
@@ -238,6 +265,10 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   }, [areaAddress, lang]);
 
   if (!isOpen) return null;
+
+  const isAdminSession = Boolean(
+    firebaseUser && isBootstrappedAdminUser(firebaseUser)
+  );
 
   const handleUseMyGps = async () => {
     setIsLocatingGps(true);
@@ -257,8 +288,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       } else {
         setFormError(
           lang === 'bn'
-            ? 'ব্রাউজারে GPS অনুমতি বন্ধ আছে। কোনো সমস্যা নেই — নিচে আপনার এলাকার নাম (যেমন: নিকেতন) সরাসরি লিখে দিন।'
-            : 'Browser GPS permission is off. Simply type your area name (e.g. Niketon) in the box below.'
+            ? 'ব্রাউজারে GPS অনুমতি বন্ধ আছে। কোনো সমস্যা নেই — নিচে জেলা ও আপনার এলাকার নাম (যেমন: নিকেতন) সরাসরি লিখে দিন।'
+            : 'Browser GPS permission is off. Select your district and type your area name (e.g. Niketon) below.'
         );
       }
     } finally {
@@ -287,7 +318,6 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     popupPromise
       .then((u) => {
         setFirebaseUser(u);
-        if (u.displayName && !name.trim()) setName(u.displayName);
         if (u.photoURL && photoUrl === DEFAULT_AVATAR_DATA_URI) setPhotoUrl(u.photoURL);
       })
       .catch((err: any) => {
@@ -304,8 +334,46 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     if (cleanName.length < 2) {
       setFormError(
         lang === 'bn'
-          ? 'অনুগ্রহ করে আপনার নাম লিখুন।'
-          : 'Please enter your name.'
+          ? 'অনুগ্রহ করে আপনার নিজের নাম লিখুন।'
+          : 'Please enter your full name.'
+      );
+      return;
+    }
+
+    if (!bloodGroup) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার রক্তের গ্রুপ নির্বাচন করুন।'
+          : 'Please select your blood group.'
+      );
+      return;
+    }
+
+    const parsedAge = parseBanglaOrAsciiNumber(ageInput);
+    if (!Number.isFinite(parsedAge) || parsedAge < 18 || parsedAge > 65) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার সঠিক বয়স লিখুন (১৮ থেকে ৬৫ বছর)।'
+          : 'Please enter your valid age (18 to 65 years).'
+      );
+      return;
+    }
+
+    const parsedWeight = parseBanglaOrAsciiNumber(weightInput);
+    if (!Number.isFinite(parsedWeight) || parsedWeight < 40 || parsedWeight > 180) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার সঠিক ওজন (কেজি) লিখুন (৪০ থেকে ১৮০ কেজি)।'
+          : 'Please enter your weight in kg (40 to 180 kg).'
+      );
+      return;
+    }
+
+    if (!gender) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে লিঙ্গ (পুরুষ / মহিলা / অন্যান্য) নির্বাচন করুন।'
+          : 'Please select your gender.'
       );
       return;
     }
@@ -324,8 +392,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
     if (!cleanWa || !isValidBangladeshMobilePhone(whatsappPhone)) {
       setFormError(
         lang === 'bn'
-          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (যেমন: 01712345678)।'
-          : 'Please enter a valid 11-digit WhatsApp number (e.g. 01712345678).'
+          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (অথবা "মোবাইল নম্বরের মতোই" বাটনে চাপুন)।'
+          : 'Please enter a valid 11-digit WhatsApp number (or tap "Same as Mobile").'
       );
       return;
     }
@@ -336,6 +404,25 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         lang === 'bn'
           ? 'অনুগ্রহ করে আপনার আসল Facebook প্রোফাইল লিংক বা ইউজারনেম দিন (যেমন: facebook.com/your.id)।'
           : 'Please enter your Facebook profile link or username (e.g. facebook.com/your.id).'
+      );
+      return;
+    }
+
+    if (!district || !selectedDistrictObj) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার জেলা নির্বাচন করুন।'
+          : 'Please select your district.'
+      );
+      return;
+    }
+
+    const trimmedArea = areaAddress.trim();
+    if (trimmedArea.length < 2) {
+      setFormError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার এলাকার নাম লিখুন (যেমন: নিকেতন, ধানমন্ডি, মিরপুর)।'
+          : 'Please enter your area or neighborhood name (e.g. Niketon, Dhanmondi).'
       );
       return;
     }
@@ -352,12 +439,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       }
     }
 
-    const resolvedDivision = selectedDistrictObj?.divisionId || 'dhaka';
-    const resolvedArea = (
-      areaAddress.trim() ||
-      (lang === 'bn' ? selectedDistrictObj.nameBn : selectedDistrictObj.nameEn) ||
-      'Dhaka'
-    ).slice(0, 120);
+    const resolvedDivision = selectedDistrictObj.divisionId || 'dhaka';
+    const resolvedArea = trimmedArea.slice(0, 120);
 
     try {
       localStorage.setItem(
@@ -365,13 +448,15 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         JSON.stringify({
           name: cleanName,
           bloodGroup,
+          age: parsedAge,
+          weightKg: parsedWeight,
+          gender,
           phone: cleanPhone,
           whatsappPhone: cleanWa,
           facebookUrl: cleanFb,
           division: resolvedDivision,
           district,
           upazila: resolvedArea,
-          gender,
           photoUrl: photoUrl || DEFAULT_AVATAR_DATA_URI,
           availableToDonate: available,
           shareDirectContact,
@@ -492,9 +577,9 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         role: effectiveRole,
         verifiedStatus: Boolean(activeUser),
         idCardNumber: cleanExistingCardId,
-        age: existingSaved?.age || 25,
+        age: parsedAge,
         gender,
-        weightKg: existingSaved?.weightKg || 62,
+        weightKg: parsedWeight,
         availableToDonate: available,
         availabilityStatus: resolvedStatus,
         availabilityConfirmedAtMs: nowMs,
@@ -536,13 +621,14 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         verifiedBadge: effectiveRole === 'ADMIN',
         rating: 5.0,
         reviewsCount: 0,
-        age: accountRecord.age || 25,
+        age: parsedAge,
         gender,
-        weightKg: accountRecord.weightKg || 62,
+        weightKg: parsedWeight,
         hospitalAffiliation:
           effectiveRole === 'ADMIN'
             ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
             : 'স্বেচ্ছাসেবী রক্তদাতা',
+        panelType: effectiveRole,
         avatar: accountRecord.photoUrl,
       };
 
@@ -567,7 +653,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       onRegisterDonor(donorRecord, accountRecord);
       onLogAudit(
         'REGISTER_DONOR',
-        `Saved profile for ${cleanName} (${bloodGroup}, ${resolvedArea}, ${district})`
+        `Saved profile for ${cleanName} (${bloodGroup}, ${parsedAge}y, ${resolvedArea}, ${district})`
       );
       setSavedAccount(accountRecord);
     } catch (err: any) {
@@ -588,18 +674,22 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       onClick={() => showAreaSuggestions && setShowAreaSuggestions(false)}
     >
       <div className="w-full max-w-lg my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#111827] text-slate-900 dark:text-white overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 text-left">
-        {/* Jewel Header */}
-        <div className="section-jewel-indigo text-white px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
+        {/* Jewel Header (Distinct Emerald for User Donor vs Royal Indigo for Admin) */}
+        <div
+          className={`${
+            isAdminSession ? 'section-jewel-indigo' : 'section-jewel-emerald'
+          } text-white px-4 sm:px-6 py-4 flex items-center justify-between gap-3`}
+        >
           <div className="flex items-center gap-2.5 min-w-0">
             <BrandLogo size="sm" />
             <div className="min-w-0">
               <h2 className="text-base sm:text-lg font-black text-white truncate">
-                {lang === 'bn' ? 'প্রোফাইল সেটআপ' : 'Profile Setup'}
+                {lang === 'bn' ? 'রক্তদাতা প্রোফাইল সেটআপ' : 'Donor Profile Setup'}
               </h2>
-              <p className="text-xs text-indigo-100/90 truncate">
+              <p className="text-xs text-white/90 truncate">
                 {lang === 'bn'
-                  ? 'নাম, রক্তের গ্রুপ, WhatsApp, Facebook ও ঠিকানা দিন'
-                  : 'Name, blood group, WhatsApp, Facebook & address'}
+                  ? 'নিজের নাম, বয়স, ওজন, রক্তের গ্রুপ ও ঠিকানা দিন (কোনো তথ্য অটো নেওয়া হয় না)'
+                  : 'Enter your own name, age, weight, blood group & address manually'}
               </p>
             </div>
           </div>
@@ -631,8 +721,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {lang === 'bn'
-                  ? 'আপনার নতুন নাম, রক্তের গ্রুপ এবং ঠিকানা সাথে সাথে আপডেট হয়ে গেছে।'
-                  : 'Your updated name, blood group, and address are now live.'}
+                  ? 'আপনার নাম, বয়স, ওজন, রক্তের গ্রুপ এবং ঠিকানা সাথে সাথে আপডেট হয়ে গেছে।'
+                  : 'Your name, age, weight, blood group, and address are now live.'}
               </p>
             </div>
 
@@ -657,13 +747,14 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 <div className="text-xs text-slate-600 dark:text-slate-300 mt-1 flex items-center gap-1 truncate">
                   <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
                   <span className="truncate">
-                    {savedAccount.upazila},{' '}
-                    {lang === 'bn'
-                      ? selectedDistrictObj.nameBn
-                      : selectedDistrictObj.nameEn}
+                    {savedAccount.upazila}
+                    {selectedDistrictObj
+                      ? `, ${lang === 'bn' ? selectedDistrictObj.nameBn : selectedDistrictObj.nameEn}`
+                      : ''}
                   </span>
                 </div>
                 <div className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  {savedAccount.age ? `${savedAccount.age}y · ${savedAccount.weightKg}kg · ` : ''}
                   {savedAccount.phone} · WA: {savedAccount.whatsappPhone}
                 </div>
                 {savedAccount.facebookUrl && (
@@ -681,7 +772,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   onClose();
                   onNavigateTab?.('profile');
                 }}
-                className="flex-1 min-h-[46px] px-4 py-2.5 rounded-xl btn-crimson font-bold text-xs sm:text-sm cursor-pointer whitespace-nowrap"
+                className="flex-1 min-h-[46px] px-4 py-2.5 rounded-xl btn-emerald font-bold text-xs sm:text-sm cursor-pointer whitespace-nowrap"
               >
                 {lang === 'bn' ? 'প্রোফাইল দেখুন' : 'View Profile'}
               </button>
@@ -695,8 +786,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             </div>
           </div>
         ) : (
-          /* Single Easy 1-Screen Form */
-          <form onSubmit={handleSubmit} className="pt-4 space-y-4">
+          /* Single Easy 1-Screen Form (100% Manual User Entry) */
+          <form onSubmit={handleSubmit} className="pt-2 space-y-4">
             {/* Google Sign-In Status Bar (Only prominent if not signed in yet) */}
             {!firebaseUser ? (
               <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2.5">
@@ -708,7 +799,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 <button
                   type="button"
                   onClick={handleConnectGoogle}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-obsidian text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
+                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-indigo text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
                 >
                   {lang === 'bn' ? 'Google লগইন' : 'Google Sign-In'}
                 </button>
@@ -721,11 +812,11 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                   <span>{formError}</span>
                 </div>
-                {onOpenAuthModal && (
+                {onOpenAuthModal && !firebaseUser && (
                   <button
                     type="button"
                     onClick={onOpenAuthModal}
-                    className="min-h-[38px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-white font-bold text-xs cursor-pointer"
+                    className="min-h-[38px] px-3.5 py-2 rounded-xl btn-indigo font-bold text-xs cursor-pointer"
                   >
                     {lang === 'bn'
                       ? 'লগইন করে সেভ সম্পন্ন করুন (Gmail / Email)'
@@ -757,7 +848,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isCompressingPhoto}
-                  className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow cursor-pointer"
+                  className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow cursor-pointer"
                   title={lang === 'bn' ? 'ছবি পরিবর্তন করুন' : 'Change Photo'}
                 >
                   <Camera className="w-3.5 h-3.5" />
@@ -766,7 +857,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
 
               <div className="flex-1 min-w-0">
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn' ? '১. আপনার নাম *' : '1. Your Full Name *'}
+                  {lang === 'bn' ? '১. আপনার নাম (নিজে লিখুন) *' : '1. Your Full Name *'}
                 </label>
                 <input
                   type="text"
@@ -774,13 +865,13 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   maxLength={80}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder={lang === 'bn' ? 'আপনার নাম লিখুন (যেমন: শামীম রাকিব)' : 'Enter your name'}
-                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  placeholder={lang === 'bn' ? 'আপনার নিজের নাম লিখুন' : 'Enter your full name'}
+                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
             </div>
 
-            {/* 2. Blood Group 8-Button Selector */}
+            {/* 2. Blood Group 8-Button Selector (Unselected by default) */}
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
                 {lang === 'bn' ? '২. রক্তের গ্রুপ নির্বাচন করুন *' : '2. Select Blood Group *'}
@@ -795,7 +886,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                       onClick={() => setBloodGroup(grp)}
                       className={`min-h-[44px] rounded-xl font-black text-sm transition-colors cursor-pointer flex items-center justify-center ${
                         selected
-                          ? 'bg-rose-600 text-white shadow-xs'
+                          ? 'btn-crimson shadow-xs'
                           : 'bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white hover:border-rose-400'
                       }`}
                     >
@@ -806,42 +897,55 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
             </div>
 
-            {/* 3. Mobile Number + Gender */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-              <div className="sm:col-span-8">
+            {/* 3. Manual Age, Weight & Gender Row (Zero Auto Age/Weight!) */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn'
-                    ? '৩. সচল মোবাইল নম্বর (Call) *'
-                    : '3. Active Mobile Number (Call) *'}
+                  {lang === 'bn' ? '৩. বয়স (১৮–৬৫ বছর) *' : '3. Age (18–65 yrs) *'}
                 </label>
-                <div className="relative">
-                  <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="tel"
-                    required
-                    value={phone}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (!whatsappPhone || whatsappPhone === phone) {
-                        setWhatsappPhone(val);
-                      }
-                      setPhone(val);
-                    }}
-                    placeholder="017XXXXXXXX"
-                    className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
-                  />
-                </div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  maxLength={3}
+                  value={ageInput}
+                  onChange={(e) => setAgeInput(e.target.value)}
+                  placeholder={lang === 'bn' ? 'বয়স লিখুন (যেমন: ২৪)' : 'Enter age (e.g. 24)'}
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
               </div>
 
-              <div className="sm:col-span-4">
+              <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn' ? 'লিঙ্গ' : 'Gender'}
+                  {lang === 'bn' ? '৪. ওজন (কেজি ৪০–১৮০) *' : '4. Weight (40–180 kg) *'}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  maxLength={3}
+                  value={weightInput}
+                  onChange={(e) => setWeightInput(e.target.value)}
+                  placeholder={lang === 'bn' ? 'ওজন কেজি (যেমন: ৬৫)' : 'Weight kg (e.g. 65)'}
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn' ? '৫. লিঙ্গ *' : '5. Gender *'}
                 </label>
                 <select
+                  required
                   value={gender}
-                  onChange={(e) => setGender(e.target.value as 'MALE' | 'FEMALE' | 'OTHER')}
+                  onChange={(e) =>
+                    setGender(e.target.value as 'MALE' | 'FEMALE' | 'OTHER' | '')
+                  }
                   className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
                 >
+                  <option value="">
+                    {lang === 'bn' ? '-- নির্বাচন করুন --' : '-- Select --'}
+                  </option>
                   <option value="MALE">{lang === 'bn' ? 'পুরুষ (Male)' : 'Male'}</option>
                   <option value="FEMALE">{lang === 'bn' ? 'মহিলা (Female)' : 'Female'}</option>
                   <option value="OTHER">{lang === 'bn' ? 'অন্যান্য' : 'Other'}</option>
@@ -849,12 +953,31 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
             </div>
 
-            {/* 4. Mandatory WhatsApp Number + Mandatory Facebook Profile Link */}
+            {/* 4. Mobile Number + Mandatory WhatsApp + Mandatory Facebook */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  {lang === 'bn'
+                    ? '৬. সচল মোবাইল নম্বর (Call) *'
+                    : '6. Active Mobile Number (Call) *'}
+                </label>
+                <div className="relative">
+                  <Phone className="w-4 h-4 text-rose-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="tel"
+                    required
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="017XXXXXXXX"
+                    className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                </div>
+              </div>
+
               <div>
                 <div className="flex items-center justify-between gap-1 mb-1">
                   <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                    {lang === 'bn' ? '৪. WhatsApp নম্বর *' : '4. WhatsApp Number *'}
+                    {lang === 'bn' ? '৭. WhatsApp নম্বর *' : '7. WhatsApp Number *'}
                   </label>
                   {phone.trim() && whatsappPhone !== phone && (
                     <button
@@ -878,41 +1001,43 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   />
                 </div>
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  {lang === 'bn' ? '৫. Facebook প্রোফাইল লিংক / আইডি *' : '5. Facebook Profile Link / ID *'}
-                </label>
-                <div className="relative">
-                  <Globe className="w-4 h-4 text-indigo-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="text"
-                    required
-                    maxLength={200}
-                    value={facebookUrl}
-                    onChange={(e) => setFacebookUrl(e.target.value)}
-                    placeholder="https://facebook.com/your.id"
-                    className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                {lang === 'bn'
+                  ? '৮. Facebook প্রোফাইল লিংক / আইডি *'
+                  : '8. Facebook Profile Link / ID *'}
+              </label>
+              <div className="relative">
+                <Globe className="w-4 h-4 text-[#1877f2] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  required
+                  maxLength={200}
+                  value={facebookUrl}
+                  onChange={(e) => setFacebookUrl(e.target.value)}
+                  placeholder="https://facebook.com/your.id"
+                  className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
               </div>
             </div>
 
-            {/* 4. Hybrid Address: GPS + Select District + Custom Area Text Input + Chips */}
+            {/* 5. Hybrid Address: GPS + Select District + Custom Area Text Input + Chips */}
             <div
               className="p-3.5 rounded-2xl bg-slate-50/90 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-3"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-bold text-slate-900 dark:text-white">
-                  {lang === 'bn' ? '৬. বর্তমান ঠিকানা *' : '6. Current Address *'}
+                  {lang === 'bn' ? '৯. বর্তমান ঠিকানা (জেলা ও এলাকা) *' : '9. Current Address (District & Area) *'}
                 </label>
 
                 <button
                   type="button"
                   onClick={handleUseMyGps}
                   disabled={isLocatingGps}
-                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl btn-sky text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
                   <LocateFixed className={`w-3.5 h-3.5 shrink-0 ${isLocatingGps ? 'animate-spin' : ''}`} />
                   <span>
@@ -944,7 +1069,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                       onClick={() => setDistrict(qd.id)}
                       className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 ${
                         active
-                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                          ? 'btn-teal'
                           : 'bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
                       }`}
                     >
@@ -958,13 +1083,17 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 {/* 64 District Select */}
                 <div className="sm:col-span-5">
                   <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {lang === 'bn' ? 'জেলা নির্বাচন করুন' : 'Select District'}
+                    {lang === 'bn' ? 'জেলা নির্বাচন করুন *' : 'Select District *'}
                   </label>
                   <select
+                    required
                     value={district}
                     onChange={(e) => setDistrict(e.target.value)}
                     className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white"
                   >
+                    <option value="">
+                      {lang === 'bn' ? '-- জেলা নির্বাচন করুন --' : '-- Select District --'}
+                    </option>
                     {DISTRICTS.map((d) => (
                       <option key={d.id} value={d.id}>
                         {lang === 'bn' ? `${d.nameBn} (${d.nameEn})` : d.nameEn}
@@ -977,13 +1106,14 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 <div className="sm:col-span-7 relative">
                   <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                     {lang === 'bn'
-                      ? 'এলাকা / মহল্লা / রোড (নিজে লিখুন অথবা নিচে চাপুন)'
-                      : 'Area / Neighborhood (Type freely or tap below)'}
+                      ? 'এলাকা / মহল্লা / রোড (নিজে লিখুন) *'
+                      : 'Area / Neighborhood (Type manually) *'}
                   </label>
                   <div className="relative">
                     <MapPin className="w-4 h-4 text-rose-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
+                      required
                       maxLength={120}
                       value={areaAddress}
                       onFocus={() => setShowAreaSuggestions(true)}
@@ -996,7 +1126,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                           ? 'যেমন: নিকেতন, রোড ৪ / Niketon / ধানমন্ডি...'
                           : 'e.g. Niketon, Road 4 / Banani / Dhanmondi...'
                       }
-                      className="w-full h-11 pl-9 pr-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      className="w-full h-11 pl-9 pr-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                     />
                   </div>
 
@@ -1011,7 +1141,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                             setDistrict(sug.districtId);
                             setShowAreaSuggestions(false);
                           }}
-                          className="w-full px-3 py-2 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800 flex items-center justify-between gap-2 text-xs cursor-pointer"
+                          className="w-full px-3 py-2 text-left hover:bg-emerald-50/70 dark:hover:bg-slate-800 flex items-center justify-between gap-2 text-xs cursor-pointer"
                         >
                           <span className="font-bold text-slate-900 dark:text-white truncate">
                             {sug.title}

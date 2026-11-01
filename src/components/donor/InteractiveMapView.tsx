@@ -18,11 +18,13 @@ import { DIVISIONS } from '../../data/bangladeshGeo';
 import {
   requestRealDeviceGPSWithStatus,
   requestFreshHighAccuracyGPS,
+  clearCachedDeviceGps,
   watchRealDeviceGPS,
   calculateHaversineDistance,
   formatDistance,
   formatTravelEta,
   resolveBangladeshCoordinates,
+  resolvePlaceOrHospitalQuery,
   findNearestDistrictFromCoords,
   reverseGeocodeBangladeshCoords,
   POPULAR_BD_HOSPITALS,
@@ -51,6 +53,7 @@ import {
   MessageCircle,
   ZoomIn,
   ZoomOut,
+  Maximize2,
   List,
   Map as MapIcon,
   LocateFixed,
@@ -64,6 +67,7 @@ import {
   Heart,
   CheckCircle,
   XCircle,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 
@@ -167,15 +171,29 @@ function escapeHtml(raw: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function isMapDonorAdmin(loc: { type: string; sourceDonor?: Donor }): boolean {
+  if (loc.type !== 'DONOR' || !loc.sourceDonor) return false;
+  return (
+    loc.sourceDonor.panelType === 'ADMIN' ||
+    Boolean(
+      loc.sourceDonor.hospitalAffiliation?.includes('অ্যাডমিন') ||
+        loc.sourceDonor.hospitalAffiliation?.toLowerCase().includes('admin')
+    )
+  );
+}
+
 function createPinDivIcon(loc: ComputedMapLocation, isSelected: boolean): L.DivIcon {
   const safeLabel = escapeHtml(loc.type === 'HOSPITAL' ? loc.shortLabel : loc.bloodGroup);
+  const adminDonor = isMapDonorAdmin(loc);
   const bgClass = isSelected
     ? 'bg-rose-600 ring-2 ring-white shadow-lg scale-110'
     : loc.type === 'SOS'
       ? 'bg-red-600 ring-2 ring-white/90 shadow-md'
       : loc.type === 'DONOR'
-        ? 'bg-emerald-600 ring-2 ring-white/90 shadow-md'
-        : 'bg-slate-800 ring-2 ring-white/90 shadow-md';
+        ? adminDonor
+          ? 'bg-indigo-600 ring-2 ring-amber-300 shadow-md'
+          : 'bg-emerald-600 ring-2 ring-white/90 shadow-md'
+        : 'bg-sky-700 ring-2 ring-white/90 shadow-md';
 
   const textSize = loc.type === 'HOSPITAL' ? 'text-[10px]' : 'text-[11px]';
 
@@ -257,8 +275,22 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   onStartChatWithDonor,
 }) => {
   // Uber / Pathao-style Origin State (Live GPS OR Custom Pin-Drop / Searched Hospital)
-  const [originCoords, setOriginCoords] = useState<Coordinates>(DEFAULT_BANGLADESH_COORDS);
-  const [originMode, setOriginMode] = useState<'GPS' | 'CUSTOM_PIN'>('GPS');
+  const [originCoords, setOriginCoords] = useState<Coordinates>(() => {
+    try {
+      const raw = localStorage.getItem('bloodsearch_current_user');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.district || parsed?.upazila) {
+          return resolveBangladeshCoordinates({
+            district: parsed.district,
+            upazila: parsed.upazila,
+          });
+        }
+      }
+    } catch {}
+    return DEFAULT_BANGLADESH_COORDS;
+  });
+  const [originMode, setOriginMode] = useState<'GPS' | 'CUSTOM_PIN'>('CUSTOM_PIN');
   const [originLabel, setOriginLabel] = useState<string>('');
   const [isGpsActive, setIsGpsActive] = useState<boolean>(false);
   const [isLocatingGps, setIsLocatingGps] = useState<boolean>(false);
@@ -291,6 +323,8 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const originMarkerLayerRef = useRef<L.LayerGroup | null>(null);
   const pinDropActiveRef = useRef<boolean>(false);
+  const hasUserMovedOriginRef = useRef<boolean>(false);
+  const autoCenteredClusterRef = useRef<boolean>(false);
   pinDropActiveRef.current = pinDropActive;
 
   const activeLiveTrips = useMemo(
@@ -350,11 +384,11 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
     activeTrip?.hospitalLng,
   ]);
 
-  // 1. Request Live GPS on mount + subscribe to continuous watchPosition updates when in GPS mode
+  // 1. Check cached real GPS if already granted + smartly center on user's area or first real SOS/Donor cluster when GPS is off
   useEffect(() => {
     let mounted = true;
     requestRealDeviceGPSWithStatus().then(({ coords, isRealGps }) => {
-      if (!mounted) return;
+      if (!mounted || hasUserMovedOriginRef.current) return;
       if (isRealGps) {
         setOriginCoords(coords);
         setIsGpsActive(true);
@@ -383,9 +417,9 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
 
     const stopWatch = watchRealDeviceGPS((liveCoords) => {
       if (!mounted) return;
-      setIsGpsActive(true);
       setOriginMode((currMode) => {
         if (currMode === 'GPS') {
+          setIsGpsActive(true);
           setOriginCoords(liveCoords);
           const near = findNearestDistrictFromCoords(liveCoords);
           setOriginLabel(
@@ -403,6 +437,54 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
       stopWatch();
     };
   }, [initialFocusId, lang]);
+
+  // Smart cluster auto-focus when GPS is off and real donors/SOS load from Firestore
+  useEffect(() => {
+    if (
+      autoCenteredClusterRef.current ||
+      hasUserMovedOriginRef.current ||
+      isGpsActive ||
+      initialFocusId
+    ) {
+      return;
+    }
+
+    const activeSos = requests.find((r) => !isSeedRequestId(r.id) && r.status === 'ACTIVE');
+    const activeDonor = donors.find((d) => !isSeedDonorId(d.id) && d.available);
+
+    let smartAnchor: Coordinates | null = null;
+    let smartLabel = '';
+
+    if (activeSos) {
+      smartAnchor = resolveBangladeshCoordinates({
+        district: activeSos.district,
+        upazila: activeSos.upazila,
+        division: activeSos.division,
+        hospital: activeSos.hospitalName,
+      });
+      smartLabel = activeSos.hospitalName;
+    } else if (activeDonor) {
+      smartAnchor = resolveBangladeshCoordinates({
+        district: activeDonor.district,
+        upazila: activeDonor.upazila,
+        division: activeDonor.division,
+      });
+      smartLabel = activeDonor.upazila
+        ? `${activeDonor.upazila}, ${activeDonor.district}`
+        : activeDonor.district;
+    }
+
+    if (smartAnchor) {
+      autoCenteredClusterRef.current = true;
+      setOriginCoords(smartAnchor);
+      if (smartLabel) {
+        setOriginLabel(smartLabel);
+      }
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.setView([smartAnchor.latitude, smartAnchor.longitude], 13);
+      }
+    }
+  }, [donors, requests, isGpsActive, initialFocusId]);
 
   // 2. Live Bangladesh Hospital + Street Autocomplete (Instant Local + OSM Nominatim)
   useEffect(() => {
@@ -638,6 +720,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
     // Uber / Pathao Tap-on-Map to drop custom Patient / Hospital Pin!
     map.on('click', (evt: L.LeafletMouseEvent) => {
       if (!pinDropActiveRef.current) return;
+      hasUserMovedOriginRef.current = true;
       const clicked: Coordinates = {
         latitude: Number(evt.latlng.lat.toFixed(5)),
         longitude: Number(evt.latlng.lng.toFixed(5)),
@@ -904,8 +987,10 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   }, [filteredLocations, selectedLoc?.id, originCoords.latitude, originCoords.longitude, viewMode]);
 
   const handleSelectSuggestion = (item: LivePlaceSuggestion) => {
+    hasUserMovedOriginRef.current = true;
     setOriginCoords(item.coords);
     setOriginMode('CUSTOM_PIN');
+    setIsGpsActive(false);
     setOriginLabel(item.title);
     setPickupQuery(item.title);
     setShowSuggestions(false);
@@ -923,7 +1008,62 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
     }, 80);
   };
 
+  const handleSubmitPickupQuery = () => {
+    const trimmed = pickupQuery.trim();
+    if (!trimmed) return;
+    if (pickupSuggestions.length > 0) {
+      handleSelectSuggestion(pickupSuggestions[0]);
+      return;
+    }
+    const instant = getInstantLocalPlaceSuggestions(trimmed, lang);
+    if (instant.length > 0) {
+      handleSelectSuggestion(instant[0]);
+      return;
+    }
+    const resolved = resolvePlaceOrHospitalQuery(trimmed);
+    if (resolved) {
+      hasUserMovedOriginRef.current = true;
+      setOriginCoords(resolved.coords);
+      setOriginMode('CUSTOM_PIN');
+      setIsGpsActive(false);
+      const label = lang === 'bn' ? resolved.labelBn : resolved.labelEn;
+      setOriginLabel(label);
+      setShowSuggestions(false);
+      setPinDropActive(false);
+      setGpsNotice(null);
+      if (viewMode !== 'map') setViewMode('map');
+      window.setTimeout(() => {
+        mapInstanceRef.current?.flyTo([resolved.coords.latitude, resolved.coords.longitude], 14, {
+          duration: 0.75,
+        });
+      }, 80);
+    }
+  };
+
+  const handleFitAllPins = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const priorityPeople = filteredLocations.filter(
+      (l) => l.type === 'DONOR' || l.type === 'SOS'
+    );
+    const targets =
+      priorityPeople.length > 0
+        ? priorityPeople.slice(0, 12)
+        : filteredLocations.slice(0, 10);
+    if (targets.length === 0) return;
+
+    if (targets.length === 1) {
+      map.flyTo([targets[0].lat, targets[0].lng], 14, { duration: 0.75 });
+      return;
+    }
+
+    const bounds = L.latLngBounds(targets.map((t) => [t.lat, t.lng] as [number, number]));
+    bounds.extend([originCoords.latitude, originCoords.longitude]);
+    map.flyToBounds(bounds.pad(0.24), { maxZoom: 14, duration: 0.8 });
+  };
+
   const handleDivisionChange = (divId: string) => {
+    hasUserMovedOriginRef.current = true;
     setSelectedDivision(divId);
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -935,6 +1075,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
       if (target) {
         setOriginCoords({ latitude: target.latitude, longitude: target.longitude });
         setOriginMode('CUSTOM_PIN');
+        setIsGpsActive(false);
         setOriginLabel(divId.toUpperCase());
         map.flyTo([target.latitude, target.longitude], divId === 'dhaka' ? 12 : target.zoom + 1, {
           duration: 0.85,
@@ -944,6 +1085,18 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   };
 
   const handleLocateMe = async () => {
+    if (originMode === 'GPS' && isGpsActive) {
+      clearCachedDeviceGps();
+      setIsGpsActive(false);
+      setOriginMode('CUSTOM_PIN');
+      setGpsNotice(
+        lang === 'bn'
+          ? 'লাইভ GPS বন্ধ করা হয়েছে — উপরে হাসপাতাল/এলাকা লিখে বা ম্যাপে পিন বসিয়ে খুঁজুন।'
+          : 'Live GPS turned off — search a hospital/area above or drop a pin on the map.'
+      );
+      return;
+    }
+
     setIsLocatingGps(true);
     setGpsNotice(null);
     setPinDropActive(false);
@@ -953,6 +1106,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
         setViewMode('map');
       }
       if (res.isRealGps) {
+        hasUserMovedOriginRef.current = true;
         const near = findNearestDistrictFromCoords(res.coords);
         setOriginCoords(res.coords);
         setIsGpsActive(true);
@@ -1040,7 +1194,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
       <div className="bg-white dark:bg-[#111827] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl p-3.5 sm:p-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)] space-y-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl btn-crimson flex items-center justify-center font-bold shrink-0">
+            <div className="w-9 h-9 rounded-xl btn-teal flex items-center justify-center font-bold shrink-0">
               <Compass className="w-4 h-4" />
             </div>
             <div className="min-w-0">
@@ -1056,8 +1210,8 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                     : `${originLabel} · Showing live routes to nearest donors`
                   : originMode === 'CUSTOM_PIN' && originLabel
                     ? lang === 'bn'
-                      ? `পিন লোকেশন: ${originLabel} (ম্যাপে পিন টেনে সরানো যাবে)`
-                      : `Pinned at: ${originLabel} (Drag pin on map to adjust)`
+                      ? `কেন্দ্র: ${originLabel} (ম্যাপে পিন টেনে সরানো যাবে)`
+                      : `Centered at: ${originLabel} (Drag pin on map to adjust)`
                     : lang === 'bn'
                       ? 'হাসপাতাল সার্চ করুন, লাইভ GPS দিন অথবা ম্যাপে ট্যাপ করে পিন বসান'
                       : 'Search hospital, tap Live GPS, or tap on map to drop your pin'}
@@ -1071,9 +1225,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
               onClick={handleLocateMe}
               disabled={isLocatingGps}
               className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
-                originMode === 'GPS' && isGpsActive
-                  ? 'btn-emerald'
-                  : 'bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800'
+                originMode === 'GPS' && isGpsActive ? 'btn-emerald' : 'btn-sky'
               }`}
             >
               <LocateFixed className={`w-3.5 h-3.5 shrink-0 ${isLocatingGps ? 'animate-spin' : ''}`} />
@@ -1084,8 +1236,8 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                     : 'Locating...'
                   : originMode === 'GPS' && isGpsActive
                     ? lang === 'bn'
-                      ? 'লাইভ GPS চালু'
-                      : 'GPS Active'
+                      ? 'GPS চালু ✓'
+                      : 'GPS On ✓'
                     : lang === 'bn'
                       ? 'আমার GPS'
                       : 'My GPS'}
@@ -1099,7 +1251,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                 setPinDropActive((v) => !v);
               }}
               className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
-                pinDropActive ? 'btn-crimson' : 'btn-surface'
+                pinDropActive ? 'btn-amber' : 'btn-surface'
               }`}
               title={
                 lang === 'bn'
@@ -1122,7 +1274,9 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
             <button
               type="button"
               onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
-              className="min-h-[40px] px-2.5 py-1.5 rounded-xl btn-surface text-xs font-bold cursor-pointer flex items-center gap-1 whitespace-nowrap"
+              className={`min-h-[40px] px-2.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                viewMode === 'list' ? 'btn-indigo' : 'btn-surface'
+              }`}
             >
               {viewMode === 'map' ? <List className="w-4 h-4 shrink-0" /> : <MapIcon className="w-4 h-4 shrink-0" />}
               <span className="hidden sm:inline">
@@ -1175,7 +1329,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
 
         {/* Uber / Pathao Pickup / Hospital Search Input with Instant Autocomplete */}
         <div className="relative">
-          <Search className="w-4 h-4 text-rose-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <Search className="w-4 h-4 text-teal-600 dark:text-teal-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
             value={pickupQuery}
@@ -1184,12 +1338,18 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
               setPickupQuery(e.target.value);
               setShowSuggestions(true);
             }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSubmitPickupQuery();
+              }
+            }}
             placeholder={
               lang === 'bn'
-                ? 'রোগী কোন হাসপাতালে বা এলাকায়? লিখুন (যেমন: নিকেতন, Square Hospital, DMCH, ধানমন্ডি)...'
-                : 'Where is blood needed? Type hospital or area (e.g. Niketon, Square Hospital, DMCH)...'
+                ? 'রোগী কোন হাসপাতালে বা এলাকায়? লিখে Enter চাপুন (যেমন: নিকেতন, Square Hospital, DMCH)...'
+                : 'Where is blood needed? Type hospital or area & press Enter (e.g. Niketon, Square Hospital)...'
             }
-            className="w-full h-11 pl-10 pr-9 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
+            className="w-full h-11 pl-10 pr-9 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500"
           />
           {pickupQuery && (
             <button
@@ -1212,14 +1372,14 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => handleSelectSuggestion(item)}
-                  className="w-full px-3.5 py-2.5 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800/80 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                  className="w-full px-3.5 py-2.5 text-left hover:bg-teal-50/70 dark:hover:bg-slate-800/80 flex items-center justify-between gap-2 cursor-pointer transition-colors"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div
                       className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
                         item.kind === 'HOSPITAL'
-                          ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400'
-                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                          ? 'bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-400'
+                          : 'bg-teal-100 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300'
                       }`}
                     >
                       {item.kind === 'HOSPITAL' ? (
@@ -1237,7 +1397,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                       </div>
                     </div>
                   </div>
-                  <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 shrink-0 whitespace-nowrap">
+                  <span className="text-[11px] font-bold text-teal-700 dark:text-teal-400 shrink-0 whitespace-nowrap">
                     {lang === 'bn' ? 'পিন সেট করুন →' : 'Set Pin →'}
                   </span>
                 </button>
@@ -1272,10 +1432,10 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
 
           <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             {[
-              { id: 'ALL', label: lang === 'bn' ? 'সব' : 'All' },
-              { id: 'DONOR', label: lang === 'bn' ? 'ডোনার' : 'Donors' },
-              { id: 'HOSPITAL', label: lang === 'bn' ? 'হাসপাতাল' : 'Hospitals' },
-              { id: 'SOS', label: lang === 'bn' ? 'SOS' : 'SOS' },
+              { id: 'ALL', label: lang === 'bn' ? 'সব' : 'All', activeClass: 'btn-obsidian' },
+              { id: 'DONOR', label: lang === 'bn' ? 'ডোনার' : 'Donors', activeClass: 'btn-emerald' },
+              { id: 'HOSPITAL', label: lang === 'bn' ? 'হাসপাতাল' : 'Hospitals', activeClass: 'btn-sky' },
+              { id: 'SOS', label: lang === 'bn' ? 'SOS' : 'SOS', activeClass: 'btn-crimson' },
             ].map((item) => (
               <button
                 key={item.id}
@@ -1283,7 +1443,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                 onClick={() => setFilterType(item.id as 'ALL' | 'DONOR' | 'SOS' | 'HOSPITAL')}
                 className={`min-h-[36px] px-2.5 py-1 text-xs font-bold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
                   filterType === item.id
-                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                    ? item.activeClass
                     : 'bg-slate-100 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
                 }`}
               >
@@ -1515,11 +1675,23 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
               <div className="flex items-center gap-1.5 pointer-events-auto">
                 <button
                   type="button"
+                  onClick={handleFitAllPins}
+                  className="min-h-[36px] px-2.5 py-1 rounded-xl bg-teal-600/95 hover:bg-teal-700 border border-teal-400/50 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
+                  title={lang === 'bn' ? 'ম্যাপে সব পিন এক নজরে দেখুন' : 'Fit all active pins into view'}
+                >
+                  <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden sm:inline">
+                    {lang === 'bn' ? 'সব পিন' : 'Fit Pins'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={cycleTileStyle}
                   className="min-h-[36px] px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
                   title={lang === 'bn' ? 'ম্যাপের স্টাইল পরিবর্তন করুন' : 'Switch Map Layer'}
                 >
-                  <Layers className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                  <Layers className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                   <span className="hidden sm:inline">
                     {lang === 'bn'
                       ? TILE_LAYER_CONFIGS[tileStyle].labelBn
@@ -1560,13 +1732,17 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
             </div>
 
             {/* Bottom-Left Compact Legend */}
-            <div className="absolute bottom-3 left-3 z-[400] px-2.5 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-[11px] text-white flex items-center gap-3 pointer-events-none shadow-sm">
+            <div className="absolute bottom-3 left-3 z-[400] px-2.5 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-[11px] text-white flex items-center gap-2.5 flex-wrap pointer-events-none shadow-sm">
               <span className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
                 {lang === 'bn' ? 'ডোনার' : 'Donor'}
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-slate-700 border border-slate-400 inline-block" />
+                <span className="w-2.5 h-2.5 rounded-sm bg-indigo-500 inline-block" />
+                {lang === 'bn' ? 'অ্যাডমিন' : 'Admin'}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-sky-600 inline-block" />
                 {lang === 'bn' ? 'হাসপাতাল' : 'Hospital'}
               </span>
               <span className="flex items-center gap-1.5">
@@ -1581,6 +1757,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
             <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
               {filteredLocations.slice(0, 8).map((loc, idx) => {
                 const isSelected = loc.id === selectedLoc?.id;
+                const adminPin = isMapDonorAdmin(loc);
                 return (
                   <button
                     key={loc.id}
@@ -1589,16 +1766,18 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                     className={`min-h-[48px] px-3 py-2 rounded-2xl border text-left flex items-center gap-2.5 shrink-0 cursor-pointer transition-colors ${
                       isSelected
                         ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-slate-900 dark:border-white shadow-sm'
-                        : 'bg-white dark:bg-[#111827] text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:border-rose-400'
+                        : 'bg-white dark:bg-[#111827] text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:border-teal-400'
                     }`}
                   >
                     <span
                       className={`px-2 h-7 rounded-lg font-extrabold text-[11px] text-white flex items-center justify-center shrink-0 ${
                         loc.type === 'DONOR'
-                          ? 'bg-emerald-600'
+                          ? adminPin
+                            ? 'bg-indigo-600'
+                            : 'bg-emerald-600'
                           : loc.type === 'SOS'
                             ? 'bg-red-600'
-                            : 'bg-slate-700'
+                            : 'bg-sky-700'
                       }`}
                     >
                       {loc.type === 'HOSPITAL' ? loc.shortLabel : loc.bloodGroup}
@@ -1632,10 +1811,12 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   <div
                     className={`px-2.5 h-12 min-w-[48px] rounded-xl flex items-center justify-center font-black text-sm text-white shrink-0 ${
                       selectedLoc.type === 'DONOR'
-                        ? 'bg-emerald-600'
+                        ? isMapDonorAdmin(selectedLoc)
+                          ? 'bg-indigo-600'
+                          : 'bg-emerald-600'
                         : selectedLoc.type === 'SOS'
                           ? 'bg-red-600'
-                          : 'bg-slate-800'
+                          : 'bg-sky-700'
                     }`}
                   >
                     {selectedLoc.type === 'HOSPITAL' ? (
@@ -1650,12 +1831,17 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                       <h4 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white leading-snug">
                         {selectedLoc.name}
                       </h4>
+                      {isMapDonorAdmin(selectedLoc) && (
+                        <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0" />
+                      )}
                       <span
                         className={`text-xs font-bold ${
                           selectedLoc.type === 'SOS'
                             ? 'text-red-600 dark:text-red-400'
                             : selectedLoc.type === 'DONOR'
-                              ? 'text-emerald-600 dark:text-emerald-400'
+                              ? isMapDonorAdmin(selectedLoc)
+                                ? 'text-indigo-600 dark:text-indigo-400'
+                                : 'text-emerald-600 dark:text-emerald-400'
                               : 'text-sky-600 dark:text-sky-400'
                         }`}
                       >
@@ -1665,9 +1851,13 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                             ? 'জরুরি SOS'
                             : 'Emergency SOS'
                           : selectedLoc.type === 'DONOR'
-                            ? lang === 'bn'
-                              ? 'প্রস্তুত রক্তদাতা'
-                              : 'Ready Donor'
+                            ? isMapDonorAdmin(selectedLoc)
+                              ? lang === 'bn'
+                                ? 'অ্যাডমিন রক্ত সমন্বয়ক'
+                                : 'Admin Coordinator'
+                              : lang === 'bn'
+                                ? 'প্রস্তুত রক্তদাতা'
+                                : 'Ready Donor'
                             : lang === 'bn'
                               ? '২৪/৭ ব্লাড ব্যাংক'
                               : '24/7 Blood Bank'}
@@ -1675,7 +1865,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                     </div>
 
                     <div className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 mt-1 flex-wrap tabular-nums">
-                      <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                      <MapPin className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
                       <span>{selectedLoc.district}</span>
                       <span>·</span>
                       <strong className="text-emerald-600 dark:text-emerald-400 font-mono">
@@ -1705,10 +1895,10 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleCopyPhone(selectedLoc.id, selectedLoc.phone)}
-                      className="min-h-[44px] py-2 px-3 rounded-xl btn-surface font-mono font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap tabular-nums"
+                      className="min-h-[44px] py-2 px-3 rounded-xl btn-indigo font-mono font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap tabular-nums"
                     >
                       {copiedPhoneId === selectedLoc.id ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <Check className="w-3.5 h-3.5 shrink-0" />
                       ) : (
                         <Copy className="w-3.5 h-3.5 shrink-0" />
                       )}
@@ -1719,9 +1909,9 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   <button
                     type="button"
                     onClick={() => onRevealPhone(selectedLoc.sourceDonor!)}
-                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-surface font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-amber font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                   >
-                    <Lock className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                    <Lock className="w-3.5 h-3.5 shrink-0" />
                     <span>{lang === 'bn' ? 'নম্বর অনুরোধ করুন' : 'Request Contact'}</span>
                   </button>
                 ) : null}
@@ -1736,7 +1926,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                         selectedLoc.phone || undefined
                       )
                     }
-                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] py-2 px-3.5 rounded-xl btn-violet font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                   >
                     <MessageCircle className="w-3.5 h-3.5 shrink-0" />
                     <span>{lang === 'bn' ? 'চ্যাট করুন' : 'Chat'}</span>
@@ -1767,11 +1957,11 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   href={`https://www.google.com/maps/dir/?api=1&origin=${originCoords.latitude},${originCoords.longitude}&destination=${selectedLoc.lat},${selectedLoc.lng}&travelmode=driving`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="min-h-[44px] py-2 px-3.5 rounded-xl btn-obsidian font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ml-auto"
+                  className="min-h-[44px] py-2 px-3.5 rounded-xl btn-sky font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ml-auto"
                 >
-                  <Navigation className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  <Navigation className="w-3.5 h-3.5 shrink-0" />
                   <span>{lang === 'bn' ? 'নেভিগেশন' : 'Navigate'}</span>
-                  <ExternalLink className="w-3 h-3 opacity-75 shrink-0" />
+                  <ExternalLink className="w-3 h-3 opacity-85 shrink-0" />
                 </a>
               </div>
             </div>
@@ -1804,10 +1994,12 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   <div
                     className={`px-2 h-10 min-w-[44px] rounded-xl flex items-center justify-center font-black text-xs text-white shrink-0 ${
                       loc.type === 'DONOR'
-                        ? 'bg-emerald-600'
+                        ? isMapDonorAdmin(loc)
+                          ? 'bg-indigo-600'
+                          : 'bg-emerald-600'
                         : loc.type === 'SOS'
                           ? 'bg-red-600'
-                          : 'bg-slate-800'
+                          : 'bg-sky-700'
                     }`}
                   >
                     {loc.type === 'HOSPITAL' ? loc.shortLabel : loc.bloodGroup}
@@ -1829,10 +2021,10 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleSelectCarouselItem(loc)}
-                    className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 cursor-pointer flex items-center justify-center"
+                    className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 hover:bg-teal-100 cursor-pointer flex items-center justify-center"
                     title={lang === 'bn' ? 'ম্যাপে রুট দেখুন' : 'Show Route on Map'}
                   >
-                    <MapPin className="w-4 h-4 text-rose-500" />
+                    <MapPin className="w-4 h-4" />
                   </button>
 
                   {loc.canDirectCall && loc.phone ? (
@@ -1847,7 +2039,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onRevealPhone(loc.sourceDonor!)}
-                      className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 cursor-pointer flex items-center justify-center"
+                      className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 cursor-pointer flex items-center justify-center"
                       title={lang === 'bn' ? 'যোগাযোগ অনুরোধ' : 'Request Contact'}
                     >
                       <Lock className="w-4 h-4" />

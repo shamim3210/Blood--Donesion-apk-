@@ -15,8 +15,8 @@ import {
   normalizeFacebookProfileUrl,
 } from '../firebase';
 import {
-  requestRealDeviceGPSWithStatus,
   requestFreshHighAccuracyGPS,
+  clearCachedDeviceGps,
   DEFAULT_BANGLADESH_COORDS,
   resolveBangladeshCoordinates,
   resolvePlaceOrHospitalQuery,
@@ -43,6 +43,7 @@ import {
   Heart,
   RotateCcw,
   MessageSquare,
+  MessageCircle,
   UserPlus,
   Mic,
   MicOff,
@@ -60,6 +61,7 @@ import {
   ChevronUp,
   Hospital,
   ExternalLink,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 
@@ -144,8 +146,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   });
   const [copiedDonorId, setCopiedDonorId] = useState<string | null>(null);
 
-  // Smart Location / GPS State
-  const [locationMode, setLocationMode] = useState<'GPS' | 'PLACE' | 'MANUAL'>('GPS');
+  // Smart Location / GPS State — manual by default, never auto-enables "GPS On"
+  const [locationMode, setLocationMode] = useState<'GPS' | 'PLACE' | 'MANUAL'>('MANUAL');
   const [gpsAvailable, setGpsAvailable] = useState<boolean>(false);
   const [isLocatingGps, setIsLocatingGps] = useState<boolean>(false);
   const [gpsFeedback, setGpsFeedback] = useState<string | null>(null);
@@ -191,25 +193,6 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     }
   }, [presetGroup, presetDistrict, presetNonce]);
 
-  // Keep manual/user-entered search mode by default unless user explicitly clicks GPS button
-  useEffect(() => {
-    let active = true;
-    requestRealDeviceGPSWithStatus()
-      .then(({ coords, isRealGps }) => {
-        if (!active) return;
-        setUserCoords(coords);
-        setGpsAvailable(isRealGps);
-      })
-      .catch(() => {
-        if (active) {
-          setGpsAvailable(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
   const toggleShortlistDonor = useCallback((donorId: string) => {
     setShortlistedIds((prev) => {
       const next = prev.includes(donorId)
@@ -243,6 +226,13 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     return getInstantLocalPlaceSuggestions(searchQuery, lang).slice(0, 6);
   }, [searchQuery, lang]);
 
+  const hasActiveLocationReference = Boolean(
+    (locationMode === 'GPS' && gpsAvailable) ||
+      (locationMode === 'PLACE' && customPlaceCoords) ||
+      resolvedTypedPlace ||
+      selectedDistrict !== 'ALL'
+  );
+
   const effectiveOriginCoords = useMemo<Coordinates>(() => {
     if (customPlaceCoords && locationMode === 'PLACE') {
       return customPlaceCoords;
@@ -265,6 +255,18 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   ]);
 
   const handleLocateLiveGps = async () => {
+    if (locationMode === 'GPS' && gpsAvailable) {
+      clearCachedDeviceGps();
+      setLocationMode('MANUAL');
+      setGpsAvailable(false);
+      setGpsFeedback(
+        lang === 'bn'
+          ? 'লাইভ GPS বন্ধ করা হয়েছে — নিজের মতো হাসপাতাল, এলাকা বা জেলা বেছে নিন।'
+          : 'Live GPS turned off — enter your hospital, area, or district manually.'
+      );
+      return;
+    }
+
     setIsLocatingGps(true);
     setGpsFeedback(null);
     try {
@@ -379,12 +381,15 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
   };
 
   const handleResetFilters = () => {
+    clearCachedDeviceGps();
     setSelectedGroup('ALL');
     setSelectedDistrict('ALL');
     setIncludeCompatible(true);
     setIncludeNearbyDistricts(true);
     setSearchQuery('');
     setCustomPlaceCoords(null);
+    setLocationMode('MANUAL');
+    setGpsAvailable(false);
     setOnlyAvailable(false);
     setOnlyVerified(false);
     setOnlyNightReady(false);
@@ -716,9 +721,25 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   setCustomPlaceCoords(null);
+                  if (locationMode === 'PLACE') setLocationMode('MANUAL');
                   setShowPlaceSuggestions(true);
                 }}
-                className={`w-full h-11 pl-10 pr-16 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0d1322] text-slate-900 dark:text-white placeholder:text-slate-400 border transition-colors focus:outline-none focus:ring-2 focus:ring-rose-500 ${
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (placeSuggestions.length > 0) {
+                      const top = placeSuggestions[0];
+                      setSearchQuery(top.title);
+                      setCustomPlaceCoords(top.coords);
+                      setLocationMode('PLACE');
+                    } else if (resolvedTypedPlace) {
+                      setCustomPlaceCoords(resolvedTypedPlace.coords);
+                      setLocationMode('PLACE');
+                    }
+                    setShowPlaceSuggestions(false);
+                  }
+                }}
+                className={`w-full h-11 pl-10 pr-16 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#0d1322] text-slate-900 dark:text-white placeholder:text-slate-400 border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500 ${
                   isListening
                     ? 'border-rose-500 ring-2 ring-rose-500/30'
                     : 'border-slate-300 dark:border-slate-700'
@@ -731,6 +752,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                     onClick={() => {
                       setSearchQuery('');
                       setCustomPlaceCoords(null);
+                      if (locationMode === 'PLACE') setLocationMode('MANUAL');
                       setShowPlaceSuggestions(false);
                     }}
                     className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
@@ -765,10 +787,14 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                         setLocationMode('PLACE');
                         setShowPlaceSuggestions(false);
                       }}
-                      className="w-full px-3.5 py-2.5 text-left hover:bg-rose-50/70 dark:hover:bg-slate-800/80 flex items-center justify-between gap-2 cursor-pointer"
+                      className="w-full px-3.5 py-2.5 text-left hover:bg-sky-50/70 dark:hover:bg-slate-800/80 flex items-center justify-between gap-2 cursor-pointer"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <Hospital className="w-4 h-4 text-rose-500 shrink-0" />
+                        {item.kind === 'HOSPITAL' ? (
+                          <Hospital className="w-4 h-4 text-rose-500 shrink-0" />
+                        ) : (
+                          <MapPin className="w-4 h-4 text-sky-600 shrink-0" />
+                        )}
                         <div className="min-w-0">
                           <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
                             {item.title}
@@ -778,7 +804,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           </div>
                         </div>
                       </div>
-                      <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 shrink-0">
+                      <span className="text-[11px] font-bold text-sky-600 dark:text-sky-400 shrink-0">
                         {lang === 'bn' ? 'নির্বাচন' : 'Select'}
                       </span>
                     </button>
@@ -793,7 +819,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 value={selectedDistrict}
                 onChange={(e) => setSelectedDistrict(e.target.value)}
                 aria-label="Select District"
-                className="w-full h-11 px-3 text-xs sm:text-sm font-semibold rounded-xl bg-slate-50 dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                className="w-full h-11 px-3 text-xs sm:text-sm font-semibold rounded-xl bg-slate-50 dark:bg-[#0d1322] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
               >
                 <option value="ALL">
                   {lang === 'bn' ? 'সকল জেলা (All BD)' : 'All 64 Districts'}
@@ -806,14 +832,23 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               </select>
             </div>
 
-            {/* 1-Tap Live GPS + Reset */}
+            {/* 1-Tap Live GPS Toggle + Reset */}
             <div className="@md:col-span-3 flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleLocateLiveGps}
                 disabled={isLocatingGps}
+                title={
+                  locationMode === 'GPS' && gpsAvailable
+                    ? lang === 'bn'
+                      ? 'GPS বন্ধ করতে ট্যাপ করুন'
+                      : 'Tap to turn off GPS'
+                    : lang === 'bn'
+                      ? 'আপনার বর্তমান লোকেশন ব্যবহার করুন'
+                      : 'Use your live device GPS'
+                }
                 className={`flex-1 min-h-[44px] px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  locationMode === 'GPS' && gpsAvailable ? 'btn-emerald' : 'btn-surface'
+                  locationMode === 'GPS' && gpsAvailable ? 'btn-emerald' : 'btn-sky'
                 }`}
               >
                 <LocateFixed className={`w-3.5 h-3.5 shrink-0 ${isLocatingGps ? 'animate-spin' : ''}`} />
@@ -824,8 +859,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                       : 'Locating...'
                     : locationMode === 'GPS' && gpsAvailable
                       ? lang === 'bn'
-                        ? 'GPS চালু'
-                        : 'GPS On'
+                        ? 'GPS চালু ✓'
+                        : 'GPS On ✓'
                       : lang === 'bn'
                         ? 'আমার GPS'
                         : 'My GPS'}
@@ -835,7 +870,9 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               {(selectedGroup !== 'ALL' ||
                 selectedDistrict !== 'ALL' ||
                 searchQuery.trim() !== '' ||
+                (locationMode === 'GPS' && gpsAvailable) ||
                 onlyAvailable ||
+                onlyShortlisted ||
                 activeMoreFilterCount > 0) && (
                 <button
                   type="button"
@@ -865,14 +902,20 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                     if (active) {
                       setSearchQuery('');
                       setCustomPlaceCoords(null);
+                      if (locationMode === 'PLACE') setLocationMode('MANUAL');
                     } else {
                       setSearchQuery(chip.query);
+                      const resolved = resolvePlaceOrHospitalQuery(chip.query);
+                      if (resolved) {
+                        setCustomPlaceCoords(resolved.coords);
+                        setLocationMode('PLACE');
+                      }
                       setSelectedDistrict('ALL');
                     }
                   }}
                   className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
                     active
-                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                      ? 'btn-sky'
                       : 'bg-slate-100 hover:bg-slate-200/80 dark:bg-[#0d1322] dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-800'
                   }`}
                 >
@@ -982,7 +1025,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               type="button"
               onClick={() => setOnlyShortlisted((v) => !v)}
               className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                onlyShortlisted ? 'btn-crimson' : 'btn-surface'
+                onlyShortlisted ? 'btn-amber' : 'btn-surface'
               }`}
             >
               <Bookmark
@@ -999,7 +1042,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               type="button"
               onClick={() => setShowMoreFilters((v) => !v)}
               className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                showMoreFilters || activeMoreFilterCount > 0 ? 'btn-obsidian' : 'btn-surface'
+                showMoreFilters || activeMoreFilterCount > 0 ? 'btn-indigo' : 'btn-surface'
               }`}
             >
               <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
@@ -1040,7 +1083,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               type="button"
               onClick={() => setOnlyVerified((v) => !v)}
               className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                onlyVerified ? 'btn-obsidian' : 'btn-surface'
+                onlyVerified ? 'btn-sky' : 'btn-surface'
               }`}
             >
               <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
@@ -1051,7 +1094,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               type="button"
               onClick={() => setOnlyNightReady((v) => !v)}
               className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                onlyNightReady ? 'btn-obsidian' : 'btn-surface'
+                onlyNightReady ? 'btn-violet' : 'btn-surface'
               }`}
             >
               <Moon className="w-3.5 h-3.5" />
@@ -1062,7 +1105,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               type="button"
               onClick={() => setOnlyCampusClub((v) => !v)}
               className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                onlyCampusClub ? 'btn-obsidian' : 'btn-surface'
+                onlyCampusClub ? 'btn-indigo' : 'btn-surface'
               }`}
             >
               <GraduationCap className="w-3.5 h-3.5" />
@@ -1074,7 +1117,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                 type="button"
                 onClick={() => setIncludeNearbyDistricts((v) => !v)}
                 className={`min-h-[38px] px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  includeNearbyDistricts ? 'btn-emerald' : 'btn-surface'
+                  includeNearbyDistricts ? 'btn-teal' : 'btn-surface'
                 }`}
               >
                 <Expand className="w-3.5 h-3.5 shrink-0" />
@@ -1216,6 +1259,13 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                   : null;
 
               const isConfirmedMatch = confirmedDonorId === donor.id;
+              const isAdminDonor =
+                donor.panelType === 'ADMIN' ||
+                Boolean(
+                  donor.hospitalAffiliation?.includes('অ্যাডমিন') ||
+                    donor.hospitalAffiliation?.toLowerCase().includes('admin')
+                );
+              const isShortlisted = shortlistedIds.includes(donor.id);
 
               return (
                 <div
@@ -1225,14 +1275,20 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                       ? 'border-emerald-500 ring-1 ring-emerald-500'
                       : wasAttemptedUnsuccessfully
                         ? 'opacity-75'
-                        : 'hover:border-rose-400 dark:hover:border-rose-600'
+                        : isAdminDonor
+                          ? 'border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/25 dark:bg-indigo-950/20 hover:border-indigo-400 dark:hover:border-indigo-500'
+                          : 'hover:border-emerald-400 dark:hover:border-emerald-600'
                   }`}
                 >
                   <div>
-                    {/* Top Row: Blood Group, Name & Clear Distance */}
+                    {/* Top Row: Blood Group, Name & Conditional Honest Distance */}
                     <div className="flex items-start justify-between gap-3 mb-2.5">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className="w-12 h-12 rounded-2xl btn-crimson flex flex-col items-center justify-center font-black text-lg tracking-tight shrink-0">
+                        <div
+                          className={`w-12 h-12 rounded-2xl flex flex-col items-center justify-center font-black text-lg tracking-tight shrink-0 ${
+                            isAdminDonor ? 'btn-indigo' : 'btn-crimson'
+                          }`}
+                        >
                           <span>{donor.bloodGroup}</span>
                         </div>
                         <div className="min-w-0 flex-1">
@@ -1240,12 +1296,20 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white leading-tight">
                               {donor.name}
                             </h3>
+                            {isAdminDonor && (
+                              <span
+                                title={lang === 'bn' ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'Admin Coordinator'}
+                                className="text-amber-500 dark:text-amber-400 shrink-0"
+                              >
+                                <ShieldCheck className="w-4 h-4" />
+                              </span>
+                            )}
                             {donor.verifiedBadge && (
                               <span
                                 title={t.verifiedDonor}
-                                className="text-blue-500 dark:text-blue-400 shrink-0"
+                                className="text-sky-500 dark:text-sky-400 shrink-0"
                               >
-                                <CheckCircle2 className="w-4 h-4 fill-blue-500 text-white dark:fill-blue-400 dark:text-slate-900" />
+                                <CheckCircle2 className="w-4 h-4 fill-sky-500 text-white dark:fill-sky-400 dark:text-slate-900" />
                               </span>
                             )}
                           </div>
@@ -1261,10 +1325,25 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                                       ? 'বিকল্প ম্যাচিং গ্রুপ'
                                       : 'Compatible'}
                                 </span>
-                                {donor.hospitalAffiliation ? <span aria-hidden="true"> · </span> : null}
+                                <span aria-hidden="true"> · </span>
                               </>
                             )}
-                            {donor.hospitalAffiliation && <span>{donor.hospitalAffiliation}</span>}
+                            <span
+                              className={
+                                isAdminDonor
+                                  ? 'font-semibold text-indigo-700 dark:text-indigo-300'
+                                  : 'font-medium text-emerald-700 dark:text-emerald-400'
+                              }
+                            >
+                              {donor.hospitalAffiliation ||
+                                (isAdminDonor
+                                  ? lang === 'bn'
+                                    ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
+                                    : 'Admin Coordinator'
+                                  : lang === 'bn'
+                                    ? 'স্বেচ্ছাসেবী রক্তদাতা'
+                                    : 'Volunteer Donor')}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -1284,27 +1363,29 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                               {lang === 'bn' ? 'বিরতিতে' : 'Paused'}
                             </div>
                           )}
-                          <div className="text-[11px] font-mono tabular-nums text-emerald-700 dark:text-emerald-400 font-bold mt-0.5">
-                            ~{formatDistance(distanceKm, lang)}
-                          </div>
+                          {hasActiveLocationReference && (
+                            <div className="text-[11px] font-mono tabular-nums text-sky-700 dark:text-sky-400 font-bold mt-0.5">
+                              ~{formatDistance(distanceKm, lang)}
+                            </div>
+                          )}
                         </div>
 
                         <button
                           type="button"
                           onClick={() => toggleShortlistDonor(donor.id)}
                           aria-label={
-                            shortlistedIds.includes(donor.id)
+                            isShortlisted
                               ? 'Remove from shortlist'
                               : 'Save donor to shortlist'
                           }
                           className={`min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center cursor-pointer shrink-0 ${
-                            shortlistedIds.includes(donor.id) ? 'btn-soft-rose' : 'btn-surface'
+                            isShortlisted ? 'btn-amber' : 'btn-surface'
                           }`}
                         >
                           <Bookmark
                             className={`w-4 h-4 ${
-                              shortlistedIds.includes(donor.id)
-                                ? 'fill-rose-600 text-rose-600 dark:fill-rose-400 dark:text-rose-400'
+                              isShortlisted
+                                ? 'fill-white text-white'
                                 : 'text-slate-500 dark:text-slate-400'
                             }`}
                           />
@@ -1316,9 +1397,13 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                     <div className="py-2 border-t border-slate-100 dark:border-slate-800/80 space-y-1 text-xs text-slate-600 dark:text-slate-300">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-1 font-medium text-slate-700 dark:text-slate-200 truncate">
-                          <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                          <MapPin
+                            className={`w-3.5 h-3.5 shrink-0 ${
+                              isAdminDonor ? 'text-indigo-500' : 'text-teal-600 dark:text-teal-400'
+                            }`}
+                          />
                           <span className="truncate">
-                            {upazilaName}, {districtName}
+                            {upazilaName ? `${upazilaName}, ${districtName}` : districtName}
                           </span>
                         </div>
                         <div className="flex items-center gap-2 font-mono tabular-nums text-slate-600 dark:text-slate-300">
@@ -1365,8 +1450,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                       <span className="truncate">
                         {consentCheck.allowed
                           ? lang === 'bn'
-                            ? 'সরাসরি কল ও WhatsApp খোলা আছে'
-                            : 'Direct Call & WhatsApp ready'
+                            ? 'সরাসরি কল, WhatsApp ও Facebook খোলা আছে'
+                            : 'Direct Call, WhatsApp & Facebook ready'
                           : lang === 'bn'
                             ? 'ইন-অ্যাপ চ্যাট বা অনুমতির মাধ্যমে যোগাযোগ'
                             : 'Chat or request contact'}
@@ -1410,16 +1495,18 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             href={directWaHref}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
+                            <MessageCircle className="w-3.5 h-3.5 shrink-0" />
                             <span>WhatsApp</span>
                           </a>
                         ) : (
                           <button
                             type="button"
                             onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
+                            <MessageCircle className="w-3.5 h-3.5 shrink-0" />
                             <span>WhatsApp</span>
                           </button>
                         )}
@@ -1429,7 +1516,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             href={effectiveFacebookUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-facebook flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                             <span>Facebook</span>
@@ -1439,7 +1526,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             type="button"
                             onClick={() => handleCopyDirectPhone(donor.id, effectiveRawPhone)}
                             className={`w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                              copiedDonorId === donor.id ? 'btn-soft-emerald' : 'btn-obsidian'
+                              copiedDonorId === donor.id ? 'btn-emerald' : 'btn-indigo'
                             }`}
                           >
                             {copiedDonorId === donor.id ? (
@@ -1458,7 +1545,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           <button
                             type="button"
                             onClick={() => onStartChatWithDonor(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-violet flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageSquare className="w-3.5 h-3.5 shrink-0" />
                             <span>{lang === 'bn' ? 'চ্যাট' : 'Chat'}</span>
@@ -1467,7 +1554,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           <button
                             type="button"
                             onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-sky flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <span>{lang === 'bn' ? 'বিস্তারিত' : 'Details'}</span>
                           </button>
@@ -1479,7 +1566,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           type="button"
                           onClick={() => onRevealPhone(donor)}
                           disabled={availabilityConfidence === 'DND'}
-                          className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-obsidian flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                          className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-sky flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                         >
                           <Lock className="w-3.5 h-3.5 shrink-0" />
                           <span>
@@ -1490,7 +1577,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           <button
                             type="button"
                             onClick={() => onStartChatWithDonor(donor)}
-                            className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-xl btn-violet flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageSquare className="w-3.5 h-3.5 shrink-0" />
                             <span>{lang === 'bn' ? 'মেসেজ দিন' : 'Chat'}</span>

@@ -1945,15 +1945,37 @@ export async function ensureUserAutoSyncedInFirestore(
         if (rawDraft) {
           const parsedDraft = JSON.parse(rawDraft);
           const draftFb = normalizeFacebookProfileUrl(parsedDraft?.facebookUrl);
+          const parsedAge = Number(parsedDraft?.age);
+          const parsedWeight = Number(parsedDraft?.weightKg);
+          const validBloodGroups = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
           if (
             parsedDraft &&
             parsedDraft.name &&
             !isFakePersonName(parsedDraft.name) &&
             parsedDraft.phone &&
             parsedDraft.phone !== '01700000000' &&
-            draftFb
+            parsedDraft.whatsappPhone &&
+            parsedDraft.whatsappPhone !== '01700000000' &&
+            draftFb &&
+            validBloodGroups.includes(parsedDraft.bloodGroup) &&
+            typeof parsedDraft.district === 'string' &&
+            parsedDraft.district.trim().length >= 2 &&
+            typeof parsedDraft.upazila === 'string' &&
+            parsedDraft.upazila.trim().length >= 2 &&
+            Number.isFinite(parsedAge) &&
+            parsedAge >= 18 &&
+            parsedAge <= 65 &&
+            Number.isFinite(parsedWeight) &&
+            parsedWeight >= 40 &&
+            parsedWeight <= 180 &&
+            ['MALE', 'FEMALE', 'OTHER'].includes(parsedDraft.gender)
           ) {
-            pendingDraft = { ...parsedDraft, facebookUrl: draftFb };
+            pendingDraft = {
+              ...parsedDraft,
+              age: Math.round(parsedAge),
+              weightKg: Math.round(parsedWeight),
+              facebookUrl: draftFb,
+            };
           } else {
             localStorage.removeItem('bloodsearch_pending_profile_draft');
           }
@@ -1961,11 +1983,16 @@ export async function ensureUserAutoSyncedInFirestore(
       } catch {}
     }
 
-    if (pendingDraft && isUserVerifiedForWrites(validUser)) {
+    if (
+      pendingDraft &&
+      pendingDraft.bloodGroup &&
+      pendingDraft.gender &&
+      isUserVerifiedForWrites(validUser)
+    ) {
       const cleanUidSuffix =
         validUser.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001';
       const draftPhone = normalizeAsciiDigits(pendingDraft.phone || '').trim();
-      const draftWa = normalizeAsciiDigits(pendingDraft.whatsappPhone || draftPhone).trim();
+      const draftWa = normalizeAsciiDigits(pendingDraft.whatsappPhone || '').trim();
       const draftFb = normalizeFacebookProfileUrl(pendingDraft.facebookUrl)!;
       const draftRole: 'USER' | 'ADMIN' = isAdmin ? 'ADMIN' : 'USER';
       const draftShareDirect = pendingDraft.shareDirectContact !== false;
@@ -1978,17 +2005,17 @@ export async function ensureUserAutoSyncedInFirestore(
         phone: draftPhone,
         whatsappPhone: draftWa,
         facebookUrl: draftFb,
-        bloodGroup: pendingDraft.bloodGroup || 'O+',
-        division: pendingDraft.division || 'dhaka',
-        district: pendingDraft.district || 'dhaka',
-        upazila: pendingDraft.upazila || 'Dhaka',
+        bloodGroup: pendingDraft.bloodGroup,
+        division: String(pendingDraft.division || 'dhaka').trim(),
+        district: String(pendingDraft.district).trim(),
+        upazila: String(pendingDraft.upazila).trim(),
         photoUrl: pendingDraft.photoUrl || validUser.photoURL || DEFAULT_AVATAR_DATA_URI,
         role: draftRole,
         verifiedStatus: true,
         idCardNumber: draftRole === 'ADMIN' ? `ADMIN-BD-${cleanUidSuffix}` : `BS-${cleanUidSuffix}`,
-        age: pendingDraft.age || 25,
-        gender: pendingDraft.gender || 'MALE',
-        weightKg: pendingDraft.weightKg || 62,
+        age: Number(pendingDraft.age),
+        gender: pendingDraft.gender,
+        weightKg: Number(pendingDraft.weightKg),
         availableToDonate: pendingDraft.availableToDonate !== false,
         availabilityStatus:
           pendingDraft.availableToDonate === false ? 'TEMPORARILY_UNAVAILABLE' : 'AVAILABLE',
@@ -2029,10 +2056,11 @@ export async function ensureUserAutoSyncedInFirestore(
         verifiedBadge: isAdmin,
         rating: 5.0,
         reviewsCount: 0,
-        age: draftAccount.age,
-        gender: draftAccount.gender,
-        weightKg: draftAccount.weightKg,
+        age: draftAccount.age || 0,
+        gender: draftAccount.gender || 'MALE',
+        weightKg: draftAccount.weightKg || 0,
         hospitalAffiliation: isAdmin ? 'অ্যাডমিন ও রক্ত সমন্বয়ক' : 'স্বেচ্ছাসেবী রক্তদাতা',
+        panelType: draftRole,
         avatar: draftAccount.photoUrl,
       };
 
@@ -2565,9 +2593,8 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
               (data.availabilityStatus as DonorAvailabilityStatus | undefined) ||
               (data.available ? 'AVAILABLE' : 'TEMPORARILY_UNAVAILABLE');
             const normalizedDist =
-              data.district === 'ঢাকা' ? 'dhaka' : String(data.district || 'dhaka');
-            const normalizedUpz =
-              data.upazila === 'সদর' ? 'dhanmondi' : String(data.upazila || 'dhanmondi');
+              data.district === 'ঢাকা' ? 'dhaka' : String(data.district || '').trim();
+            const normalizedUpz = String(data.upazila || '').trim();
             const donor: Donor = {
               id: d.id,
               name: data.name,
@@ -2601,10 +2628,11 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
               verifiedBadge: Boolean(data.verifiedBadge),
               rating: 5.0,
               reviewsCount: 0,
-              age: Number(data.age) || 24,
+              age: Number(data.age) || 0,
               gender: data.gender || 'MALE',
-              weightKg: Number(data.weightKg) || 60,
+              weightKg: Number(data.weightKg) || 0,
               hospitalAffiliation: data.hospitalAffiliation || 'স্বেচ্ছাসেবী রক্তদাতা',
+              panelType: data.panelType === 'ADMIN' ? 'ADMIN' : 'USER',
               avatar: data.avatar || DEFAULT_AVATAR_DATA_URI,
               reliabilityScore: data.verifiedBadge ? 99 : 92,
             };

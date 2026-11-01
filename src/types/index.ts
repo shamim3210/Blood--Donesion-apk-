@@ -134,6 +134,7 @@ export interface Donor {
   facebookUrl?: string;
   whatsappPhone?: string;
   isCloudRecord?: boolean;
+  panelType?: 'USER' | 'ADMIN';
 }
 
 export interface RequestAlertItem {

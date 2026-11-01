@@ -195,20 +195,30 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     setAlertsPaused(currentUser.alertsPaused === true);
   }, [currentUser]);
 
-  // Quick Inline Profile Edit State (Name, Blood Group, Mobile, WhatsApp, Facebook, District, Custom Area + GPS)
+  // Quick Inline Profile Edit State (100% Manual User Entry: Name, Group, Age, Weight, Gender, Phone, WhatsApp, Facebook, District, Area)
   const [isQuickEditOpen, setIsQuickEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
-  const [editGroup, setEditGroup] = useState<BloodGroup>('O+');
+  const [editGroup, setEditGroup] = useState<BloodGroup | ''>('');
+  const [editAge, setEditAge] = useState('');
+  const [editWeight, setEditWeight] = useState('');
+  const [editGender, setEditGender] = useState<'MALE' | 'FEMALE' | 'OTHER' | ''>('');
   const [editPhone, setEditPhone] = useState('');
   const [editWhatsapp, setEditWhatsapp] = useState('');
   const [editFacebook, setEditFacebook] = useState('');
-  const [editDistrict, setEditDistrict] = useState('dhaka');
+  const [editDistrict, setEditDistrict] = useState('');
   const [editArea, setEditArea] = useState('');
   const [isSavingQuickEdit, setIsSavingQuickEdit] = useState(false);
   const [isLocatingQuickGps, setIsLocatingQuickGps] = useState(false);
   const [quickEditError, setQuickEditError] = useState<string | null>(null);
   const [confirmDeleteMyProfile, setConfirmDeleteMyProfile] = useState(false);
   const [isDeletingMyProfile, setIsDeletingMyProfile] = useState(false);
+
+  const parseManualInt = (raw: string): number => {
+    const digits = String(raw || '')
+      .replace(/[০-৯]/g, (ch) => String('০১২৩৪৫৬৭৮৯'.indexOf(ch)))
+      .replace(/[^0-9]/g, '');
+    return digits ? parseInt(digits, 10) : NaN;
+  };
 
   const populateQuickEditFields = (sourceUser: UserAccount | null) => {
     const hasRealSaved = Boolean(
@@ -219,13 +229,33 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         sourceUser.facebookUrl !== 'https://facebook.com/bloodsearch.bd'
     );
     setEditName(hasRealSaved ? sourceUser!.name : '');
-    setEditGroup((hasRealSaved && sourceUser?.bloodGroup) || 'O+');
+    setEditGroup(hasRealSaved && sourceUser?.bloodGroup ? sourceUser.bloodGroup : '');
+    setEditAge(
+      hasRealSaved && typeof sourceUser?.age === 'number' && sourceUser.age >= 18 && sourceUser.age <= 65
+        ? String(sourceUser.age)
+        : ''
+    );
+    setEditWeight(
+      hasRealSaved &&
+        typeof sourceUser?.weightKg === 'number' &&
+        sourceUser.weightKg >= 40 &&
+        sourceUser.weightKg <= 180
+        ? String(sourceUser.weightKg)
+        : ''
+    );
+    setEditGender(
+      hasRealSaved &&
+        sourceUser?.gender &&
+        ['MALE', 'FEMALE', 'OTHER'].includes(sourceUser.gender)
+        ? sourceUser.gender
+        : ''
+    );
     const cleanPhoneVal = hasRealSaved && sourceUser?.phone ? sourceUser.phone : '';
     setEditPhone(cleanPhoneVal);
     setEditWhatsapp(
       hasRealSaved && sourceUser?.whatsappPhone && sourceUser.whatsappPhone !== '01700000000'
         ? sourceUser.whatsappPhone
-        : cleanPhoneVal
+        : ''
     );
     setEditFacebook(
       hasRealSaved ? normalizeFacebookProfileUrl(sourceUser?.facebookUrl) || '' : ''
@@ -236,7 +266,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         d.nameBn === sourceUser?.district ||
         d.nameEn.toLowerCase() === String(sourceUser?.district || '').toLowerCase()
     );
-    setEditDistrict(hasRealSaved && matchedDist ? matchedDist.id : 'dhaka');
+    setEditDistrict(hasRealSaved && matchedDist ? matchedDist.id : '');
     setEditArea(
       hasRealSaved &&
         sourceUser?.upazila &&
@@ -264,7 +294,6 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     );
     if (firebaseUser && !hasRealSaved) {
       populateQuickEditFields(null);
-      setIsQuickEditOpen(true);
     }
   }, [firebaseUser?.uid, currentUser?.id, currentUser?.phone, currentUser?.facebookUrl]);
 
@@ -301,6 +330,44 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       return;
     }
 
+    if (!editGroup) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার রক্তের গ্রুপ নির্বাচন করুন।'
+          : 'Please select your blood group.'
+      );
+      return;
+    }
+
+    const parsedAge = parseManualInt(editAge);
+    if (!Number.isFinite(parsedAge) || parsedAge < 18 || parsedAge > 65) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার সঠিক বয়স লিখুন (১৮ থেকে ৬৫ বছর)।'
+          : 'Please enter your valid age (18 to 65 years).'
+      );
+      return;
+    }
+
+    const parsedWeight = parseManualInt(editWeight);
+    if (!Number.isFinite(parsedWeight) || parsedWeight < 40 || parsedWeight > 180) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার সঠিক ওজন (কেজি) লিখুন (৪০ থেকে ১৮০ কেজি)।'
+          : 'Please enter your weight in kg (40 to 180 kg).'
+      );
+      return;
+    }
+
+    if (!editGender) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে লিঙ্গ নির্বাচন করুন।'
+          : 'Please select your gender.'
+      );
+      return;
+    }
+
     const cleanPhone = normalizeValidBangladeshMobileE164(editPhone);
     if (!cleanPhone || !isValidBangladeshMobilePhone(editPhone)) {
       setQuickEditError(
@@ -315,8 +382,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     if (!cleanWa || !isValidBangladeshMobilePhone(editWhatsapp)) {
       setQuickEditError(
         lang === 'bn'
-          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (যেমন: 01712345678)।'
-          : 'Please enter a valid 11-digit WhatsApp number (e.g. 01712345678).'
+          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (অথবা "মোবাইলের মতোই" বাটনে চাপুন)।'
+          : 'Please enter a valid 11-digit WhatsApp number (or tap "Same as Mobile").'
       );
       return;
     }
@@ -331,12 +398,27 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       return;
     }
 
-    const distObj = DISTRICTS.find((d) => d.id === editDistrict) || DISTRICTS[0];
-    const finalArea = (
-      editArea.trim() ||
-      (lang === 'bn' ? distObj.nameBn : distObj.nameEn) ||
-      'Dhaka'
-    ).slice(0, 120);
+    const distObj = editDistrict ? DISTRICTS.find((d) => d.id === editDistrict) || null : null;
+    if (!distObj) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার জেলা নির্বাচন করুন।'
+          : 'Please select your district.'
+      );
+      return;
+    }
+
+    const trimmedArea = editArea.trim();
+    if (trimmedArea.length < 2) {
+      setQuickEditError(
+        lang === 'bn'
+          ? 'অনুগ্রহ করে আপনার এলাকার নাম লিখুন (যেমন: নিকেতন, ধানমন্ডি)।'
+          : 'Please enter your area name (e.g. Niketon, Dhanmondi).'
+      );
+      return;
+    }
+
+    const finalArea = trimmedArea.slice(0, 120);
 
     setIsSavingQuickEdit(true);
     try {
@@ -403,9 +485,9 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         role: effectiveRole,
         verifiedStatus: Boolean(activeUser),
         idCardNumber: cleanCardId,
-        age: sameOwnerExisting?.age || currentUser?.age || 25,
-        gender: sameOwnerExisting?.gender || currentUser?.gender || 'MALE',
-        weightKg: sameOwnerExisting?.weightKg || currentUser?.weightKg || 62,
+        age: parsedAge,
+        gender: editGender,
+        weightKg: parsedWeight,
         availableToDonate: availabilityStatus === 'AVAILABLE',
         availabilityStatus,
         availabilityConfirmedAtMs: Date.now(),
@@ -447,13 +529,14 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         verifiedBadge: effectiveRole === 'ADMIN',
         rating: 5.0,
         reviewsCount: 0,
-        age: updatedAccount.age || 25,
-        gender: updatedAccount.gender || 'MALE',
-        weightKg: updatedAccount.weightKg || 62,
+        age: parsedAge,
+        gender: editGender,
+        weightKg: parsedWeight,
         hospitalAffiliation:
           effectiveRole === 'ADMIN'
             ? 'অ্যাডমিন ও রক্ত সমন্বয়ক'
             : 'স্বেচ্ছাসেবী রক্তদাতা',
+        panelType: effectiveRole,
         avatar: updatedAccount.photoUrl,
       };
 
@@ -484,8 +567,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       setIsQuickEditOpen(false);
       showToast(
         lang === 'bn'
-          ? '✓ আপনার প্রোফাইল, রক্তের গ্রুপ ও ঠিকানা সফলভাবে সেভ হয়েছে!'
-          : '✓ Your profile, blood group & address have been saved!'
+          ? '✓ আপনার প্রোফাইল, বয়স, ওজন, রক্তের গ্রুপ ও ঠিকানা সফলভাবে সেভ হয়েছে!'
+          : '✓ Your profile, age, weight, blood group & address have been saved!'
       );
     } catch (err: any) {
       console.error('Quick profile update failed:', err);
@@ -494,6 +577,9 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         JSON.stringify({
           name: cleanName,
           bloodGroup: editGroup,
+          age: parsedAge,
+          weightKg: parsedWeight,
+          gender: editGender,
           phone: cleanPhone,
           whatsappPhone: cleanWa,
           facebookUrl: cleanFb,
@@ -700,6 +786,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
     (hasSavedProfile && currentUser?.email ? currentUser.email : '') ||
     (lang === 'bn' ? 'অ্যাকাউন্ট যুক্ত নয়' : 'Not signed in');
   const displayGroup = (hasSavedProfile && currentUser?.bloodGroup) || 'O+';
+  const displayGroupLabel =
+    hasSavedProfile && currentUser?.bloodGroup ? currentUser.bloodGroup : '—';
   const displayAvatar =
     (hasSavedProfile &&
     currentUser?.photoUrl &&
@@ -718,29 +806,34 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         : lang === 'bn'
           ? 'লগইন করলে যুক্ত হবে'
           : 'Sign in to generate');
-  const rawDistrict = (hasSavedProfile && currentUser?.district) || 'dhaka';
-  const matchedProfileDist = DISTRICTS.find(
-    (d) =>
-      d.id === rawDistrict.toLowerCase() ||
-      d.nameBn === rawDistrict ||
-      d.nameEn.toLowerCase() === rawDistrict.toLowerCase()
-  );
+  const rawDistrict = (hasSavedProfile && currentUser?.district) || '';
+  const matchedProfileDist = rawDistrict
+    ? DISTRICTS.find(
+        (d) =>
+          d.id === rawDistrict.toLowerCase() ||
+          d.nameBn === rawDistrict ||
+          d.nameEn.toLowerCase() === rawDistrict.toLowerCase()
+      )
+    : undefined;
   const displayDistrict = matchedProfileDist
     ? lang === 'bn'
       ? matchedProfileDist.nameBn
       : matchedProfileDist.nameEn
     : rawDistrict;
   const displayArea =
+    hasSavedProfile &&
     currentUser?.upazila &&
     currentUser.upazila !== 'sadar' &&
     currentUser.upazila !== 'সদর'
       ? currentUser.upazila
       : '';
-  const displayFullAddress = displayArea
-    ? `${displayArea}, ${displayDistrict}`
-    : displayDistrict;
-  const displayGender =
-    currentUser?.gender === 'FEMALE'
+  const displayFullAddress =
+    displayArea && displayDistrict
+      ? `${displayArea}, ${displayDistrict}`
+      : displayArea || displayDistrict;
+  const displayGender = !hasSavedProfile
+    ? '—'
+    : currentUser?.gender === 'FEMALE'
       ? lang === 'bn'
         ? 'মহিলা'
         : 'Female'
@@ -748,11 +841,16 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         ? lang === 'bn'
           ? 'অন্যান্য'
           : 'Other'
-        : lang === 'bn'
-          ? 'পুরুষ'
-          : 'Male';
-  const displayDonations = currentUser?.totalDonations ?? 0;
-  const displayAge = currentUser?.age ?? 25;
+        : currentUser?.gender === 'MALE'
+          ? lang === 'bn'
+            ? 'পুরুষ'
+            : 'Male'
+          : '—';
+  const displayDonations = hasSavedProfile ? (currentUser?.totalDonations ?? 0) : 0;
+  const displayAgeText =
+    hasSavedProfile && typeof currentUser?.age === 'number' && currentUser.age >= 18
+      ? `${currentUser.age}${lang === 'bn' ? ' বছর' : 'y'}`
+      : '—';
   const displayRole =
     firebaseUser && (currentUser?.role === 'ADMIN' || isBootstrappedAdminUser(firebaseUser))
       ? 'ADMIN'
@@ -770,7 +868,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       bloodGroup: displayGroup,
       idCardNumber: displayId,
       phone: verifiedProfilePhone,
-      district: displayDistrict,
+      district: displayDistrict || 'Bangladesh',
       totalDonations: displayDonations,
       isAvailable,
     });
@@ -783,36 +881,49 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
   return (
     <div className="space-y-6 max-w-xl mx-auto pb-8 text-left">
-      {/* Profile Card Header */}
-      <div className="section-jewel-indigo text-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 transition-all text-center relative">
+      {/* Profile Card Header — Distinct Royal Indigo + Gold for Admin vs Emerald Jewel for User Donor */}
+      <div
+        className={`${
+          displayRole === 'ADMIN'
+            ? 'section-jewel-indigo ring-1 ring-amber-400/40'
+            : 'section-jewel-emerald'
+        } text-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 transition-all text-center relative`}
+      >
         <div className="flex items-center justify-between pb-3">
-          <span className="text-xs font-bold text-indigo-200">
-            {isLoggedIn
-              ? displayRole === 'ADMIN'
-                ? lang === 'bn'
-                  ? 'অ্যাডমিন প্রোফাইল'
-                  : 'Admin Profile'
+          <span
+            className={`text-xs font-extrabold inline-flex items-center gap-1.5 ${
+              displayRole === 'ADMIN' ? 'text-amber-300' : 'text-emerald-100'
+            }`}
+          >
+            {displayRole === 'ADMIN' && <ShieldCheck className="w-4 h-4 text-amber-300 shrink-0" />}
+            <span>
+              {isLoggedIn
+                ? displayRole === 'ADMIN'
+                  ? lang === 'bn'
+                    ? 'অ্যাডমিন ও রক্ত সমন্বয়ক অ্যাকাউন্ট'
+                    : 'Admin & Coordinator Account'
+                  : lang === 'bn'
+                  ? 'স্বেচ্ছাসেবী ডোনার অ্যাকাউন্ট'
+                  : 'Volunteer Donor Account'
                 : lang === 'bn'
-                ? 'ভেরিফাইড ডোনার প্রোফাইল'
-                : 'Verified Donor Profile'
-              : lang === 'bn'
-              ? 'গেস্ট মোড'
-              : 'Guest Mode'}
+                ? 'গেস্ট মোড'
+                : 'Guest Mode'}
+            </span>
           </span>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setIsPrivacyOpen(true)}
-              className="min-h-[38px] flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-300/35 text-emerald-100 text-xs font-semibold cursor-pointer transition-colors"
+              className="min-h-[38px] flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/14 hover:bg-white/24 border border-white/25 text-white text-xs font-semibold cursor-pointer transition-colors"
               title="Google Play Safety"
             >
-              <Lock className="w-3.5 h-3.5 text-emerald-300" />
+              <Lock className="w-3.5 h-3.5 text-amber-200" />
               <span>{lang === 'bn' ? 'পলিসি' : 'Privacy'}</span>
             </button>
             <button
               onClick={() => setIsQrOpen(true)}
               className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/14 hover:bg-white/24 border border-white/25 text-white text-xs font-semibold cursor-pointer transition-colors"
             >
-              <QrCode className="w-3.5 h-3.5 text-rose-300" />
+              <QrCode className="w-3.5 h-3.5 text-amber-200" />
               <span>QR Pass</span>
             </button>
           </div>
@@ -827,10 +938,16 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             }}
             referrerPolicy="no-referrer"
             alt={displayName}
-            className="w-full h-full object-cover rounded-3xl ring-4 ring-white/25 shadow-xl"
+            className={`w-full h-full object-cover rounded-3xl ring-4 shadow-xl ${
+              displayRole === 'ADMIN' ? 'ring-amber-400/70' : 'ring-white/30'
+            }`}
           />
           {isLoggedIn && (
-            <span className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold ring-2 ring-[#1e1b4b] shadow">
+            <span
+              className={`absolute -bottom-1 -right-1 w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold ring-2 ring-white shadow ${
+                displayRole === 'ADMIN' ? 'bg-amber-500 text-slate-950' : 'bg-emerald-500'
+              }`}
+            >
               ✓
             </span>
           )}
@@ -839,14 +956,24 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         <h2 className="text-lg sm:text-xl font-black text-white">
           {displayName}
         </h2>
-        <div className="text-xs text-indigo-100/90 mt-0.5 font-mono truncate px-2">
+        <div className="text-xs text-white/90 mt-0.5 font-mono truncate px-2">
           {displayEmail} · {displayPhone}
         </div>
-        <div className="mt-1 inline-flex items-center justify-center gap-1 text-xs font-semibold text-indigo-100">
-          <MapPin className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-          <span>{hasSavedProfile ? displayFullAddress : lang === 'bn' ? 'ঠিকানা যুক্ত হয়নি' : 'Address not added yet'}</span>
+        <div className="mt-1 inline-flex items-center justify-center gap-1 text-xs font-semibold text-white/95">
+          <MapPin className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+          <span>
+            {hasSavedProfile && displayFullAddress
+              ? displayFullAddress
+              : lang === 'bn'
+                ? 'ঠিকানা যুক্ত হয়নি (নিচে নিজের ঠিকানা লিখুন)'
+                : 'Address not added yet'}
+          </span>
         </div>
-        <div className="text-[11px] font-bold text-rose-300 font-mono mt-0.5">
+        <div
+          className={`text-[11px] font-bold font-mono mt-0.5 ${
+            displayRole === 'ADMIN' ? 'text-amber-300' : 'text-emerald-200'
+          }`}
+        >
           {lang === 'bn' ? 'স্মার্ট কার্ড নং:' : 'Card ID:'} {displayId}
         </div>
 
@@ -858,7 +985,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                 href={`https://wa.me/${verifiedWhatsappPhone.replace(/[^0-9]/g, '')}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-300/35 text-emerald-100 font-bold text-[11px] transition-colors"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg btn-emerald font-bold text-[11px] transition-colors"
               >
                 <MessageCircle className="w-3.5 h-3.5" />
                 <span>WhatsApp: {verifiedWhatsappPhone}</span>
@@ -869,7 +996,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                 href={normalizeFacebookProfileUrl(currentUser?.facebookUrl)!}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-300/35 text-sky-100 font-bold text-[11px] transition-colors"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg btn-facebook font-bold text-[11px] transition-colors"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Facebook Profile</span>
@@ -879,18 +1006,18 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         )}
 
         {statusToast && (
-          <div className="mt-2.5 p-2.5 rounded-xl bg-emerald-500/25 border border-emerald-300/40 text-xs font-bold text-white">
+          <div className="mt-2.5 p-2.5 rounded-xl bg-black/25 border border-white/25 text-xs font-bold text-white">
             {statusToast}
           </div>
         )}
 
-        {/* Primary Profile Actions including 1-Tap Inline Quick Edit */}
+        {/* Primary Profile Actions with Distinct Action Colors */}
         <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
           {!isLoggedIn && onOpenAuthModal && (
             <button
               type="button"
               onClick={onOpenAuthModal}
-              className="min-h-[44px] px-4 py-2 rounded-lg bg-white text-slate-900 hover:bg-rose-600 hover:text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap transition-colors"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-white text-slate-900 hover:bg-amber-400 text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap transition-colors"
             >
               <LogIn className="w-3.5 h-3.5 shrink-0" />
               <span>{lang === 'bn' ? 'লগইন / সাইন ইন' : 'Sign In Now'}</span>
@@ -900,17 +1027,19 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           <button
             type="button"
             onClick={openInlineQuickEdit}
-            className="min-h-[44px] px-4 py-2 rounded-lg btn-crimson text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+            className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              displayRole === 'ADMIN' ? 'btn-amber' : 'btn-crimson'
+            }`}
           >
             <Pencil className="w-3.5 h-3.5 shrink-0" />
             <span>
               {hasSavedProfile
                 ? lang === 'bn'
-                  ? 'নাম ও ঠিকানা পরিবর্তন করুন'
-                  : 'Edit Name & Address'
+                  ? 'প্রোফাইল তথ্য পরিবর্তন করুন'
+                  : 'Edit Profile Info'
                 : lang === 'bn'
                   ? 'নিজের প্রোফাইল তথ্য লিখুন'
-                  : 'Enter Profile Info'}
+                  : 'Enter My Profile Info'}
             </span>
           </button>
 
@@ -918,7 +1047,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             <button
               type="button"
               onClick={() => onOpenRegister('USER')}
-              className="min-h-[44px] px-3.5 py-2 rounded-lg bg-white/14 hover:bg-white/25 border border-white/25 text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap transition-colors"
+              className="min-h-[44px] px-3.5 py-2 rounded-xl btn-sky text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             >
               <UserPlus className="w-3.5 h-3.5 shrink-0" />
               <span>
@@ -927,25 +1056,27 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={handleDownloadSmartIdPng}
-            className="min-h-[44px] px-3.5 py-2 rounded-xl btn-obsidian text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span>{lang === 'bn' ? 'আইডি কার্ড (.PNG)' : 'Download ID (.PNG)'}</span>
-          </button>
+          {hasSavedProfile && (
+            <button
+              type="button"
+              onClick={handleDownloadSmartIdPng}
+              className="min-h-[44px] px-3.5 py-2 rounded-xl btn-obsidian text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>{lang === 'bn' ? 'আইডি কার্ড (.PNG)' : 'Download ID (.PNG)'}</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            onClick={() => setIsCertOpen(true)}
-            className="min-h-[44px] px-3.5 py-2 rounded-xl btn-surface text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <Award className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            <span>{lang === 'bn' ? 'সম্মাননা সনদপত্র' : 'Certificate'}</span>
-          </button>
-
-
+          {hasSavedProfile && (
+            <button
+              type="button"
+              onClick={() => setIsCertOpen(true)}
+              className="min-h-[44px] px-3.5 py-2 rounded-xl btn-violet text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Award className="w-3.5 h-3.5 text-amber-200 shrink-0" />
+              <span>{lang === 'bn' ? 'সম্মাননা সনদপত্র' : 'Certificate'}</span>
+            </button>
+          )}
 
           {(isLoggedIn || hasSavedProfile) &&
             (confirmDeleteMyProfile ? (
@@ -987,7 +1118,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               <button
                 type="button"
                 onClick={() => setConfirmDeleteMyProfile(true)}
-                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/35 border border-rose-300/35 text-rose-100 text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-black/25 hover:bg-rose-600 border border-white/25 text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5 shrink-0" />
                 <span>{lang === 'bn' ? 'প্রোফাইল ডিলিট' : 'Delete My Data'}</span>
@@ -1020,7 +1151,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           )}
         </div>
 
-        {/* Inline 1-Click Quick Profile Editor (Name, Group, Phone, GPS + Custom Area) */}
+        {/* Inline 1-Click Quick Profile Editor (100% Manual User Entry: Name, Group, Age, Weight, Gender, Phone, WA, FB, Address) */}
         {isQuickEditOpen && (
           <form
             onSubmit={handleSaveQuickEdit}
@@ -1029,8 +1160,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             <div className="flex items-center justify-between">
               <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
                 {lang === 'bn'
-                  ? 'নাম, মোবাইল নম্বর ও ঠিকানা পরিবর্তন করুন'
-                  : 'Edit Name, Phone & Address'}
+                  ? 'নিজের প্রোফাইল তথ্য দিন (নাম, বয়স, ওজন, গ্রুপ ও ঠিকানা)'
+                  : 'Enter Your Profile Info (Name, Age, Weight, Group & Address)'}
               </h3>
               <button
                 type="button"
@@ -1044,11 +1175,11 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             {quickEditError && (
               <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-200 space-y-2">
                 <div>{quickEditError}</div>
-                {onOpenAuthModal && (
+                {onOpenAuthModal && !firebaseUser && (
                   <button
                     type="button"
                     onClick={onOpenAuthModal}
-                    className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-white dark:text-slate-900 text-white font-bold text-xs cursor-pointer inline-flex items-center gap-1.5"
+                    className="min-h-[36px] px-3.5 py-1.5 rounded-xl btn-indigo font-bold text-xs cursor-pointer inline-flex items-center gap-1.5"
                   >
                     <LogIn className="w-3.5 h-3.5" />
                     <span>
@@ -1083,13 +1214,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                   type="tel"
                   required
                   value={editPhone}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (!editWhatsapp || editWhatsapp === editPhone) {
-                      setEditWhatsapp(val);
-                    }
-                    setEditPhone(val);
-                  }}
+                  onChange={(e) => setEditPhone(e.target.value)}
                   placeholder="017XXXXXXXX"
                   className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-mono font-semibold text-slate-900 dark:text-white"
                 />
@@ -1125,7 +1250,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                   {lang === 'bn' ? 'Facebook প্রোফাইল লিংক / আইডি *' : 'Facebook Profile Link / ID *'}
                 </label>
                 <div className="relative">
-                  <Globe className="w-3.5 h-3.5 text-indigo-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <Globe className="w-3.5 h-3.5 text-[#1877f2] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="text"
                     required
@@ -1136,6 +1261,62 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                     className="w-full h-11 pl-8 pr-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white"
                   />
                 </div>
+              </div>
+            </div>
+
+            {/* Manual Age, Weight & Gender Inputs */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {lang === 'bn' ? 'বয়স (১৮–৬৫ বছর) *' : 'Age (18–65 yrs) *'}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  maxLength={3}
+                  value={editAge}
+                  onChange={(e) => setEditAge(e.target.value)}
+                  placeholder={lang === 'bn' ? 'বয়স (যেমন: ২৪)' : 'Age (e.g. 24)'}
+                  className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-mono font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {lang === 'bn' ? 'ওজন কেজি (৪০–১৮০) *' : 'Weight kg (40–180) *'}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  maxLength={3}
+                  value={editWeight}
+                  onChange={(e) => setEditWeight(e.target.value)}
+                  placeholder={lang === 'bn' ? 'ওজন (যেমন: ৬৫)' : 'Weight (e.g. 65)'}
+                  className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-mono font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {lang === 'bn' ? 'লিঙ্গ *' : 'Gender *'}
+                </label>
+                <select
+                  required
+                  value={editGender}
+                  onChange={(e) =>
+                    setEditGender(e.target.value as 'MALE' | 'FEMALE' | 'OTHER' | '')
+                  }
+                  className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
+                >
+                  <option value="">
+                    {lang === 'bn' ? '-- নির্বাচন করুন --' : '-- Select --'}
+                  </option>
+                  <option value="MALE">{lang === 'bn' ? 'পুরুষ (Male)' : 'Male'}</option>
+                  <option value="FEMALE">{lang === 'bn' ? 'মহিলা (Female)' : 'Female'}</option>
+                  <option value="OTHER">{lang === 'bn' ? 'অন্যান্য' : 'Other'}</option>
+                </select>
               </div>
             </div>
 
@@ -1151,7 +1332,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                     onClick={() => setEditGroup(g)}
                     className={`min-h-[38px] rounded-xl font-black text-xs cursor-pointer ${
                       editGroup === g
-                        ? 'bg-rose-600 text-white'
+                        ? 'btn-crimson'
                         : 'bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200'
                     }`}
                   >
@@ -1165,14 +1346,14 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
                   {lang === 'bn'
-                    ? 'জেলা ও এলাকার ঠিকানা (GPS অথবা নিজে লিখুন)'
-                    : 'District & Area Address (GPS or Type Freely)'}
+                    ? 'জেলা ও এলাকার ঠিকানা (নিজে লিখুন অথবা GPS নিন) *'
+                    : 'District & Area Address (Type manually or Use GPS) *'}
                 </label>
                 <button
                   type="button"
                   onClick={handleQuickEditGps}
                   disabled={isLocatingQuickGps}
-                  className="min-h-[34px] px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  className="min-h-[34px] px-2.5 py-1 rounded-lg btn-sky text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
                 >
                   <LocateFixed className={`w-3 h-3 ${isLocatingQuickGps ? 'animate-spin' : ''}`} />
                   <span>
@@ -1189,10 +1370,14 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <select
+                  required
                   value={editDistrict}
                   onChange={(e) => setEditDistrict(e.target.value)}
                   className="sm:col-span-5 h-11 px-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
                 >
+                  <option value="">
+                    {lang === 'bn' ? '-- জেলা নির্বাচন করুন --' : '-- Select District --'}
+                  </option>
                   {DISTRICTS.map((d) => (
                     <option key={d.id} value={d.id}>
                       {lang === 'bn' ? d.nameBn : d.nameEn}
@@ -1202,6 +1387,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
                 <input
                   type="text"
+                  required
                   maxLength={120}
                   value={editArea}
                   onChange={(e) => setEditArea(e.target.value)}
@@ -1228,7 +1414,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                       key={chip}
                       type="button"
                       onClick={() => setEditArea(chip)}
-                      className="min-h-[30px] px-2 py-0.5 rounded-lg bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:border-rose-400 cursor-pointer"
+                      className="min-h-[30px] px-2 py-0.5 rounded-lg bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:border-emerald-500 cursor-pointer"
                     >
                       {chip}
                     </button>
@@ -1248,7 +1434,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               <button
                 type="submit"
                 disabled={isSavingQuickEdit}
-                className="min-h-[42px] px-4 py-2 rounded-xl btn-crimson text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-60"
+                className="min-h-[42px] px-4 py-2 rounded-xl btn-emerald text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-60"
               >
                 <Check className="w-3.5 h-3.5 shrink-0" />
                 <span>
@@ -1265,33 +1451,33 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           </form>
         )}
 
-        {/* Metric Tiles dynamically bound to real profile (Never shows "0 bags") */}
+        {/* Metric Tiles dynamically bound ONLY to user-entered profile (Never shows fake 25y or O+ before setup) */}
         <div
           className={`grid ${
             displayDonations > 0 ? 'grid-cols-4' : 'grid-cols-3'
-          } gap-2 mt-4 pt-4 border-t border-slate-200/60 dark:border-slate-800/60`}
+          } gap-2 mt-4 pt-4 border-t border-white/20`}
         >
-          <div className="p-2 sm:p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">
+          <div className="p-2 sm:p-2.5 rounded-xl bg-white/95 dark:bg-slate-900/90 border border-white/30 dark:border-slate-700 flex flex-col items-center">
+            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold">
               {lang === 'bn' ? 'রক্তের গ্রুপ' : 'Group'}
             </span>
             <span className="text-sm sm:text-base font-black text-rose-600 dark:text-rose-400">
-              {displayGroup}
+              {displayGroupLabel}
             </span>
           </div>
 
-          <div className="p-2 sm:p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">
+          <div className="p-2 sm:p-2.5 rounded-xl bg-white/95 dark:bg-slate-900/90 border border-white/30 dark:border-slate-700 flex flex-col items-center">
+            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold">
               {lang === 'bn' ? 'লিঙ্গ' : 'Gender'}
             </span>
-            <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200">
+            <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
               {displayGender}
             </span>
           </div>
 
           {displayDonations > 0 && (
-            <div className="p-2 sm:p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/60 flex flex-col items-center">
-              <span className="text-[10px] text-slate-400 font-bold">
+            <div className="p-2 sm:p-2.5 rounded-xl bg-white/95 dark:bg-slate-900/90 border border-white/30 dark:border-slate-700 flex flex-col items-center">
+              <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold">
                 {lang === 'bn' ? 'রক্তদান' : 'Donated'}
               </span>
               <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
@@ -1300,13 +1486,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </div>
           )}
 
-          <div className="p-2 sm:p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex flex-col items-center">
-            <span className="text-[10px] text-slate-400 font-bold">
+          <div className="p-2 sm:p-2.5 rounded-xl bg-white/95 dark:bg-slate-900/90 border border-white/30 dark:border-slate-700 flex flex-col items-center">
+            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold">
               {lang === 'bn' ? 'বয়স' : 'Age'}
             </span>
-            <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-slate-800 dark:text-slate-200">
-              {displayAge}
-              {lang === 'bn' ? ' বছর' : 'y'}
+            <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              {displayAgeText}
             </span>
           </div>
         </div>
