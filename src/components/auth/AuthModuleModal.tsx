@@ -550,12 +550,14 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
               {/* Simple Email + Password Form */}
               <form onSubmit={handleEmailAuthSubmit} className="space-y-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  <label htmlFor="auth-modal-email" className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {lang === 'bn' ? 'আপনার ইমেইল (Gmail / Email) *' : 'Email Address *'}
                   </label>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 pointer-events-none" />
                     <input
+                      id="auth-modal-email"
+                      name="email"
                       type="email"
                       required
                       value={email}
@@ -569,7 +571,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                 {authMode !== 'RESET' && (
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      <label htmlFor="auth-modal-password" className="text-xs font-bold text-slate-700 dark:text-slate-300">
                         {lang === 'bn' ? 'পাসওয়ার্ড (কমপক্ষে ৬ অক্ষর) *' : 'Password (min 6 chars) *'}
                       </label>
                       <button
@@ -586,6 +588,8 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 pointer-events-none" />
                       <input
+                        id="auth-modal-password"
+                        name="password"
                         type={showPassword ? 'text' : 'password'}
                         required
                         minLength={6}

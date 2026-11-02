@@ -554,6 +554,8 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <select
+                  id="home-express-district"
+                  name="expressDistrict"
                   value={expressDistrict}
                   onChange={(e) => setExpressDistrict(e.target.value)}
                   aria-label="Express District Selector"
@@ -1279,10 +1281,12 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               >
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div>
-                    <label className="font-semibold text-[11px] text-slate-700 dark:text-slate-300 block mb-1">
+                    <label htmlFor="home-log-date" className="font-semibold text-[11px] text-slate-700 dark:text-slate-300 block mb-1">
                       {lang === 'bn' ? 'রক্তদানের তারিখ' : 'Donation Date'}
                     </label>
                     <input
+                      id="home-log-date"
+                      name="donationDate"
                       type="date"
                       value={logDateInput}
                       max={new Date().toISOString().slice(0, 10)}
@@ -1292,10 +1296,12 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                     />
                   </div>
                   <div>
-                    <label className="font-semibold text-[11px] text-slate-700 dark:text-slate-300 block mb-1">
+                    <label htmlFor="home-log-hospital" className="font-semibold text-[11px] text-slate-700 dark:text-slate-300 block mb-1">
                       {lang === 'bn' ? 'হাসপাতাল / ব্লাড ব্যাংক' : 'Hospital / Blood Bank'}
                     </label>
                     <input
+                      id="home-log-hospital"
+                      name="donationHospital"
                       type="text"
                       value={logHospitalInput}
                       onChange={(e) => setLogHospitalInput(e.target.value)}
@@ -1360,6 +1366,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center gap-2 cursor-pointer"
                     >
                       <input
+                        name={`readiness_${item.k}`}
                         type="checkbox"
                         checked={readinessChecks[item.k]}
                         onChange={() =>

@@ -1344,11 +1344,33 @@ async function resolveBangladeshNetworkLocationFallback(): Promise<{
   return { coords: DEFAULT_BANGLADESH_COORDS, source: 'DEFAULT_DHAKA' };
 }
 
+async function getGeolocationPermissionState(): Promise<
+  'granted' | 'prompt' | 'denied' | 'unsupported'
+> {
+  if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+    return 'unsupported';
+  }
+  try {
+    if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+      const status = await navigator.permissions.query({ name: 'geolocation' });
+      if (status.state === 'granted' || status.state === 'denied' || status.state === 'prompt') {
+        return status.state;
+      }
+    }
+  } catch {
+    // Permissions API unavailable in some WebViews — treat as 'prompt'
+  }
+  return 'prompt';
+}
+
 /**
  * Request real-time GPS coordinates from device with honest status tracking.
- * NEVER marks fallback coordinates as `isRealGps: true`!
+ * By default (`onlyIfGranted: true`), passive mount checks NEVER trigger unsolicited permission
+ * popups or browser console warnings when geolocation is blocked/ungranted.
  */
-export function requestRealDeviceGPS(): Promise<Coordinates> {
+export function requestRealDeviceGPS(options?: { onlyIfGranted?: boolean }): Promise<Coordinates> {
+  const onlyIfGranted = options?.onlyIfGranted !== false;
+
   if (cachedIsRealGps && cachedDeviceCoords) {
     return Promise.resolve(cachedDeviceCoords);
   }
@@ -1356,16 +1378,25 @@ export function requestRealDeviceGPS(): Promise<Coordinates> {
     return pendingGpsPromise;
   }
 
-  pendingGpsPromise = new Promise((resolve) => {
-    const finishWithFallback = async () => {
+  pendingGpsPromise = (async () => {
+    const fallbackWithNetwork = async (): Promise<Coordinates> => {
       const net = await resolveBangladeshNetworkLocationFallback();
       cachedDeviceCoords = net.coords;
       cachedIsRealGps = false;
       pendingGpsPromise = null;
-      resolve(net.coords);
+      return net.coords;
     };
 
-    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+    const permState = await getGeolocationPermissionState();
+    if (
+      permState === 'unsupported' ||
+      permState === 'denied' ||
+      (onlyIfGranted && permState !== 'granted')
+    ) {
+      return fallbackWithNetwork();
+    }
+
+    return new Promise<Coordinates>((resolve) => {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const lat = position.coords.latitude;
@@ -1377,18 +1408,16 @@ export function requestRealDeviceGPS(): Promise<Coordinates> {
             pendingGpsPromise = null;
             resolve(coords);
           } else {
-            void finishWithFallback();
+            void fallbackWithNetwork().then(resolve);
           }
         },
         () => {
-          void finishWithFallback();
+          void fallbackWithNetwork().then(resolve);
         },
         { enableHighAccuracy: true, maximumAge: 60000, timeout: 4500 }
       );
-    } else {
-      void finishWithFallback();
-    }
-  });
+    });
+  })();
 
   return pendingGpsPromise;
 }
@@ -1396,11 +1425,13 @@ export function requestRealDeviceGPS(): Promise<Coordinates> {
 /**
  * Returns both resolved coordinates and honest boolean `isRealGps` (true ONLY when hardware/browser GPS succeeded).
  */
-export async function requestRealDeviceGPSWithStatus(): Promise<{
+export async function requestRealDeviceGPSWithStatus(options?: {
+  onlyIfGranted?: boolean;
+}): Promise<{
   coords: Coordinates;
   isRealGps: boolean;
 }> {
-  const coords = await requestRealDeviceGPS();
+  const coords = await requestRealDeviceGPS(options);
   return {
     coords,
     isRealGps: cachedIsRealGps,
@@ -1408,109 +1439,140 @@ export async function requestRealDeviceGPSWithStatus(): Promise<{
 }
 
 /**
- * Actively requests high-accuracy live GPS when the user taps "Use My GPS / Locate Me".
- * Retries with indoor/Wi-Fi geolocation on timeout, and ONLY sets `isRealGps: true` when real device geolocation succeeds.
+ * Actively requests high-accuracy live GPS when the user explicitly taps "Use My GPS / Locate Me".
+ * Checks permission state first so blocked origins return cleanly without browser console warnings.
  */
-export function requestFreshHighAccuracyGPS(): Promise<{
+export async function requestFreshHighAccuracyGPS(): Promise<{
   coords: Coordinates;
   isRealGps: boolean;
   errorReason?: GpsErrorReason;
 }> {
-  return new Promise((resolve) => {
-    const fallbackWithoutFakeGps = async (reason?: GpsErrorReason) => {
-      const net = await resolveBangladeshNetworkLocationFallback();
-      cachedDeviceCoords = net.coords;
-      cachedIsRealGps = false;
-      resolve({
-        coords: net.coords,
-        isRealGps: false,
-        errorReason: reason,
-      });
+  const fallbackWithoutFakeGps = async (reason?: GpsErrorReason) => {
+    const net = await resolveBangladeshNetworkLocationFallback();
+    cachedDeviceCoords = net.coords;
+    cachedIsRealGps = false;
+    return {
+      coords: net.coords,
+      isRealGps: false,
+      errorReason: reason,
     };
+  };
 
-    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const coords = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          };
-          cachedDeviceCoords = coords;
-          cachedIsRealGps = true;
-          resolve({ coords, isRealGps: true });
-        },
-        (err) => {
-          if (err.code === 1) {
-            void fallbackWithoutFakeGps('PERMISSION_DENIED');
-            return;
-          }
-          navigator.geolocation.getCurrentPosition(
-            (pos2) => {
-              const coords = {
-                latitude: pos2.coords.latitude,
-                longitude: pos2.coords.longitude,
-              };
-              cachedDeviceCoords = coords;
-              cachedIsRealGps = true;
-              resolve({ coords, isRealGps: true });
-            },
-            (err2) => {
-              const reason: GpsErrorReason =
-                err2.code === 1 || err.code === 1
-                  ? 'PERMISSION_DENIED'
-                  : err2.code === 3
-                    ? 'TIMEOUT'
-                    : 'POSITION_UNAVAILABLE';
-              void fallbackWithoutFakeGps(reason);
-            },
-            { enableHighAccuracy: false, maximumAge: 180000, timeout: 4000 }
-          );
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
-      );
-    } else {
-      void fallbackWithoutFakeGps('UNSUPPORTED');
-    }
+  const permState = await getGeolocationPermissionState();
+  if (permState === 'unsupported') {
+    return fallbackWithoutFakeGps('UNSUPPORTED');
+  }
+  if (permState === 'denied') {
+    return fallbackWithoutFakeGps('PERMISSION_DENIED');
+  }
+
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coords = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        };
+        cachedDeviceCoords = coords;
+        cachedIsRealGps = true;
+        resolve({ coords, isRealGps: true });
+      },
+      (err) => {
+        if (err.code === 1) {
+          void fallbackWithoutFakeGps('PERMISSION_DENIED').then(resolve);
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos2) => {
+            const coords = {
+              latitude: pos2.coords.latitude,
+              longitude: pos2.coords.longitude,
+            };
+            cachedDeviceCoords = coords;
+            cachedIsRealGps = true;
+            resolve({ coords, isRealGps: true });
+          },
+          (err2) => {
+            const reason: GpsErrorReason =
+              err2.code === 1 || err.code === 1
+                ? 'PERMISSION_DENIED'
+                : err2.code === 3
+                  ? 'TIMEOUT'
+                  : 'POSITION_UNAVAILABLE';
+            void fallbackWithoutFakeGps(reason).then(resolve);
+          },
+          { enableHighAccuracy: false, maximumAge: 180000, timeout: 4000 }
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+    );
   });
 }
 
 /**
  * Starts continuous Uber/Pathao-style live GPS tracking (`watchPosition`) and returns a cleanup function.
+ * Checks Permissions API first so denied/ungranted origins never log blocked geolocation console warnings.
  */
 export function watchRealDeviceGPS(
   onUpdate: (coords: Coordinates) => void,
-  onError?: (reason: GpsErrorReason) => void
+  onError?: (reason: GpsErrorReason) => void,
+  options?: { onlyIfGranted?: boolean }
 ): () => void {
   if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
     onError?.('UNSUPPORTED');
     return () => {};
   }
 
-  const watchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      const coords = {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-      };
-      cachedDeviceCoords = coords;
-      cachedIsRealGps = true;
-      onUpdate(coords);
-    },
-    (err) => {
-      const reason: GpsErrorReason =
-        err.code === 1
-          ? 'PERMISSION_DENIED'
-          : err.code === 3
-            ? 'TIMEOUT'
-            : 'POSITION_UNAVAILABLE';
-      onError?.(reason);
-    },
-    { enableHighAccuracy: true, maximumAge: 15000, timeout: 10000 }
-  );
+  let cancelled = false;
+  let watchId: number | null = null;
+  const onlyIfGranted = options?.onlyIfGranted === true;
+
+  void getGeolocationPermissionState().then((permState) => {
+    if (cancelled) return;
+    if (permState === 'unsupported') {
+      onError?.('UNSUPPORTED');
+      return;
+    }
+    if (permState === 'denied') {
+      onError?.('PERMISSION_DENIED');
+      return;
+    }
+    if (onlyIfGranted && permState !== 'granted') {
+      return;
+    }
+
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (cancelled) return;
+        const coords = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+        };
+        cachedDeviceCoords = coords;
+        cachedIsRealGps = true;
+        onUpdate(coords);
+      },
+      (err) => {
+        if (cancelled) return;
+        const reason: GpsErrorReason =
+          err.code === 1
+            ? 'PERMISSION_DENIED'
+            : err.code === 3
+              ? 'TIMEOUT'
+              : 'POSITION_UNAVAILABLE';
+        onError?.(reason);
+      },
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 10000 }
+    );
+  });
 
   return () => {
-    try {
-      navigator.geolocation.clearWatch(watchId);
-    } catch {}
+    cancelled = true;
+    if (watchId !== null) {
+      try {
+        navigator.geolocation.clearWatch(watchId);
+      } catch {}
+    }
   };
 }
+

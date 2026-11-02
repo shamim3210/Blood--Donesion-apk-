@@ -838,6 +838,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   className="w-14 h-14 rounded-2xl object-cover border border-slate-300 dark:border-slate-700"
                 />
                 <input
+                  id="reg-donor-photo"
+                  name="donorPhoto"
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
@@ -856,10 +858,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
 
               <div className="flex-1 min-w-0">
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="reg-donor-name" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? '১. আপনার নাম (নিজে লিখুন) *' : '1. Your Full Name *'}
                 </label>
                 <input
+                  id="reg-donor-name"
+                  name="donorName"
                   type="text"
                   required
                   maxLength={80}
@@ -900,10 +904,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             {/* 3. Manual Age, Weight & Gender Row (Zero Auto Age/Weight!) */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="reg-donor-age" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? '৩. বয়স (১৮–৬৫ বছর) *' : '3. Age (18–65 yrs) *'}
                 </label>
                 <input
+                  id="reg-donor-age"
+                  name="donorAge"
                   type="text"
                   inputMode="numeric"
                   required
@@ -916,10 +922,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="reg-donor-weight" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? '৪. ওজন (কেজি ৪০–১৮০) *' : '4. Weight (40–180 kg) *'}
                 </label>
                 <input
+                  id="reg-donor-weight"
+                  name="donorWeight"
                   type="text"
                   inputMode="numeric"
                   required
@@ -932,10 +940,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="reg-donor-gender" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? '৫. লিঙ্গ *' : '5. Gender *'}
                 </label>
                 <select
+                  id="reg-donor-gender"
+                  name="donorGender"
                   required
                   value={gender}
                   onChange={(e) =>
@@ -956,7 +966,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             {/* 4. Mobile Number + Mandatory WhatsApp + Mandatory Facebook */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="reg-donor-phone" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn'
                     ? '৬. সচল মোবাইল নম্বর (Call) *'
                     : '6. Active Mobile Number (Call) *'}
@@ -964,6 +974,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 <div className="relative">
                   <Phone className="w-4 h-4 text-rose-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    id="reg-donor-phone"
+                    name="donorPhone"
                     type="tel"
                     required
                     value={phone}
@@ -976,7 +988,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
 
               <div>
                 <div className="flex items-center justify-between gap-1 mb-1">
-                  <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                  <label htmlFor="reg-donor-whatsapp" className="text-xs font-bold text-slate-800 dark:text-slate-200">
                     {lang === 'bn' ? '৭. WhatsApp নম্বর *' : '7. WhatsApp Number *'}
                   </label>
                   {phone.trim() && whatsappPhone !== phone && (
@@ -992,6 +1004,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                 <div className="relative">
                   <MessageCircle className="w-4 h-4 text-emerald-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    id="reg-donor-whatsapp"
+                    name="donorWhatsapp"
                     type="tel"
                     required
                     value={whatsappPhone}
@@ -1004,7 +1018,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+              <label htmlFor="reg-donor-facebook" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                 {lang === 'bn'
                   ? '৮. Facebook প্রোফাইল লিংক / আইডি *'
                   : '8. Facebook Profile Link / ID *'}
@@ -1012,6 +1026,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               <div className="relative">
                 <Globe className="w-4 h-4 text-[#1877f2] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
+                  id="reg-donor-facebook"
+                  name="donorFacebookUrl"
                   type="text"
                   required
                   maxLength={200}
@@ -1082,10 +1098,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
                 {/* 64 District Select */}
                 <div className="sm:col-span-5">
-                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  <label htmlFor="reg-donor-district" className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                     {lang === 'bn' ? 'জেলা নির্বাচন করুন *' : 'Select District *'}
                   </label>
                   <select
+                    id="reg-donor-district"
+                    name="donorDistrict"
                     required
                     value={district}
                     onChange={(e) => setDistrict(e.target.value)}
@@ -1104,7 +1122,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
 
                 {/* Free-Text Editable Area / Neighborhood Input */}
                 <div className="sm:col-span-7 relative">
-                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  <label htmlFor="reg-donor-area" className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                     {lang === 'bn'
                       ? 'এলাকা / মহল্লা / রোড (নিজে লিখুন) *'
                       : 'Area / Neighborhood (Type manually) *'}
@@ -1112,6 +1130,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   <div className="relative">
                     <MapPin className="w-4 h-4 text-rose-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
+                      id="reg-donor-area"
+                      name="donorArea"
                       type="text"
                       required
                       maxLength={120}
@@ -1194,6 +1214,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             <div className="p-3.5 rounded-2xl bg-slate-50/90 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 space-y-2.5">
               <label className="flex items-center gap-2.5 cursor-pointer min-h-[36px]">
                 <input
+                  id="reg-donor-available"
+                  name="donorAvailable"
                   type="checkbox"
                   checked={available}
                   onChange={(e) => setAvailable(e.target.checked)}
@@ -1208,6 +1230,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
 
               <label className="flex items-center gap-2.5 cursor-pointer min-h-[36px]">
                 <input
+                  id="reg-donor-share-contact"
+                  name="donorShareDirectContact"
                   type="checkbox"
                   checked={shareDirectContact}
                   onChange={(e) => setShareDirectContact(e.target.checked)}

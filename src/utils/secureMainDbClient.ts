@@ -9,6 +9,8 @@ export interface ServerAdminVerificationResult {
   retryAfterSec?: number;
 }
 
+let mainServerApiMissing = false;
+
 async function getBearerHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -31,6 +33,9 @@ async function getBearerHeaders(): Promise<Record<string, string>> {
  * Verifies Admin / Super-Owner role strictly against the server-side PostgreSQL RBAC & lockout shield.
  */
 export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificationResult> {
+  if (mainServerApiMissing) {
+    return { ok: false, isAdmin: false, role: 'USER' };
+  }
   try {
     const headers = await getBearerHeaders();
     if (!headers.Authorization) {
@@ -41,6 +46,10 @@ export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificati
       headers,
       credentials: 'same-origin',
     });
+    if (resp.status === 404) {
+      mainServerApiMissing = true;
+      return { ok: false, isAdmin: false, role: 'USER' };
+    }
     const data = await resp.json().catch(() => ({}));
     if (resp.status === 429) {
       return {
@@ -83,6 +92,7 @@ export async function syncDonorProfileToMainDb(payload: {
   contactVisibility?: 'PUBLIC_OPT_IN' | 'REQUEST_ONLY' | 'EMERGENCY_VERIFIED_ONLY' | 'DND_PRIVATE';
   bio?: string | null;
 }): Promise<boolean> {
+  if (mainServerApiMissing) return false;
   try {
     const headers = await getBearerHeaders();
     if (!headers.Authorization) return false;
@@ -125,6 +135,7 @@ export async function syncDonorProfileToMainDb(payload: {
  * Syncs a new emergency blood request into the server-side PostgreSQL main DB.
  */
 export async function syncBloodRequestToMainDb(req: BloodRequest): Promise<boolean> {
+  if (mainServerApiMissing) return false;
   try {
     const headers = await getBearerHeaders();
     if (!headers.Authorization) return false;
@@ -161,12 +172,22 @@ export async function syncBloodRequestToMainDb(req: BloodRequest): Promise<boole
  * so server-persisted donors are available alongside real-time updates without raw bulk PII dumps.
  */
 export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
+  if (mainServerApiMissing) return [];
   try {
     const resp = await fetch('/api/v1/donors/search?availableOnly=false&limit=50', {
       method: 'GET',
       credentials: 'same-origin',
     });
+    if (resp.status === 404) {
+      mainServerApiMissing = true;
+      return [];
+    }
     if (!resp.ok) return [];
+    const contentType = String(resp.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('json')) {
+      mainServerApiMissing = true;
+      return [];
+    }
     const data = await resp.json();
     if (!data?.ok || !Array.isArray(data.items)) return [];
 

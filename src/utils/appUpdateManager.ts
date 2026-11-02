@@ -21,6 +21,7 @@ export interface DetectedBuildUpdate {
 let swUpdaterFn: ((reloadPage?: boolean) => Promise<void>) | null = null;
 let swRegistrationRef: ServiceWorkerRegistration | null = null;
 let detectedUpdateState: DetectedBuildUpdate | null = null;
+let apiAppVersionUnavailable = false;
 
 const UPDATE_EVENT_NAME = 'bloodsearch_build_update_detected';
 
@@ -90,7 +91,9 @@ export async function checkForDeployedBuildUpdateNow(): Promise<{
     swRegistrationRef.update().catch(() => {});
   }
 
-  const endpoints = [`/version.json?t=${Date.now()}`, `/api/app-version?t=${Date.now()}`];
+  const endpoints = apiAppVersionUnavailable
+    ? [`/version.json?t=${Date.now()}`]
+    : [`/version.json?t=${Date.now()}`, `/api/app-version?t=${Date.now()}`];
 
   for (const url of endpoints) {
     try {
@@ -102,7 +105,19 @@ export async function checkForDeployedBuildUpdateNow(): Promise<{
           'Cache-Control': 'no-cache',
         },
       });
-      if (!resp.ok) continue;
+      if (!resp.ok) {
+        if (resp.status === 404 && url.startsWith('/api/app-version')) {
+          apiAppVersionUnavailable = true;
+        }
+        continue;
+      }
+      const contentType = String(resp.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('json')) {
+        if (url.startsWith('/api/app-version')) {
+          apiAppVersionUnavailable = true;
+        }
+        continue;
+      }
       const data = (await resp.json()) as { version?: string; buildId?: string };
       const remoteVersion = String(data.version || CURRENT_APP_VERSION).trim();
       const remoteBuildId = String(data.buildId || '').trim();
@@ -194,6 +209,19 @@ export function initAppUpdateManager(): void {
       window.history.replaceState({}, '', currentUrl.pathname + currentUrl.search + currentUrl.hash);
     }
   } catch {}
+
+  // Self-heal once if a newly deployed Vercel/Cloud Run build invalidated an older cached chunk/CSS
+  window.addEventListener('vite:preloadError', (event) => {
+    event.preventDefault();
+    try {
+      const guardKey = 'bsbd_chunk_reload_guard';
+      const lastTs = Number(sessionStorage.getItem(guardKey) || '0');
+      if (Date.now() - lastTs > 15_000) {
+        sessionStorage.setItem(guardKey, String(Date.now()));
+        void applySeamlessAppUpdateAndReload();
+      }
+    } catch {}
+  });
 
   if (import.meta.env.DEV && 'serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations().then((registrations) => {

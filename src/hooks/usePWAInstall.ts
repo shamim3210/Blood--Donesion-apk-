@@ -32,7 +32,6 @@ export function initPWAInstallListener(): void {
   }
 
   window.addEventListener('beforeinstallprompt', (e: Event) => {
-    e.preventDefault();
     globalDeferredPrompt = e as BeforeInstallPromptEvent;
     notifySubscribers();
   });

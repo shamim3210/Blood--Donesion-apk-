@@ -465,6 +465,12 @@
   max-height: none !important;
 }
 
+.leaflet-control-layers-toggle,
+.leaflet-retina .leaflet-control-layers-toggle,
+.leaflet-default-icon-path {
+  background-image: none !important;
+}
+
 .bsbd-map-dark .leaflet-tile-pane {
   filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
 }

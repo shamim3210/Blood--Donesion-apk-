@@ -135,6 +135,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
               <span className="font-mono text-rose-600 dark:text-rose-400 font-bold">{age} {lang === 'bn' ? 'বছর' : 'years'}</span>
             </div>
             <input
+              name="eligibilityAge"
               type="range"
               min="15"
               max="75"
@@ -156,6 +157,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
               <span className="font-mono text-rose-600 dark:text-rose-400 font-bold">{weightKg} kg</span>
             </div>
             <input
+              name="eligibilityWeightKg"
               type="range"
               min="35"
               max="110"
@@ -177,6 +179,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
               <span className="font-mono text-rose-600 dark:text-rose-400 font-bold">{daysSinceLastDonation} {lang === 'bn' ? 'দিন' : 'days'}</span>
             </div>
             <input
+              name="daysSinceLastDonation"
               type="range"
               min="0"
               max="180"
@@ -200,6 +203,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
 
           <label className="flex items-start gap-3 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-800/50 cursor-pointer">
             <input
+              name="hasRecentFeverOrAntibiotics"
               type="checkbox"
               checked={hasRecentFeverOrAntibiotics}
               onChange={(e) => setHasRecentFeverOrAntibiotics(e.target.checked)}
@@ -214,6 +218,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
 
           <label className="flex items-start gap-3 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-800/50 cursor-pointer">
             <input
+              name="hasRecentSurgeryOrTattoo"
               type="checkbox"
               checked={hasRecentSurgeryOrTattoo}
               onChange={(e) => setHasRecentSurgeryOrTattoo(e.target.checked)}
@@ -228,6 +233,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
 
           <label className="flex items-start gap-3 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-800/50 cursor-pointer">
             <input
+              name="isPregnantOrLactating"
               type="checkbox"
               checked={isPregnantOrLactating}
               onChange={(e) => setIsPregnantOrLactating(e.target.checked)}
@@ -242,6 +248,7 @@ export const EligibilityChecker: React.FC<EligibilityCheckerProps> = ({ lang }) 
 
           <label className="flex items-start gap-3 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/50 dark:border-slate-800/50 cursor-pointer">
             <input
+              name="hasChronicIllness"
               type="checkbox"
               checked={hasChronicIllness}
               onChange={(e) => setHasChronicIllness(e.target.checked)}

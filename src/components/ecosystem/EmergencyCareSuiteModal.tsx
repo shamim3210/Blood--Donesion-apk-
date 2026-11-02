@@ -476,6 +476,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   {lang === 'bn' ? 'গর্ভবতী মায়ের নাম' : 'Mother Name'}
                 </label>
                 <input
+                  name="maternityMotherName"
                   type="text"
                   value={maternityPlan.motherName}
                   onChange={(e) =>
@@ -492,6 +493,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     {lang === 'bn' ? 'রক্তের গ্রুপ' : 'Blood Group'}
                   </label>
                   <select
+                    name="maternityBloodGroup"
                     value={maternityPlan.bloodGroup}
                     onChange={(e) =>
                       setMaternityPlan((p) => ({
@@ -514,6 +516,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     {lang === 'bn' ? 'সম্ভাব্য তারিখ (EDD)' : 'Expected Date'}
                   </label>
                   <input
+                    name="maternityEddDate"
                     type="date"
                     value={maternityPlan.eddDate}
                     onChange={(e) =>
@@ -556,6 +559,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                 <input
+                  name="standbyDonorName"
                   type="text"
                   required
                   value={sbName}
@@ -564,6 +568,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   className="h-10 px-3 rounded-xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
                 />
                 <input
+                  name="standbyDonorPhone"
                   type="tel"
                   required
                   value={sbPhone}
@@ -572,6 +577,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   className="h-10 px-3 rounded-xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 font-mono text-slate-900 dark:text-white"
                 />
                 <select
+                  name="standbyDonorGroup"
                   value={sbGroup}
                   onChange={(e) => setSbGroup(e.target.value as BloodGroup)}
                   className="h-10 px-2.5 rounded-xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
@@ -741,6 +747,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                 <div>
                   <label className="text-[11px] text-slate-500 block mb-1">Platelets (/µL)</label>
                   <input
+                    name="denguePlatelets"
                     type="number"
                     required
                     value={pltInput}
@@ -751,6 +758,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                 <div>
                   <label className="text-[11px] text-slate-500 block mb-1">Hematocrit (HCT %)</label>
                   <input
+                    name="dengueHct"
                     type="number"
                     step="0.1"
                     value={hctInput}
@@ -761,6 +769,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                 <div>
                   <label className="text-[11px] text-slate-500 block mb-1">Hemoglobin (g/dL)</label>
                   <input
+                    name="dengueHemoglobin"
                     type="number"
                     step="0.1"
                     value={hbInput}
@@ -872,6 +881,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   <span className="font-mono text-rose-600">{ambDistanceKm} km</span>
                 </div>
                 <input
+                  name="ambulanceDistanceKm"
                   type="range"
                   min={5}
                   max={350}
@@ -1000,6 +1010,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   আপনার পূর্ণ নাম
                 </label>
                 <input
+                  name="iceFullName"
                   type="text"
                   value={iceName}
                   onChange={(e) => setIceName(e.target.value)}
@@ -1012,6 +1023,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     রক্তের গ্রুপ
                   </label>
                   <select
+                    name="iceBloodGroup"
                     value={iceGroup}
                     onChange={(e) => setIceGroup(e.target.value as BloodGroup)}
                     className="w-full h-10 px-2.5 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
@@ -1028,6 +1040,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     জেলা / ঠিকানা
                   </label>
                   <input
+                    name="iceDistrict"
                     type="text"
                     value={iceDistrict}
                     onChange={(e) => setIceDistrict(e.target.value)}
@@ -1041,6 +1054,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   জরুরি অভিভাবকের নাম ও সম্পর্ক
                 </label>
                 <input
+                  name="iceGuardianName"
                   type="text"
                   value={iceGuardian}
                   onChange={(e) => setIceGuardian(e.target.value)}
@@ -1053,6 +1067,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     জরুরি মোবাইল নম্বর
                   </label>
                   <input
+                    name="iceGuardianPhone"
                     type="tel"
                     value={icePhone}
                     onChange={(e) => setIcePhone(e.target.value)}
@@ -1064,6 +1079,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     বিকল্প নম্বর (ঐচ্ছিক)
                   </label>
                   <input
+                    name="iceSecondPhone"
                     type="tel"
                     value={iceSecondPhone}
                     onChange={(e) => setIceSecondPhone(e.target.value)}
@@ -1078,6 +1094,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   রোগের তথ্য (ডায়াবেটিস / অ্যাজমা / প্রেসার)
                 </label>
                 <input
+                  name="iceConditions"
                   type="text"
                   value={iceConditions}
                   onChange={(e) => setIceConditions(e.target.value)}
@@ -1089,6 +1106,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   ওষুধ বা খাবারে অ্যালার্জি
                 </label>
                 <input
+                  name="iceAllergies"
                   type="text"
                   value={iceAllergies}
                   onChange={(e) => setIceAllergies(e.target.value)}
@@ -1162,6 +1180,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                 <input
+                  name="verifyDonorIdQuery"
                   type="text"
                   value={verifyIdQuery}
                   onChange={(e) => setVerifyIdQuery(e.target.value)}
@@ -1209,6 +1228,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <input
+                  name="gratitudeAuthor"
                   type="text"
                   value={gratAuthor}
                   onChange={(e) => setGratAuthor(e.target.value)}
@@ -1216,6 +1236,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                   className="h-9 px-3 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
                 />
                 <input
+                  name="gratitudeDonorName"
                   type="text"
                   required
                   value={gratDonor}
@@ -1225,6 +1246,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                 />
                 <div className="flex gap-2">
                   <select
+                    name="gratitudeBloodGroup"
                     value={gratGroup}
                     onChange={(e) => setGratGroup(e.target.value as BloodGroup)}
                     className="w-20 h-9 px-2 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
@@ -1236,6 +1258,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
                     ))}
                   </select>
                   <input
+                    name="gratitudeHospital"
                     type="text"
                     value={gratHospital}
                     onChange={(e) => setGratHospital(e.target.value)}
@@ -1246,6 +1269,7 @@ export const EmergencyCareSuiteModal: React.FC<EmergencyCareSuiteModalProps> = (
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
+                  name="gratitudeMessage"
                   type="text"
                   required
                   value={gratMessage}

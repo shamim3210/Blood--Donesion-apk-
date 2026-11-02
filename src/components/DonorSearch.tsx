@@ -651,6 +651,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             {selectedGroup !== 'ALL' && (
               <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300 cursor-pointer">
                 <input
+                  id="search-include-compatible"
+                  name="includeCompatible"
                   type="checkbox"
                   checked={includeCompatible}
                   onChange={(e) => setIncludeCompatible(e.target.checked)}
@@ -708,6 +710,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             >
               <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-rose-500 pointer-events-none" />
               <input
+                id="donor-hospital-area-search"
+                name="hospitalOrAreaQuery"
                 type="text"
                 placeholder={
                   isListening
@@ -818,6 +822,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             {/* Simple District Dropdown */}
             <div className="@md:col-span-3">
               <select
+                id="donor-district-select"
+                name="selectedDistrict"
                 value={selectedDistrict}
                 onChange={(e) => setSelectedDistrict(e.target.value)}
                 aria-label="Select District"

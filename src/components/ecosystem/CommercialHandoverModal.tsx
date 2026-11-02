@@ -363,6 +363,7 @@ Commercial Licensing Options:
                     <div className="flex items-center gap-1.5 pt-1">
                       <span className="text-xs font-mono text-slate-500">BDT</span>
                       <input
+                        name="quoteSinglePrice"
                         type="text"
                         value={quoteSinglePrice}
                         onChange={(e) => setQuoteSinglePrice(e.target.value)}
@@ -389,6 +390,7 @@ Commercial Licensing Options:
                     <div className="flex items-center gap-1.5 pt-1">
                       <span className="text-xs font-mono text-slate-500">BDT</span>
                       <input
+                        name="quoteEnterprisePrice"
                         type="text"
                         value={quoteEnterprisePrice}
                         onChange={(e) => setQuoteEnterprisePrice(e.target.value)}
@@ -415,6 +417,7 @@ Commercial Licensing Options:
                     <div className="flex items-center gap-1.5 pt-1">
                       <span className="text-xs font-mono text-slate-500">BDT</span>
                       <input
+                        name="quoteWhitelabelPrice"
                         type="text"
                         value={quoteWhitelabelPrice}
                         onChange={(e) => setQuoteWhitelabelPrice(e.target.value)}
@@ -513,6 +516,7 @@ Commercial Licensing Options:
                     {lang === 'bn' ? 'অ্যাপ / ব্র্যান্ডের নাম (Brand Name)' : 'App / Brand Name'}
                   </span>
                   <input
+                    name="whitelabelBrandName"
                     type="text"
                     required
                     maxLength={40}
@@ -528,6 +532,7 @@ Commercial Licensing Options:
                     {lang === 'bn' ? 'ট্যাগলাইন (Tagline)' : 'Brand Tagline'}
                   </span>
                   <input
+                    name="whitelabelTagline"
                     type="text"
                     required
                     maxLength={50}
@@ -543,6 +548,7 @@ Commercial Licensing Options:
                     {lang === 'bn' ? 'প্রতিষ্ঠানের পূর্ণ নাম (Organization Name)' : 'Organization Legal / Display Name'}
                   </span>
                   <input
+                    name="whitelabelOrgName"
                     type="text"
                     required
                     maxLength={80}
@@ -559,6 +565,7 @@ Commercial Licensing Options:
                       {lang === 'bn' ? 'হটলাইন নম্বর' : 'Support Hotline'}
                     </span>
                     <input
+                      name="whitelabelHotline"
                       type="text"
                       maxLength={24}
                       value={formPhone}
@@ -573,6 +580,7 @@ Commercial Licensing Options:
                       {lang === 'bn' ? 'সাপোর্ট ইমেইল' : 'Support Email'}
                     </span>
                     <input
+                      name="whitelabelSupportEmail"
                       type="email"
                       maxLength={80}
                       value={formEmail}
@@ -661,6 +669,7 @@ Commercial Licensing Options:
                     : 'Buyer Super Admin Gmail (For Ownership Transfer)'}
                 </span>
                 <input
+                  name="buyerAdminEmail"
                   type="email"
                   value={buyerAdminEmail}
                   onChange={(e) => setBuyerAdminEmail(e.target.value)}
@@ -676,6 +685,7 @@ Commercial Licensing Options:
                     : 'Buyer Firebase Project ID'}
                 </span>
                 <input
+                  name="buyerProjectId"
                   type="text"
                   value={buyerProjectId}
                   onChange={(e) => setBuyerProjectId(e.target.value)}

@@ -232,6 +232,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.selectBloodGroup} *
                 </label>
                 <select
+                  name="sosBloodGroup"
                   value={bloodGroup}
                   onChange={(e) => setBloodGroup(e.target.value as BloodGroup)}
                   className="w-full h-11 px-3 text-sm font-bold rounded-xl bg-white/90 dark:bg-slate-900/90 text-rose-600 dark:text-rose-400 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
@@ -249,6 +250,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.unitsNeeded} *
                 </label>
                 <input
+                  name="sosUnitsNeeded"
                   type="number"
                   min="1"
                   max="10"
@@ -297,6 +299,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.patientName} *
                 </label>
                 <input
+                  name="sosPatientName"
                   type="text"
                   placeholder="যেমন: মোছাঃ সালমা খাতুন"
                   value={patientName}
@@ -310,6 +313,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.patientAge}
                 </label>
                 <input
+                  name="sosPatientAge"
                   type="number"
                   placeholder="বয়স"
                   value={patientAge}
@@ -325,6 +329,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                 {t.hospitalName} *
               </label>
               <input
+                name="sosHospitalName"
                 type="text"
                 placeholder="যেমন: ঢাকা মেডিকেল কলেজ হাসপাতাল (DMCH), নতুন ভবন ৩য় তলা"
                 value={hospitalName}
@@ -341,6 +346,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.selectDivision}
                 </label>
                 <select
+                  name="sosDivision"
                   value={division}
                   onChange={(e) => handleDivisionChange(e.target.value)}
                   className="w-full h-11 px-3 text-xs rounded-xl bg-white/90 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
@@ -358,6 +364,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.selectDistrict}
                 </label>
                 <select
+                  name="sosDistrict"
                   value={district}
                   onChange={(e) => handleDistrictChange(e.target.value)}
                   className="w-full h-11 px-3 text-xs rounded-xl bg-white/90 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
@@ -375,6 +382,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.selectUpazila}
                 </label>
                 <select
+                  name="sosUpazila"
                   value={upazila}
                   onChange={(e) => setUpazila(e.target.value)}
                   className="w-full h-11 px-3 text-xs rounded-xl bg-white/90 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
@@ -395,6 +403,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.contactName}
                 </label>
                 <input
+                  name="sosContactName"
                   type="text"
                   placeholder="যেমন: ফাহিম (ভাই)"
                   value={contactName}
@@ -408,6 +417,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                   {t.contactPhone} *
                 </label>
                 <input
+                  name="sosContactPhone"
                   type="tel"
                   placeholder="+88017XXXXXXXX"
                   value={contactPhone}
@@ -424,6 +434,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
                 {t.caseReason}
               </label>
               <textarea
+                name="sosCaseReason"
                 rows={2}
                 placeholder="যেমন: সড়ক দুর্ঘটনায় রক্তক্ষরণ, আজ বিকেলে জরুরি সার্জারি..."
                 value={reason}

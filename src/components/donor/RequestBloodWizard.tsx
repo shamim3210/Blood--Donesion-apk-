@@ -511,6 +511,8 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
               <div className="relative">
                 <input
+                  id="req-wizard-hospital"
+                  name="hospitalName"
                   type="text"
                   required
                   placeholder={
@@ -574,10 +576,12 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
             {/* 3. Patient / Contact Name, Callback Phone & District */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="req-wizard-patient-name" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? '৩. রোগী বা যোগাযোগকারীর নাম' : '3. Patient / Contact Name'}
                 </label>
                 <input
+                  id="req-wizard-patient-name"
+                  name="patientName"
                   type="text"
                   placeholder={lang === 'bn' ? 'নিজের বা রোগীর নাম লিখুন' : 'Enter patient or contact name'}
                   value={patientName}
@@ -588,7 +592,7 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
               <div>
                 <div className="flex items-center justify-between gap-1 mb-1">
-                  <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                  <label htmlFor="req-wizard-phone" className="text-xs font-bold text-slate-800 dark:text-slate-200">
                     {lang === 'bn' ? '৪. মোবাইল নম্বর *' : '4. Callback Mobile Number *'}
                   </label>
                   {savedProfilePhone && contactPhone !== savedProfilePhone && (
@@ -602,6 +606,8 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   )}
                 </div>
                 <input
+                  id="req-wizard-phone"
+                  name="contactPhone"
                   type="tel"
                   required
                   placeholder="01712345678"
@@ -614,10 +620,12 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                <label htmlFor="req-wizard-district" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                   {lang === 'bn' ? 'জেলা *' : 'District *'}
                 </label>
                 <select
+                  id="req-wizard-district"
+                  name="district"
                   required
                   value={district}
                   onChange={(e) => setDistrict(e.target.value)}
@@ -685,10 +693,12 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                 <div className="pt-3 space-y-3">
                   <div>
                     <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      <label htmlFor="req-wizard-time-window" className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                         {lang === 'bn' ? 'কখন লাগবে?' : 'When needed?'}
                       </label>
                       <select
+                        id="req-wizard-time-window"
+                        name="requiredTimeWindow"
                         value={requiredTimeWindow}
                         onChange={(e) => {
                           const val = e.target.value as RequiredTimeWindow;
@@ -720,10 +730,12 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    <label htmlFor="req-wizard-reason" className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                       {lang === 'bn' ? 'রোগের কারণ / ওয়ার্ড নম্বর (ঐচ্ছিক)' : 'Reason / Ward (Optional)'}
                     </label>
                     <input
+                      id="req-wizard-reason"
+                      name="clinicalReason"
                       type="text"
                       placeholder={
                         lang === 'bn'
@@ -738,6 +750,8 @@ export const RequestBloodWizard: React.FC<RequestBloodWizardProps> = ({
 
                   <label className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 flex items-center gap-2.5 cursor-pointer text-xs">
                     <input
+                      id="req-wizard-exchange"
+                      name="exchangeAllowed"
                       type="checkbox"
                       checked={exchangeAllowed}
                       onChange={(e) => setExchangeAllowed(e.target.checked)}

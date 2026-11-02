@@ -572,6 +572,7 @@ export const EmergencyDirectoryModal: React.FC<EmergencyDirectoryModalProps> = (
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
             <input
+              name="directorySearch"
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -621,6 +622,7 @@ export const EmergencyDirectoryModal: React.FC<EmergencyDirectoryModalProps> = (
             </div>
 
             <select
+              name="directoryDivision"
               value={selectedDivision}
               onChange={(e) => setSelectedDivision(e.target.value)}
               className="h-9 px-2.5 text-xs font-semibold rounded-xl bg-slate-100 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 cursor-pointer"

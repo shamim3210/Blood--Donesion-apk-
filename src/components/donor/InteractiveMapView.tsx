@@ -433,22 +433,26 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
       }
     });
 
-    const stopWatch = watchRealDeviceGPS((liveCoords) => {
-      if (!mounted) return;
-      setOriginMode((currMode) => {
-        if (currMode === 'GPS') {
-          setIsGpsActive(true);
-          setOriginCoords(liveCoords);
-          const near = findNearestDistrictFromCoords(liveCoords);
-          setOriginLabel(
-            lang === 'bn'
-              ? `লাইভ GPS (${near.nameBn})`
-              : `Live GPS (${near.nameEn})`
-          );
-        }
-        return currMode;
-      });
-    });
+    const stopWatch = watchRealDeviceGPS(
+      (liveCoords) => {
+        if (!mounted) return;
+        setOriginMode((currMode) => {
+          if (currMode === 'GPS') {
+            setIsGpsActive(true);
+            setOriginCoords(liveCoords);
+            const near = findNearestDistrictFromCoords(liveCoords);
+            setOriginLabel(
+              lang === 'bn'
+                ? `লাইভ GPS (${near.nameBn})`
+                : `Live GPS (${near.nameEn})`
+            );
+          }
+          return currMode;
+        });
+      },
+      undefined,
+      { onlyIfGranted: true }
+    );
 
     return () => {
       mounted = false;
@@ -1351,6 +1355,8 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
         <div className="relative">
           <Search className="w-4 h-4 text-teal-600 dark:text-teal-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
+            id="map-pickup-search"
+            name="mapPickupQuery"
             type="text"
             value={pickupQuery}
             onFocus={() => setShowSuggestions(true)}
@@ -1472,6 +1478,8 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
             ))}
 
             <select
+              id="map-division-filter"
+              name="mapSelectedDivision"
               value={selectedDivision}
               onChange={(e) => handleDivisionChange(e.target.value)}
               aria-label="Division Map Filter"

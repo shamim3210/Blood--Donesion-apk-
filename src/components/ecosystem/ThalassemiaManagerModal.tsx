@@ -262,6 +262,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   {lang === 'bn' ? 'রোগীর নাম *' : 'Patient Name *'}
                 </label>
                 <input
+                  name="thalPatientName"
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
@@ -276,6 +277,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   {lang === 'bn' ? 'ব্লাড গ্রুপ *' : 'Blood Group *'}
                 </label>
                 <select
+                  name="thalBloodGroup"
                   value={newGroup}
                   onChange={(e) => setNewGroup(e.target.value as BloodGroup)}
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-bold"
@@ -293,6 +295,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   {lang === 'bn' ? 'হাসপাতাল / কেন্দ্রের নাম *' : 'Hospital / Center *'}
                 </label>
                 <input
+                  name="thalHospital"
                   type="text"
                   value={newHospital}
                   onChange={(e) => setNewHospital(e.target.value)}
@@ -307,6 +310,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   {lang === 'bn' ? 'অভিভাবকের মোবাইল নম্বর *' : 'Guardian Mobile *'}
                 </label>
                 <input
+                  name="thalGuardianPhone"
                   type="tel"
                   value={newPhone}
                   onChange={(e) => setNewPhone(e.target.value)}
@@ -321,6 +325,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   {lang === 'bn' ? 'রক্ত নেওয়ার ব্যবধান' : 'Transfusion Interval'}
                 </label>
                 <select
+                  name="thalIntervalDays"
                   value={newInterval}
                   onChange={(e) => setNewInterval(Number(e.target.value))}
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-bold"
@@ -337,6 +342,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   {lang === 'bn' ? 'বর্তমান হিমোগ্লোবিন (Hb g/dL)' : 'Current Hemoglobin (g/dL)'}
                 </label>
                 <input
+                  name="thalCurrentHb"
                   type="number"
                   step="0.1"
                   value={newHb}
@@ -470,6 +476,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-2"
                 >
                   <input
+                    name="slotDonorName"
                     type="text"
                     required
                     placeholder={lang === 'bn' ? 'ডোনারের নাম' : 'Donor Name'}
@@ -478,6 +485,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                     className="px-3 py-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-xs"
                   />
                   <input
+                    name="slotDonorPhone"
                     type="tel"
                     required
                     placeholder="01XXXXXXXXX"
@@ -487,6 +495,7 @@ export const ThalassemiaManagerModal: React.FC<ThalassemiaManagerModalProps> = (
                   />
                   <div className="flex gap-1.5">
                     <input
+                      name="slotMonthLabel"
                       type="text"
                       placeholder={lang === 'bn' ? 'মাস (যেমন: ১ম মাস)' : 'Month Slot'}
                       value={slotMonthLabel}

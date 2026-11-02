@@ -262,6 +262,7 @@ export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
                       {lang === 'bn' ? 'সদস্যের নাম *' : 'Member Name *'}
                     </label>
                     <input
+                      name="familyMemberName"
                       type="text"
                       placeholder={lang === 'bn' ? 'নাম লিখুন' : 'Full name'}
                       value={newFamName}
@@ -276,6 +277,7 @@ export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
                       {lang === 'bn' ? 'সম্পর্ক' : 'Relation'}
                     </label>
                     <select
+                      name="familyMemberRelation"
                       value={newFamRelation}
                       onChange={(e) => setNewFamRelation(e.target.value)}
                       className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
@@ -296,6 +298,7 @@ export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
                       {lang === 'bn' ? 'ব্লাড গ্রুপ' : 'Blood Group'}
                     </label>
                     <select
+                      name="familyMemberBloodGroup"
                       value={newFamGroup}
                       onChange={(e) => setNewFamGroup(e.target.value as BloodGroup)}
                       className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-xs font-bold text-rose-600"
@@ -315,6 +318,7 @@ export const FamilyVolunteerModal: React.FC<FamilyVolunteerModalProps> = ({
                       {lang === 'bn' ? 'মোবাইল নম্বর (ঐচ্ছিক)' : 'Phone Number (Optional)'}
                     </label>
                     <input
+                      name="familyMemberPhone"
                       type="tel"
                       placeholder="01XXXXXXXXX"
                       value={newFamPhone}

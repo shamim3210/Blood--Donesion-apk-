@@ -427,6 +427,7 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({ lang }) => {
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
                   <input
+                    name="orderSearch"
                     type="text"
                     placeholder="Search orders..."
                     className="pl-8 pr-3 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
@@ -614,6 +615,7 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({ lang }) => {
                     Select Blood Group
                   </label>
                   <select
+                    name="requisitionBloodGroup"
                     value={orderGroup}
                     onChange={(e) => setOrderGroup(e.target.value as BloodGroup)}
                     className="w-full h-11 px-3 text-sm font-bold rounded-xl bg-white/90 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
@@ -631,6 +633,7 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({ lang }) => {
                     Requisition Units (Bags)
                   </label>
                   <input
+                    name="requisitionUnits"
                     type="number"
                     min="1"
                     max="50"

@@ -638,6 +638,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <input
+                      name="seekerName"
                       type="text"
                       required
                       placeholder={lang === 'bn' ? 'আপনার নাম *' : 'Your Name *'}
@@ -646,6 +647,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                       className="w-full h-10 px-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
                     />
                     <input
+                      name="seekerPhone"
                       type="tel"
                       required
                       placeholder={lang === 'bn' ? 'আপনার ফোন নম্বর *' : 'Callback Phone *'}
@@ -655,6 +657,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
                     />
                   </div>
                   <input
+                    name="consentHospitalName"
                     type="text"
                     required
                     placeholder={
@@ -730,6 +733,7 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
             ) : (
               <form onSubmit={handleReportScam} className="space-y-2 pt-1 text-xs">
                 <input
+                  name="scamReportReason"
                   type="text"
                   required
                   value={scamReason}

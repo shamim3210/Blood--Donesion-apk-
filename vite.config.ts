@@ -23,6 +23,26 @@ function bloodsearchVersionManifestPlugin(version: string, buildId: string): Plu
     builtAt: new Date().toISOString(),
   });
 
+  const devManifestPayload = JSON.stringify({
+    id: '/',
+    name: 'BloodSearch - Bangladesh Emergency Blood Network',
+    short_name: 'BloodSearch',
+    description:
+      'জরুরি রক্তদাতা সন্ধান, ৬৪ জেলা হাসপাতাল ডিরেক্টরি ও লাইভ ব্লাড ডোনেশন নেটওয়ার্ক বাংলাদেশ।',
+    lang: 'bn',
+    dir: 'ltr',
+    theme_color: '#0b2239',
+    background_color: '#ffffff',
+    display: 'standalone',
+    scope: '/',
+    start_url: '/',
+    icons: [
+      { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ],
+  });
+
   return {
     name: 'bloodsearch-version-manifest',
     configureServer(server) {
@@ -31,6 +51,24 @@ function bloodsearchVersionManifestPlugin(version: string, buildId: string): Plu
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
         res.end(payload);
       });
+      server.middlewares.use('/manifest.webmanifest', (_req, res) => {
+        res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.end(devManifestPayload);
+      });
+      server.middlewares.use('/favicon.ico', (_req, res) => {
+        try {
+          const iconBuf = fs.readFileSync(
+            path.resolve(import.meta.dirname, 'public', 'favicon-64x64.png')
+          );
+          res.setHeader('Content-Type', 'image/png');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          res.end(iconBuf);
+        } catch {
+          res.statusCode = 204;
+          res.end();
+        }
+      });
     },
     generateBundle() {
       this.emitFile({
@@ -38,6 +76,18 @@ function bloodsearchVersionManifestPlugin(version: string, buildId: string): Plu
         fileName: 'version.json',
         source: payload,
       });
+      try {
+        const iconBuf = fs.readFileSync(
+          path.resolve(import.meta.dirname, 'public', 'favicon-64x64.png')
+        );
+        this.emitFile({
+          type: 'asset',
+          fileName: 'favicon.ico',
+          source: iconBuf,
+        });
+      } catch {
+        // Ignore if favicon PNG unavailable
+      }
     },
   };
 }
@@ -158,8 +208,17 @@ export default defineConfig(() => {
             '**/*.sql',
           ],
           cleanupOutdatedCaches: true,
-          // Never intercept API routes, live version manifest, Firebase Auth handler, or Android TWA assetlinks
-          navigateFallbackDenylist: [/^\/api\//, /^\/version\.json/, /^\/__/, /^\/\.well-known\//],
+          // Never intercept API routes, live version manifest, PWA manifest, static assets, Firebase Auth handler, or Android TWA assetlinks
+          navigateFallbackDenylist: [
+            /^\/api\//,
+            /^\/version\.json/,
+            /^\/manifest\.webmanifest/,
+            /^\/favicon\.ico/,
+            /^\/assets\//,
+            /\.(?:js|css|json|webmanifest|png|svg|ico|woff2?)(?:\?.*)?$/i,
+            /^\/__/,
+            /^\/\.well-known\//,
+          ],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,

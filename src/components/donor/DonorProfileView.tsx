@@ -1192,10 +1192,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="profile-edit-name" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'আপনার নাম *' : 'Your Name *'}
                 </label>
                 <input
+                  id="profile-edit-name"
+                  name="editName"
                   type="text"
                   required
                   maxLength={80}
@@ -1207,10 +1209,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="profile-edit-phone" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'মোবাইল নম্বর (Call) *' : 'Mobile Number (Call) *'}
                 </label>
                 <input
+                  id="profile-edit-phone"
+                  name="editPhone"
                   type="tel"
                   required
                   value={editPhone}
@@ -1222,7 +1226,7 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
               <div>
                 <div className="flex items-center justify-between gap-1 mb-1">
-                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                  <label htmlFor="profile-edit-whatsapp" className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
                     {lang === 'bn' ? 'WhatsApp নম্বর *' : 'WhatsApp Number *'}
                   </label>
                   {editPhone.trim() && editWhatsapp !== editPhone && (
@@ -1236,6 +1240,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                   )}
                 </div>
                 <input
+                  id="profile-edit-whatsapp"
+                  name="editWhatsapp"
                   type="tel"
                   required
                   value={editWhatsapp}
@@ -1246,12 +1252,14 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="profile-edit-facebook" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'Facebook প্রোফাইল লিংক / আইডি *' : 'Facebook Profile Link / ID *'}
                 </label>
                 <div className="relative">
                   <Globe className="w-3.5 h-3.5 text-[#1877f2] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    id="profile-edit-facebook"
+                    name="editFacebook"
                     type="text"
                     required
                     maxLength={200}
@@ -1267,10 +1275,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             {/* Manual Age, Weight & Gender Inputs */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="profile-edit-age" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'বয়স (১৮–৬৫ বছর) *' : 'Age (18–65 yrs) *'}
                 </label>
                 <input
+                  id="profile-edit-age"
+                  name="editAge"
                   type="text"
                   inputMode="numeric"
                   required
@@ -1283,10 +1293,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="profile-edit-weight" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'ওজন কেজি (৪০–১৮০) *' : 'Weight kg (40–180) *'}
                 </label>
                 <input
+                  id="profile-edit-weight"
+                  name="editWeight"
                   type="text"
                   inputMode="numeric"
                   required
@@ -1299,10 +1311,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="profile-edit-gender" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'লিঙ্গ *' : 'Gender *'}
                 </label>
                 <select
+                  id="profile-edit-gender"
+                  name="editGender"
                   required
                   value={editGender}
                   onChange={(e) =>
@@ -1370,6 +1384,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <select
+                  id="profile-edit-district"
+                  name="editDistrict"
                   required
                   value={editDistrict}
                   onChange={(e) => setEditDistrict(e.target.value)}
@@ -1386,6 +1402,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
                 </select>
 
                 <input
+                  id="profile-edit-area"
+                  name="editArea"
                   type="text"
                   required
                   maxLength={120}
@@ -1602,10 +1620,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+            <label htmlFor="profile-contact-visibility" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
               {lang === 'bn' ? 'কে আপনাকে সরাসরি কল বা WhatsApp করতে পারবেন?' : 'Who can view & contact you directly?'}
             </label>
             <select
+              id="profile-contact-visibility"
+              name="contactVisibility"
               value={contactVisibility}
               onChange={(e) =>
                 applyConsentAndAvailabilityUpdate({
@@ -1636,6 +1656,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200">
               <label className="inline-flex items-center gap-2 cursor-pointer min-h-[36px]">
                 <input
+                  id="profile-allow-call"
+                  name="allowCall"
                   type="checkbox"
                   checked={allowCall}
                   onChange={(e) =>
@@ -1648,6 +1670,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
               <label className="inline-flex items-center gap-2 cursor-pointer min-h-[36px]">
                 <input
+                  id="profile-allow-whatsapp"
+                  name="allowWhatsApp"
                   type="checkbox"
                   checked={allowWhatsApp}
                   onChange={(e) =>
@@ -1660,6 +1684,8 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
 
               <label className="inline-flex items-center gap-2 cursor-pointer min-h-[36px]">
                 <input
+                  id="profile-allow-sms"
+                  name="allowSms"
                   type="checkbox"
                   checked={allowSms}
                   onChange={(e) =>
@@ -1812,10 +1838,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
-                <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                <label htmlFor="profile-log-date" className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
                   {lang === 'bn' ? 'রক্তদানের তারিখ' : 'Donation Date'}
                 </label>
                 <input
+                  id="profile-log-date"
+                  name="logDate"
                   type="date"
                   value={logDate}
                   max={new Date().toISOString().slice(0, 10)}
@@ -1826,10 +1854,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                <label htmlFor="profile-log-type" className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
                   {lang === 'bn' ? 'রক্তদানের ধরন' : 'Donation Type'}
                 </label>
                 <select
+                  id="profile-log-type"
+                  name="logType"
                   value={logType}
                   onChange={(e) => setLogType(e.target.value as 'WHOLE_BLOOD' | 'PLATELET')}
                   className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
@@ -1845,10 +1875,12 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
             </div>
 
             <div>
-              <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+              <label htmlFor="profile-log-hospital" className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
                 {lang === 'bn' ? 'হাসপাতাল বা ব্লাড ব্যাংকের নাম' : 'Hospital or Blood Center'}
               </label>
               <input
+                id="profile-log-hospital"
+                name="logHospital"
                 type="text"
                 value={logHospital}
                 onChange={(e) => setLogHospital(e.target.value)}

@@ -1197,12 +1197,13 @@ export const PdfExactShowcase: React.FC<PdfExactShowcaseProps> = ({
               <span>Select Blood Unit</span>
               <span className="text-rose-600 font-black">2 Unit</span>
             </div>
-            <input type="range" min="1" max="5" defaultValue="2" className="w-full accent-rose-600 cursor-pointer" />
+            <input name="mockupBloodUnit" type="range" min="1" max="5" defaultValue="2" className="w-full accent-rose-600 cursor-pointer" />
           </div>
 
           <div>
             <label className="text-[10px] font-bold text-slate-700 block mb-1">Mobile Number</label>
             <input
+              name="mockupMobileNumber"
               type="text"
               defaultValue="+88017XXXXXXXX"
               className="w-full p-2.5 rounded-xl bg-white border border-slate-300 text-xs font-mono text-slate-900"
@@ -1211,7 +1212,7 @@ export const PdfExactShowcase: React.FC<PdfExactShowcaseProps> = ({
 
           <div>
             <label className="text-[10px] font-bold text-slate-700 block mb-1">Select A Location</label>
-            <select className="w-full p-2.5 rounded-xl bg-white border border-slate-300 text-xs text-slate-900">
+            <select name="mockupLocation" className="w-full p-2.5 rounded-xl bg-white border border-slate-300 text-xs text-slate-900">
               <option>Dhaka Sadar / Shahbagh (DMCH)</option>
               <option>Chittagong Medical College</option>
               <option>Sylhet MAG Osmani Medical</option>
@@ -1238,7 +1239,7 @@ export const PdfExactShowcase: React.FC<PdfExactShowcaseProps> = ({
 
           <div className="p-2 rounded-xl bg-slate-200 flex items-center gap-2 text-xs text-slate-700 border border-slate-300">
             <Search className="w-3.5 h-3.5" />
-            <input type="text" placeholder="Search conversations..." className="bg-transparent focus:outline-none flex-1 text-slate-900 text-xs" />
+            <input name="mockupInboxSearch" type="text" placeholder="Search conversations..." className="bg-transparent focus:outline-none flex-1 text-slate-900 text-xs" />
           </div>
 
           <div className="space-y-2">
@@ -1352,6 +1353,7 @@ export const PdfExactShowcase: React.FC<PdfExactShowcaseProps> = ({
           {/* Bottom Chat Input */}
           <div className="p-2 rounded-2xl bg-white border border-slate-300 flex items-center gap-2 shadow-sm">
             <input
+              name="mockupChatMessage"
               type="text"
               placeholder="Type A Message..."
               className="flex-1 text-xs text-slate-900 focus:outline-none"

@@ -732,6 +732,8 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
           <div className="flex items-center gap-2.5 flex-wrap">
             <label className="inline-flex items-center gap-2 text-xs font-semibold text-white cursor-pointer min-h-[44px] px-3 rounded-xl bg-white/12 hover:bg-white/20 border border-white/20">
               <input
+                id="sos-feed-show-resolved"
+                name="showResolved"
                 type="checkbox"
                 checked={showResolved}
                 onChange={(e) => setShowResolved(e.target.checked)}
@@ -1920,10 +1922,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
             <form onSubmit={handleConfirmResponse} className="space-y-3.5">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="sos-respond-name" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'আপনার নাম' : 'Your Full Name'} *
                 </label>
                 <input
+                  id="sos-respond-name"
+                  name="responderName"
                   type="text"
                   required
                   placeholder={lang === 'bn' ? 'আপনার পূর্ণ নাম' : 'Full Name'}
@@ -1934,10 +1938,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="sos-respond-phone" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'আপনার ১১ ডিজিটের মোবাইল নম্বর' : 'Your 11-Digit Mobile Number'} *
                 </label>
                 <input
+                  id="sos-respond-phone"
+                  name="responderPhone"
                   type="tel"
                   required
                   placeholder="01712345678"
@@ -1948,10 +1954,12 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="sos-respond-group" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn' ? 'আপনার রক্তের গ্রুপ' : 'Your Blood Group'}
                 </label>
                 <select
+                  id="sos-respond-group"
+                  name="responderBloodGroup"
                   value={donorGroup}
                   onChange={(e) => setDonorGroup(e.target.value as BloodGroup)}
                   className="w-full h-11 px-3 text-xs sm:text-sm rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
@@ -1965,12 +1973,14 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="sos-respond-note" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   {lang === 'bn'
                     ? 'পৌঁছানোর আনুমানিক সময়'
                     : 'Arrival / Availability Note'}
                 </label>
                 <input
+                  id="sos-respond-note"
+                  name="arrivalNote"
                   type="text"
                   placeholder={
                     lang === 'bn'
@@ -1985,6 +1995,8 @@ export const RequestsFeed: React.FC<RequestsFeedProps> = ({
 
               <label className="flex items-start gap-2.5 p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 cursor-pointer">
                 <input
+                  id="sos-respond-share-live"
+                  name="shareLiveLocation"
                   type="checkbox"
                   checked={shareLiveLocation}
                   onChange={(e) => setShareLiveLocation(e.target.checked)}

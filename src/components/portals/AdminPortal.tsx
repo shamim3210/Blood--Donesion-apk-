@@ -77,7 +77,6 @@ import {
   Smartphone,
   ShieldAlert,
   Megaphone,
-  Download,
   Database,
   RefreshCw,
   Copy,
@@ -113,6 +112,28 @@ type AdminModuleId =
   | 'database'
   | 'vault'
   | 'audit';
+
+function maskEmailForAdminDisplay(email?: string | null): string {
+  const clean = String(email || '').trim();
+  const atIdx = clean.indexOf('@');
+  if (atIdx <= 1) return clean ? '***' : 'Authenticated Session';
+  const local = clean.slice(0, atIdx);
+  const domain = clean.slice(atIdx + 1);
+  const head = local.slice(0, Math.min(2, local.length));
+  const tail = local.length > 3 ? local.slice(-1) : '';
+  return `${head}***${tail}@${domain}`;
+}
+
+function maskPhoneForAdminDisplay(phone?: string | null): string {
+  const clean = String(phone || '').trim();
+  if (!clean) return 'Hidden';
+  if (clean.includes('*')) return clean;
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length < 7) return '***';
+  const prefix = clean.startsWith('+880') ? '+880' : digits.slice(0, 3);
+  const last4 = digits.slice(-4);
+  return `${prefix}****${last4}`;
+}
 
 type AdminSignInMethodTab = 'GOOGLE' | 'EMAIL' | 'CO_ADMIN';
 
@@ -403,80 +424,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  const handleExportCsvBackup = () => {
-    const headers = [
-      'ID',
-      'Name',
-      'BloodGroup',
-      'District',
-      'Upazila',
-      'Available',
-      'Verified',
-      'TotalDonations',
-      'LastDonated',
-    ];
-    const escapeCsv = (val: unknown) => `"${String(val ?? '').replace(/"/g, '""')}"`;
-    const rows = donors.map((d) =>
-      [
-        d.id,
-        d.name,
-        d.bloodGroup,
-        d.district,
-        d.upazila,
-        d.available ? 'YES' : 'NO',
-        d.verifiedBadge ? 'VERIFIED' : 'PENDING',
-        d.totalDonations,
-        d.lastDonatedDate || '',
-      ]
-        .map(escapeCsv)
-        .join(',')
-    );
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `BloodSearch-Donors-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    onLogAudit('STATUS_CHANGE', `Exported ${donors.length} donors to Excel CSV backup`);
-    showTempToast(
-      lang === 'bn'
-        ? `✓ ${donors.length} জন ডোনারের Excel (.CSV) ব্যাকআপ ডাউনলোড হয়েছে`
-        : `✓ Downloaded Excel (.CSV) backup of ${donors.length} donors`
-    );
-  };
-
-  const handleExportJsonBackup = () => {
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      exportedBy: firebaseUser?.email || 'Admin',
-      totalDonors: donors.length,
-      totalRequests: requests.length,
-      bloodStock,
-      donors,
-      requests,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: 'application/json;charset=utf-8;',
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `BloodSearch-FullBackup-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    onLogAudit('STATUS_CHANGE', 'Exported full system JSON snapshot backup');
-    showTempToast(
-      lang === 'bn'
-        ? '✓ সম্পূর্ণ ডাটাবেস (.JSON) ব্যাকআপ ডাউনলোড সম্পন্ন'
-        : '✓ Full database (.JSON) backup downloaded'
-    );
-  };
+  // Bulk client-side .CSV / .JSON exports intentionally omitted from UI to prevent 1-click database scraping.
+  // Authorized encrypted server-side backups run strictly via backend CLI (`npm run db:backup`).
 
   const handlePublishAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -999,7 +948,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 {lang === 'bn' ? 'অ্যাডমিন সেশন লক করা আছে' : 'Command Session Locked'}
               </h1>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate">
-                {firebaseUser?.email} · {isSuperOwner ? 'Super Owner' : 'Verified Co-Admin'}
+                {maskEmailForAdminDisplay(firebaseUser?.email)} · {isSuperOwner ? 'Super Owner' : 'Verified Co-Admin'}
               </p>
             </div>
 
@@ -1093,6 +1042,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <div className="relative">
                     <KeyRound className="w-4 h-4 text-amber-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
+                      id="admin-coadmin-switch-code"
+                      name="coAdminInviteCode"
                       type={showPin ? 'text' : 'password'}
                       required
                       value={adminPinInput}
@@ -1318,6 +1269,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
+                      id="admin-login-email"
+                      name="adminEmail"
                       type="email"
                       required
                       autoComplete="off"
@@ -1334,12 +1287,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <label htmlFor="admin-login-password" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                     {lang === 'bn' ? 'অ্যাডমিন পাসওয়ার্ড' : 'Admin Password'}
                   </label>
                   <div className="relative">
                     <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
+                      id="admin-login-password"
+                      name="adminPassword"
                       type={showAdminPassword ? 'text' : 'password'}
                       required
                       value={adminPasswordInput}
@@ -1482,12 +1437,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <label htmlFor="admin-coadmin-key" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                     {lang === 'bn' ? 'কো-অ্যাডমিন ইনভাইট কোড' : 'Co-Admin Invite Key'}
                   </label>
                   <div className="relative">
                     <KeyRound className="w-4 h-4 text-amber-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
+                      id="admin-coadmin-key"
+                      name="coAdminKey"
                       type={showPin ? 'text' : 'password'}
                       required
                       value={adminPinInput}
@@ -1703,7 +1660,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       : 'Verified Co-Admin'}
                 </div>
                 <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
-                  {firebaseUser?.email || firebaseUser?.uid}
+                  {firebaseUser?.email
+                    ? maskEmailForAdminDisplay(firebaseUser.email)
+                    : firebaseUser?.uid
+                      ? `UID:${firebaseUser.uid.slice(0, 8)}...`
+                      : ''}
                 </div>
               </div>
             </div>
@@ -1800,31 +1761,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             ))}
           </nav>
 
-          {/* Quick Snapshots & Deploy Footer */}
-          <div className="pt-4 border-t border-slate-200 dark:border-slate-800/90 space-y-2">
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={handleExportCsvBackup}
-                className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-                title="Download Excel CSV"
-              >
-                <Download className="w-3.5 h-3.5 shrink-0" />
-                <span>.CSV</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExportJsonBackup}
-                className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-                title="Download Full JSON Backup"
-              >
-                <Download className="w-3.5 h-3.5 shrink-0" />
-                <span>.JSON</span>
-              </button>
-            </div>
-
-            {onOpenApkGuide && (
+          {/* Deploy Guide Footer (Bulk CSV/JSON export intentionally disabled to prevent raw DB exfiltration) */}
+          {onOpenApkGuide && (
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800/90">
               <button
                 type="button"
                 onClick={onOpenApkGuide}
@@ -1833,8 +1772,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <Smartphone className="w-3.5 h-3.5 shrink-0" />
                 <span>{lang === 'bn' ? 'APK ও ডিপ্লয় গাইড' : 'APK & Deploy Guide'}</span>
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </aside>
 
         {/* RIGHT MAIN OPERATIONS CANVAS */}
@@ -1976,6 +1915,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="w-full sm:w-72 relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
+                    id="admin-search-donor"
+                    name="searchDonorQuery"
                     type="text"
                     value={searchDonorQuery}
                     onChange={(e) => setSearchDonorQuery(e.target.value)}
@@ -2047,7 +1988,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             )}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate">
-                            {donor.phone} ·{' '}
+                            {maskPhoneForAdminDisplay(donor.phone)} ·{' '}
                             <span className="font-sans capitalize">
                               {donor.upazila}, {donor.district}
                             </span>
@@ -2388,10 +2329,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <form onSubmit={handlePublishAppUpdate} className="space-y-3.5">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
-                      <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                      <label htmlFor="admin-release-version" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
                         {lang === 'bn' ? 'নতুন ভার্সন নম্বর *' : 'New Version *'}
                       </label>
                       <input
+                        id="admin-release-version"
+                        name="releaseVersion"
                         type="text"
                         required
                         maxLength={20}
@@ -2434,10 +2377,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    <label htmlFor="admin-release-notes" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
                       {lang === 'bn' ? 'পরিবর্তন তালিকা (Changelog) *' : 'Release Notes *'}
                     </label>
                     <input
+                      id="admin-release-notes"
+                      name="releaseNotes"
                       type="text"
                       required
                       maxLength={360}
@@ -2453,12 +2398,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    <label htmlFor="admin-release-apk-url" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
                       {lang === 'bn'
                         ? 'সরাসরি .APK ডাউনলোড লিংক (ঐচ্ছিক)'
                         : 'Direct .APK / Store URL (Optional)'}
                     </label>
                     <input
+                      id="admin-release-apk-url"
+                      name="releaseApkUrl"
                       type="url"
                       maxLength={200}
                       value={releaseApkUrlInput}
@@ -2526,10 +2473,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    <label htmlFor="admin-broadcast-title" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
                       {lang === 'bn' ? 'শিরোনাম (ঐচ্ছিক)' : 'Headline (Optional)'}
                     </label>
                     <input
+                      id="admin-broadcast-title"
+                      name="broadcastTitle"
                       type="text"
                       maxLength={120}
                       value={broadcastTitle}
@@ -2544,10 +2493,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    <label htmlFor="admin-broadcast-msg" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
                       {lang === 'bn' ? 'ঘোষণার মূল বার্তা *' : 'Broadcast Message *'}
                     </label>
                     <input
+                      id="admin-broadcast-msg"
+                      name="broadcastMessage"
                       type="text"
                       required
                       maxLength={500}
@@ -2629,6 +2580,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
+                    id="admin-donor-id-lookup"
+                    name="donorIdLookup"
                     type="text"
                     value={donorIdLookupQuery}
                     onChange={(e) => setDonorIdLookupQuery(e.target.value)}
@@ -3004,6 +2957,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <input
+                        id="admin-new-invite-code"
+                        name="newInviteCode"
                         type="text"
                         required
                         minLength={6}
@@ -3017,6 +2972,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#070c17] border border-slate-300 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
                       />
                       <input
+                        id="admin-new-invite-label"
+                        name="newInviteLabel"
                         type="text"
                         value={newInviteLabel}
                         onChange={(e) => setNewInviteLabel(e.target.value)}
@@ -3175,6 +3132,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="w-full sm:w-64 relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
+                    id="admin-audit-search"
+                    name="auditSearchQuery"
                     type="text"
                     value={auditSearchQuery}
                     onChange={(e) => setAuditSearchQuery(e.target.value)}

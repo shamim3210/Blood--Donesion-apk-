@@ -232,6 +232,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
                 {lang === 'bn' ? 'রোগীর নাম' : 'Patient Name'}
               </label>
               <input
+                name="posterPatientName"
                 type="text"
                 value={patientName}
                 onChange={(e) => setPatientName(e.target.value)}
@@ -244,6 +245,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
               </label>
               <div className="flex gap-1.5">
                 <select
+                  name="posterUnitsNeeded"
                   value={unitsNeeded}
                   onChange={(e) => setUnitsNeeded(Number(e.target.value))}
                   className="w-20 h-9 px-2 rounded-lg bg-slate-50 dark:bg-[#0f172a] border border-slate-300 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
@@ -255,6 +257,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
                   ))}
                 </select>
                 <input
+                  name="posterRequiredDate"
                   type="text"
                   value={requiredDate}
                   onChange={(e) => setRequiredDate(e.target.value)}
@@ -267,6 +270,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
                 {lang === 'bn' ? 'হাসপাতাল' : 'Hospital'}
               </label>
               <input
+                name="posterHospitalName"
                 type="text"
                 value={hospitalName}
                 onChange={(e) => setHospitalName(e.target.value)}
@@ -278,6 +282,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
                 {lang === 'bn' ? 'মোবাইল নম্বর' : 'Contact Phone'}
               </label>
               <input
+                name="posterContactPhone"
                 type="text"
                 value={contactPhone}
                 onChange={(e) => setContactPhone(e.target.value)}
@@ -289,6 +294,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
                 {lang === 'bn' ? 'এলাকা / জেলা' : 'Location'}
               </label>
               <input
+                name="posterLocation"
                 type="text"
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
@@ -300,6 +306,7 @@ export const EmergencyPosterModal: React.FC<EmergencyPosterModalProps> = ({
                 {lang === 'bn' ? 'রক্তের কারণ' : 'Medical Reason'}
               </label>
               <input
+                name="posterMedicalReason"
                 type="text"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}

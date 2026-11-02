@@ -1097,6 +1097,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
+              id="chat-peer-search"
+              name="chatSearchQuery"
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -1839,6 +1841,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
             </div>
             <div className="grid grid-cols-3 gap-1.5">
               <select
+                id="chat-sos-draft-group"
+                name="sosDraftGroup"
                 value={sosDraftGroup}
                 onChange={(e) => setSosDraftGroup(e.target.value as BloodGroup)}
                 className="h-8 px-2 rounded-lg bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 font-black text-rose-600 text-xs"
@@ -1850,6 +1854,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
                 ))}
               </select>
               <select
+                id="chat-sos-draft-bags"
+                name="sosDraftBags"
                 value={sosDraftBags}
                 onChange={(e) => setSosDraftBags(e.target.value)}
                 className="h-8 px-2 rounded-lg bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 font-bold text-xs text-slate-800 dark:text-white"
@@ -1869,6 +1875,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
               </button>
             </div>
             <input
+              id="chat-sos-draft-hospital"
+              name="sosDraftHospital"
               type="text"
               value={sosDraftHospital}
               onChange={(e) => setSosDraftHospital(e.target.value)}
@@ -1943,6 +1951,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
         <div className="px-2.5 py-1.5 bg-white/95 dark:bg-[#1f2c34] border-t border-slate-200 dark:border-slate-800 flex items-center gap-1.5 overflow-x-auto scrollbar-none text-[11px]">
           {/* Hidden Image File Input */}
           <input
+            id="chat-slip-file"
+            name="chatSlipAttachment"
             ref={fileInputRef}
             type="file"
             accept="image/*"
@@ -1986,6 +1996,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           {!isCommunityActive && (
             <label className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-[#25D366] font-bold shrink-0 cursor-pointer">
               <input
+                id="chat-sync-whatsapp"
+                name="syncWhatsAppOnSend"
                 type="checkbox"
                 checked={syncWhatsAppOnSend}
                 onChange={(e) => setSyncWhatsAppOnSend(e.target.checked)}
@@ -2075,6 +2087,8 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
           </button>
 
           <textarea
+            id="chat-message-input"
+            name="chatMessage"
             ref={inputRef}
             rows={1}
             placeholder={
