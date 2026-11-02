@@ -43,6 +43,17 @@ function bloodsearchVersionManifestPlugin(version: string, buildId: string): Plu
 }
 
 export default defineConfig(() => {
+  // Hard security gate: prevent accidental exposure of Neon PostgreSQL credentials in React/APK bundles
+  const forbiddenFrontendDbVars = Object.keys(process.env).filter((key) =>
+    /^VITE_(DATABASE_URL|DIRECT_DATABASE_URL|NEON_|PGPASSWORD|POSTGRES_)/i.test(key) &&
+    Boolean(process.env[key]?.trim())
+  );
+  if (forbiddenFrontendDbVars.length > 0) {
+    throw new Error(
+      `FATAL_BUILD_SECURITY_BLOCK: Database credentials (${forbiddenFrontendDbVars.join(', ')}) must NEVER be prefixed with VITE_. Store DATABASE_URL exclusively in backend server secrets.`
+    );
+  }
+
   const appVersion = readPackageVersion();
   const appBuildId = process.env.BUILD_ID || `${appVersion}-${Date.now()}`;
 
@@ -137,7 +148,15 @@ export default defineConfig(() => {
           skipWaiting: true,
           clientsClaim: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webmanifest}'],
-          globIgnores: ['**/version.json', '**/firebase-applet-config.json', '**/.env*', '**/assetlinks.json'],
+          globIgnores: [
+            '**/version.json',
+            '**/firebase-applet-config.json',
+            '**/.env*',
+            '**/assetlinks.json',
+            '**/drizzle/**',
+            '**/backups/**',
+            '**/*.sql',
+          ],
           cleanupOutdatedCaches: true,
           // Never intercept API routes, live version manifest, Firebase Auth handler, or Android TWA assetlinks
           navigateFallbackDenylist: [/^\/api\//, /^\/version\.json/, /^\/__/, /^\/\.well-known\//],
@@ -157,7 +176,7 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /^https:\/\/(?:[abc]\.tile\.openstreetmap\.org|[abcd]\.basemaps\.cartocdn\.com)\/.*/i,
+              urlPattern: /^https:\/\/(?:(?:[abc]\.)?tile\.openstreetmap\.(?:org|fr)|[abcd]\.basemaps\.cartocdn\.com)\/.*/i,
               handler: 'StaleWhileRevalidate',
               options: {
                 cacheName: 'bangladesh-map-tiles-cache',
@@ -192,5 +211,11 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
+    build: {
+      sourcemap: false,
+      target: 'es2020',
+      reportCompressedSize: false,
+    },
   };
 });
+

@@ -6,7 +6,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService';
+import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService.ts';
+import { createNeonApiRouter } from './src/server/neonRoutes.ts';
+import type { AuthenticatedActor } from './src/db/repositories/bloodSearchRepo.ts';
 
 dotenv.config();
 
@@ -138,21 +140,23 @@ export function getNotificationCapabilities() {
 
 export function createEmergencyApiApp(options?: {
   verifyTokenOverride?: (token: string) => Promise<VerifiedCaller | null>;
+  verifyNeonActorOverride?: (token: string) => Promise<AuthenticatedActor | null>;
   otpServiceOptions?: OtpServiceOptions;
 }) {
   const app = express();
   app.disable('x-powered-by');
 
   const isProd = process.env.NODE_ENV === 'production';
+  const devWsSources = isProd ? '' : ' ws: wss:';
   const cspDirectives = [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://www.google.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob: https:",
-    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com",
+    `connect-src 'self' https://*.googleapis.com https://www.gstatic.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.tile.openstreetmap.fr https://*.basemaps.cartocdn.com${devWsSources}`,
     "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://www.google.com",
-    "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com",
+    "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com https://*.run.app",
     "worker-src 'self' blob:",
     "manifest-src 'self'",
     "object-src 'none'",
@@ -160,10 +164,43 @@ export function createEmergencyApiApp(options?: {
     "form-action 'self'",
   ].join('; ');
 
+  const BLOCKED_SCANNER_UAS =
+    /\b(sqlmap|nikto|acunetix|nmap|masscan|zgrab|nuclei|dirbuster|gobuster|wpscan|havij|commix|scrapy|nessus|openvas)\b/i;
+
+  const hasMaliciousObjectKeysOrNullBytes = (val: unknown, depth = 0): boolean => {
+    if (depth > 8) return true;
+    if (typeof val === 'string') {
+      return val.includes('\u0000');
+    }
+    if (Array.isArray(val)) {
+      return val.some((item) => hasMaliciousObjectKeysOrNullBytes(item, depth + 1));
+    }
+    if (val && typeof val === 'object') {
+      const rawObj = val as Record<string, unknown>;
+      for (const key of Object.keys(rawObj)) {
+        if (
+          key === '__proto__' ||
+          key === 'constructor' ||
+          key === 'prototype' ||
+          key.startsWith('$') ||
+          key.includes('\u0000')
+        ) {
+          return true;
+        }
+        if (hasMaliciousObjectKeysOrNullBytes(rawObj[key], depth + 1)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    res.setHeader('X-DNS-Prefetch-Control', 'off');
+    res.setHeader('Origin-Agent-Cluster', '?1');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader(
       'Permissions-Policy',
@@ -174,14 +211,41 @@ export function createEmergencyApiApp(options?: {
       res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     }
 
-    // Block path traversal & sensitive server/config file probing (allow /.well-known/assetlinks.json for verified Android TWA APK)
+    // 1. Block automated vulnerability scanners & exploit bots immediately
+    const ua = String(req.headers['user-agent'] || '');
+    if (ua && BLOCKED_SCANNER_UAS.test(ua)) {
+      res.status(403).json({ ok: false, code: 'FORBIDDEN_SCANNER' });
+      return;
+    }
+
+    // 2. Block path traversal & sensitive server/config/database file probing
+    //    (allow /.well-known/assetlinks.json for verified Android TWA APK, and allow Vite's ?import JS wrapper for firebase-applet-config.json in dev)
     const lowerPath = (req.path || '').toLowerCase();
+    const rawUrl = String(req.originalUrl || req.url || '');
     const isWellKnownAssetLinks = lowerPath === '/.well-known/assetlinks.json';
+    const isViteDevJsonModule =
+      !isProd && lowerPath === '/firebase-applet-config.json' && /[?&]import\b/.test(rawUrl);
     const isBlockedSensitiveFile =
       !isWellKnownAssetLinks &&
+      !isViteDevJsonModule &&
       (lowerPath.includes('..') ||
+        lowerPath.includes('%2e%2e') ||
+        lowerPath.includes('\0') ||
         lowerPath.startsWith('/.env') ||
         lowerPath.startsWith('/.git') ||
+        lowerPath.startsWith('/.data') ||
+        lowerPath.startsWith('/drizzle') ||
+        lowerPath.startsWith('/backups') ||
+        lowerPath.startsWith('/scripts') ||
+        lowerPath.startsWith('/tests') ||
+        lowerPath.startsWith('/src/db') ||
+        lowerPath.startsWith('/src/server') ||
+        lowerPath.endsWith('.sql') ||
+        lowerPath.endsWith('.map') ||
+        lowerPath.endsWith('.md') ||
+        lowerPath === '/drizzle.config.ts' ||
+        lowerPath === '/vite.config.ts' ||
+        lowerPath === '/tsconfig.json' ||
         lowerPath === '/firebase-applet-config.json' ||
         lowerPath === '/firebase-blueprint.json' ||
         lowerPath === '/firestore.rules' ||
@@ -192,6 +256,37 @@ export function createEmergencyApiApp(options?: {
     if (isBlockedSensitiveFile) {
       res.status(403).json({ ok: false, code: 'FORBIDDEN_RESOURCE' });
       return;
+    }
+
+    // 3. Cross-Site Request Forgery (CSRF) Origin & Fetch-Metadata Guard for state-changing API routes
+    if (
+      lowerPath.startsWith('/api/') &&
+      (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
+    ) {
+      const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+      if (secFetchSite === 'cross-site') {
+        res.status(403).json({ ok: false, code: 'CSRF_CROSS_SITE_BLOCKED' });
+        return;
+      }
+
+      const originHeader = String(req.headers.origin || '').trim();
+      const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+        .split(',')[0]
+        ?.trim()
+        .toLowerCase();
+
+      if (originHeader && hostHeader) {
+        try {
+          const originHost = new URL(originHeader).host.toLowerCase();
+          if (originHost !== hostHeader) {
+            res.status(403).json({ ok: false, code: 'CSRF_ORIGIN_MISMATCH' });
+            return;
+          }
+        } catch {
+          res.status(403).json({ ok: false, code: 'CSRF_INVALID_ORIGIN' });
+          return;
+        }
+      }
     }
 
     next();
@@ -226,6 +321,31 @@ export function createEmergencyApiApp(options?: {
   });
 
   app.use(express.json({ limit: '64kb' }));
+
+  // Deep Prototype-Pollution, Operator-Injection & Null-Byte Firewall on all API requests
+  app.use('/api', (req: Request, res: Response, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    if (
+      hasMaliciousObjectKeysOrNullBytes(req.body) ||
+      hasMaliciousObjectKeysOrNullBytes(req.query)
+    ) {
+      res.status(400).json({
+        ok: false,
+        code: 'MALICIOUS_PAYLOAD_BLOCKED',
+        message: 'Malformed or disallowed request payload keys.',
+      });
+      return;
+    }
+    next();
+  });
+
+  // Mount dedicated Neon PostgreSQL primary database API (/api/v1/*)
+  app.use(
+    '/api/v1',
+    createNeonApiRouter({
+      verifyActorOverride: options?.verifyNeonActorOverride,
+    })
+  );
 
   const firebaseApiKey = loadFirebaseWebApiKey();
   const otpService = new BloodSearchOtpService(options?.otpServiceOptions);
@@ -905,7 +1025,9 @@ export function createEmergencyApiApp(options?: {
       res.status(401).json({ ok: false, code: 'UNAUTHORIZED' });
       return;
     }
-    const superAdminEmailHash = sha256Short('shamimrakib015@gmail.com');
+    const superAdminEmailHash = process.env.SUPER_ADMIN_EMAIL
+      ? sha256Short(process.env.SUPER_ADMIN_EMAIL.trim().toLowerCase())
+      : '59aa667ae83942ae';
     const isSuperOwner =
       caller.rawEmailVerified !== false && caller.emailHash === superAdminEmailHash;
     const callerUidHash = sha256Short(caller.uid);
@@ -937,8 +1059,7 @@ async function startServer() {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
-        middlewareMode: { server: httpServer },
-        ws: { server: httpServer },
+        middlewareMode: true,
         hmr: enableHmr ? { server: httpServer } : false,
         watch: enableHmr ? {} : null,
       },

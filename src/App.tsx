@@ -94,6 +94,10 @@ import {
   Coordinates,
 } from './utils/geolocation';
 import { useBrandConfig } from './config/brandConfig';
+import {
+  fetchDonorsFromMainDb,
+  syncBloodRequestToMainDb,
+} from './utils/secureMainDbClient';
 import type { CareSuiteTab } from './components/ecosystem/EmergencyCareSuiteModal';
 
 // Lazy-loaded secondary views & modals for instant first-paint & zero mobile bundle lag
@@ -128,11 +132,6 @@ const EligibilityChecker = lazy(() =>
 const SecurityAuditModal = lazy(() =>
   import('./components/SecurityAuditModal').then((m) => ({ default: m.SecurityAuditModal }))
 );
-const ArchitectureDocModal = lazy(() =>
-  import('./components/ecosystem/ArchitectureDocModal').then((m) => ({
-    default: m.ArchitectureDocModal,
-  }))
-);
 const FamilyVolunteerModal = lazy(() =>
   import('./components/ecosystem/FamilyVolunteerModal').then((m) => ({
     default: m.FamilyVolunteerModal,
@@ -156,11 +155,6 @@ const ThalassemiaManagerModal = lazy(() =>
 const PlayStoreGuideModal = lazy(() =>
   import('./components/ecosystem/PlayStoreGuideModal').then((m) => ({
     default: m.PlayStoreGuideModal,
-  }))
-);
-const CommercialHandoverModal = lazy(() =>
-  import('./components/ecosystem/CommercialHandoverModal').then((m) => ({
-    default: m.CommercialHandoverModal,
   }))
 );
 const EmergencyCareSuiteModal = lazy(() =>
@@ -228,21 +222,13 @@ export default function App() {
     const syncPortalRoute = () => {
       setIsAdminPortalRoute(isStandaloneAdminUrl());
     };
-    const handleAdminShortcut = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        navigateToStandaloneAdmin();
-      }
-    };
     window.addEventListener('popstate', syncPortalRoute);
     window.addEventListener('hashchange', syncPortalRoute);
     window.addEventListener(PORTAL_ROUTE_EVENT, syncPortalRoute);
-    window.addEventListener('keydown', handleAdminShortcut);
     return () => {
       window.removeEventListener('popstate', syncPortalRoute);
       window.removeEventListener('hashchange', syncPortalRoute);
       window.removeEventListener(PORTAL_ROUTE_EVENT, syncPortalRoute);
-      window.removeEventListener('keydown', handleAdminShortcut);
     };
   }, []);
 
@@ -368,8 +354,6 @@ export default function App() {
   const [isPosterModalOpen, setIsPosterModalOpen] = useState<boolean>(false);
   const [isThalassemiaModalOpen, setIsThalassemiaModalOpen] = useState<boolean>(false);
   const [isPlayStoreModalOpen, setIsPlayStoreModalOpen] = useState<boolean>(false);
-  const [isCommercialModalOpen, setIsCommercialModalOpen] = useState<boolean>(false);
-  const [isArchitectureModalOpen, setIsArchitectureModalOpen] = useState<boolean>(false);
   const [careSuiteTab, setCareSuiteTab] = useState<CareSuiteTab | null>(null);
   const [activeAnnouncements, setActiveAnnouncements] = useState<OwnerAnnouncementItem[]>([]);
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<string[]>([]);
@@ -470,6 +454,7 @@ export default function App() {
         if (parsed && parsed.id && parsed.name && parsed.bloodGroup) {
           setDonors((prev) => {
             const existing = prev.find((d) => d.id === parsed.id);
+            const effectiveShareDirect = parsed.shareDirectContact !== false;
             const updatedCard: Donor = {
               ...(existing || {
                 rating: 5.0,
@@ -482,10 +467,10 @@ export default function App() {
               division: parsed.division || existing?.division || 'dhaka',
               district: parsed.district || existing?.district || 'dhaka',
               upazila: parsed.upazila || existing?.upazila || 'Dhaka',
-              phone: parsed.shareDirectContact
+              phone: effectiveShareDirect
                 ? parsed.phone
                 : maskPhoneNumber(parsed.phone || ''),
-              whatsappPhone: parsed.shareDirectContact
+              whatsappPhone: effectiveShareDirect
                 ? parsed.whatsappPhone || parsed.phone
                 : undefined,
               facebookUrl: parsed.facebookUrl || existing?.facebookUrl,
@@ -493,8 +478,10 @@ export default function App() {
               availabilityStatus: parsed.availabilityStatus || 'AVAILABLE',
               availabilityConfirmedAtMs:
                 parsed.availabilityConfirmedAtMs || existing?.availabilityConfirmedAtMs || Date.now(),
-              shareDirectContact: Boolean(parsed.shareDirectContact),
-              contactVisibility: parsed.contactVisibility || 'REQUEST_ONLY',
+              shareDirectContact: effectiveShareDirect,
+              contactVisibility:
+                parsed.contactVisibility ||
+                (effectiveShareDirect ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY'),
               allowCall: parsed.allowCall !== false,
               allowWhatsApp: parsed.allowWhatsApp !== false,
               allowSms: parsed.allowSms !== false,
@@ -610,6 +597,7 @@ export default function App() {
     let unsubDonorAlerts: (() => void) | null = null;
     let unsubSeekerTrips: (() => void) | null = null;
     let unsubDonorTrips: (() => void) | null = null;
+    let unsubChatBadge: (() => void) | null = null;
 
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
       setLiveFirebaseUser(u);
@@ -629,10 +617,14 @@ export default function App() {
         unsubDonorTrips();
         unsubDonorTrips = null;
       }
+      if (unsubChatBadge) {
+        unsubChatBadge();
+        unsubChatBadge = null;
+      }
       if (u) {
         try {
-          // One-time v6 Zero-Slate Reset for Super Owner (shamimrakib015@gmail.com):
-          // Wipes all old pre-v6 records & Shamim's legacy profile once so only brand-new accounts remain
+          // One-time v6 Zero-Slate Reset for verified Super Owner:
+          // Wipes all legacy pre-v6 records once so only authentic accounts remain
           if (isBootstrappedAdminUser(u)) {
             const zeroSlateKey = 'bloodsearch_owner_zero_slate_v6';
             if (localStorage.getItem(zeroSlateKey) !== 'done') {
@@ -662,6 +654,7 @@ export default function App() {
 
             setDonors((prev) => {
               const existing = prev.find((d) => d.id === syncedProfile.id);
+              const effectiveShareDirect = syncedProfile.shareDirectContact !== false;
               const autoDonorCard: Donor = {
                 ...(existing || {}),
                 id: syncedProfile.id,
@@ -670,18 +663,20 @@ export default function App() {
                 division: syncedProfile.division || 'dhaka',
                 district: syncedProfile.district || 'dhaka',
                 upazila: syncedProfile.upazila || 'Dhaka',
-                phone: syncedProfile.shareDirectContact
+                phone: effectiveShareDirect
                   ? syncedProfile.phone
                   : maskPhoneNumber(syncedProfile.phone),
-                whatsappPhone: syncedProfile.shareDirectContact
+                whatsappPhone: effectiveShareDirect
                   ? syncedProfile.whatsappPhone || syncedProfile.phone
                   : undefined,
                 facebookUrl: syncedProfile.facebookUrl,
                 available: syncedProfile.availableToDonate !== false,
                 availabilityStatus: syncedProfile.availabilityStatus || 'AVAILABLE',
                 availabilityConfirmedAtMs: syncedProfile.availabilityConfirmedAtMs || Date.now(),
-                shareDirectContact: Boolean(syncedProfile.shareDirectContact),
-                contactVisibility: syncedProfile.contactVisibility || 'REQUEST_ONLY',
+                shareDirectContact: effectiveShareDirect,
+                contactVisibility:
+                  syncedProfile.contactVisibility ||
+                  (effectiveShareDirect ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY'),
                 allowCall: syncedProfile.allowCall !== false,
                 allowWhatsApp: syncedProfile.allowWhatsApp !== false,
                 allowSms: syncedProfile.allowSms !== false,
@@ -752,6 +747,25 @@ export default function App() {
           });
           unsubSeekerTrips = subscribeLiveTripsForSeeker(u.uid, setCloudSeekerTrips);
           unsubDonorTrips = subscribeLiveTripsForDonor(u.uid, setCloudDonorTrips);
+          unsubChatBadge = subscribeCommunityMessages((msgs) => {
+            const currentIds = msgs.map((m) => m.id);
+            if (seenChatMsgIdsRef.current === null) {
+              seenChatMsgIdsRef.current = new Set(currentIds);
+              return;
+            }
+            let freshIncoming = 0;
+            for (const msg of msgs) {
+              if (!seenChatMsgIdsRef.current.has(msg.id)) {
+                seenChatMsgIdsRef.current.add(msg.id);
+                if (msg.senderUid !== u.uid) {
+                  freshIncoming += 1;
+                }
+              }
+            }
+            if (freshIncoming > 0 && activeTabRef.current !== 'chat') {
+              setUnreadChatCount((prev) => prev + freshIncoming);
+            }
+          });
         } catch {}
       } else {
         const verifiedDev = await verifyStoredDevOtpSandboxSessionWithServer();
@@ -776,8 +790,21 @@ export default function App() {
     let unsubDonors: (() => void) | null = null;
     let unsubRequests: (() => void) | null = null;
     let unsubAnnouncements: (() => void) | null = null;
-    let unsubChatBadge: (() => void) | null = null;
     try {
+      fetchDonorsFromMainDb()
+        .then((mainDbDonors) => {
+          if (mainDbDonors.length > 0) {
+            setDonors((prev) => {
+              const existingIds = new Set(prev.map((d) => d.id));
+              const freshFromMain = mainDbDonors.filter((d) => !existingIds.has(d.id));
+              return freshFromMain.length > 0
+                ? evictSeedsProgressively([...prev, ...freshFromMain], INITIAL_DONORS)
+                : prev;
+            });
+          }
+        })
+        .catch(() => {});
+
       unsubDonors = subscribePublicDonors((cloudDonors) => {
         const nextCloudIds = new Set(cloudDonors.map((d) => d.id));
         const prevCloudIds = cloudDonorIdsRef.current;
@@ -822,26 +849,6 @@ export default function App() {
         });
       });
       unsubAnnouncements = subscribeActiveAnnouncements(setActiveAnnouncements);
-      unsubChatBadge = subscribeCommunityMessages((msgs) => {
-        const currentIds = msgs.map((m) => m.id);
-        if (seenChatMsgIdsRef.current === null) {
-          seenChatMsgIdsRef.current = new Set(currentIds);
-          return;
-        }
-        let freshIncoming = 0;
-        const myUid = auth.currentUser?.uid;
-        for (const msg of msgs) {
-          if (!seenChatMsgIdsRef.current.has(msg.id)) {
-            seenChatMsgIdsRef.current.add(msg.id);
-            if (!myUid || msg.senderUid !== myUid) {
-              freshIncoming += 1;
-            }
-          }
-        }
-        if (freshIncoming > 0 && activeTabRef.current !== 'chat') {
-          setUnreadChatCount((prev) => prev + freshIncoming);
-        }
-      });
     } catch {}
 
     const syncRealOnlyMode = () => {
@@ -1031,6 +1038,7 @@ export default function App() {
         ];
         return evictSeedsProgressively(realReqs, INITIAL_REQUESTS);
       });
+      syncBloodRequestToMainDb(newRequest).catch(() => false);
       if (!opts?.alreadySyncedToCloud) {
         createBloodRequestInFirestore(newRequest).catch(() => {});
       }
@@ -1667,13 +1675,7 @@ export default function App() {
         onOpenAuthModal={() => setIsAuthModalOpen(true)}
         onOpenRegisterModal={(role) => openRegisterWithRole(role || 'USER')}
         onOpenFamilyModal={() => setIsFamilyModalOpen(true)}
-        onOpenArchitectureModal={() => setIsArchitectureModalOpen(true)}
-        onOpenSlideDeck={() => {
-          setViewMode('deck');
-          window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-        }}
         onOpenPlayStoreModal={() => setIsPlayStoreModalOpen(true)}
-        onOpenCommercialModal={() => setIsCommercialModalOpen(true)}
         isDeckMode={viewMode === 'deck'}
         onExitDeckMode={() => setViewMode('app')}
         liveUserLabel={liveUserLabel}
@@ -2047,7 +2049,9 @@ export default function App() {
 
               {activeTab === 'eligibility' && <EligibilityChecker lang={lang} />}
 
-              {activeTab === 'security' && <SecurityAuditModal logs={auditLogs} lang={lang} />}
+              {activeTab === 'security' && isVerifiedCurrentAdmin && (
+                <SecurityAuditModal logs={auditLogs} lang={lang} />
+              )}
             </Suspense>
           )}
         </main>
@@ -2178,16 +2182,6 @@ export default function App() {
         </Suspense>
       )}
 
-      {isCommercialModalOpen && (
-        <Suspense fallback={null}>
-          <CommercialHandoverModal
-            isOpen={isCommercialModalOpen}
-            onClose={() => setIsCommercialModalOpen(false)}
-            lang={lang}
-          />
-        </Suspense>
-      )}
-
       {careSuiteTab !== null && (
         <Suspense fallback={null}>
           <EmergencyCareSuiteModal
@@ -2211,28 +2205,6 @@ export default function App() {
         onOpenApkGuide={() => setIsPlayStoreModalOpen(true)}
         onOpenDirectory={() => setIsDirectoryModalOpen(true)}
       />
-
-      {isArchitectureModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center p-2.5 sm:p-4 bg-black/80 overflow-y-auto modal-scroll-contain">
-          <div className="w-full max-w-4xl my-2 sm:my-auto rounded-3xl bg-white dark:bg-[#111827] p-4 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800 transition-colors text-left">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-200 dark:border-slate-700 mb-4">
-              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                BloodSearch Enterprise Architecture &amp; Specifications
-              </h2>
-              <button
-                type="button"
-                onClick={() => setIsArchitectureModalOpen(false)}
-                className="min-h-[38px] px-2.5 py-1 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white cursor-pointer text-sm font-bold"
-              >
-                ✕ Close
-              </button>
-            </div>
-            <Suspense fallback={<ViewFallback lang={lang} />}>
-              <ArchitectureDocModal />
-            </Suspense>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

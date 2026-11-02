@@ -93,15 +93,21 @@ export class DisabledNoOpSmsGateway implements SmsGatewayProvider {
 export class W3SmsGatewayAdapter implements SmsGatewayProvider {
   public readonly providerId: SmsGatewayProviderId = 'W3SMS';
   public readonly displayName = 'W3 SMS Bangladesh';
+  private readonly config: {
+    apiUrl?: string;
+    apiKey?: string;
+    senderId?: string;
+    fetchImpl?: typeof fetch;
+  };
 
-  constructor(
-    private readonly config: {
-      apiUrl?: string;
-      apiKey?: string;
-      senderId?: string;
-      fetchImpl?: typeof fetch;
-    }
-  ) {}
+  constructor(config: {
+    apiUrl?: string;
+    apiKey?: string;
+    senderId?: string;
+    fetchImpl?: typeof fetch;
+  }) {
+    this.config = config;
+  }
 
   public isConfigured(): boolean {
     return (
@@ -166,15 +172,21 @@ export class W3SmsGatewayAdapter implements SmsGatewayProvider {
 export class ZendSmsGatewayAdapter implements SmsGatewayProvider {
   public readonly providerId: SmsGatewayProviderId = 'ZENDSMS';
   public readonly displayName = 'ZendSMS Bangladesh';
+  private readonly config: {
+    apiUrl?: string;
+    apiKey?: string;
+    senderId?: string;
+    fetchImpl?: typeof fetch;
+  };
 
-  constructor(
-    private readonly config: {
-      apiUrl?: string;
-      apiKey?: string;
-      senderId?: string;
-      fetchImpl?: typeof fetch;
-    }
-  ) {}
+  constructor(config: {
+    apiUrl?: string;
+    apiKey?: string;
+    senderId?: string;
+    fetchImpl?: typeof fetch;
+  }) {
+    this.config = config;
+  }
 
   public isConfigured(): boolean {
     return (
@@ -239,15 +251,21 @@ export class ZendSmsGatewayAdapter implements SmsGatewayProvider {
 export class BtrcCompliantSmsGatewayAdapter implements SmsGatewayProvider {
   public readonly providerId: SmsGatewayProviderId = 'BTRC_CUSTOM';
   public readonly displayName = 'BTRC-Compliant Bangladesh SMS Gateway';
+  private readonly config: {
+    apiUrl?: string;
+    apiKey?: string;
+    senderId?: string;
+    fetchImpl?: typeof fetch;
+  };
 
-  constructor(
-    private readonly config: {
-      apiUrl?: string;
-      apiKey?: string;
-      senderId?: string;
-      fetchImpl?: typeof fetch;
-    }
-  ) {}
+  constructor(config: {
+    apiUrl?: string;
+    apiKey?: string;
+    senderId?: string;
+    fetchImpl?: typeof fetch;
+  }) {
+    this.config = config;
+  }
 
   public isConfigured(): boolean {
     return (

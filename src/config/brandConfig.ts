@@ -50,7 +50,7 @@ export function getEnvDefaultBrandConfig(): WhiteLabelBrandConfig {
     organizationName: (env.VITE_ORG_NAME || 'Bangladesh Emergency Blood Network').trim(),
     supportPhone: (env.VITE_SUPPORT_PHONE || '16263').trim(),
     supportEmail: (env.VITE_SUPPORT_EMAIL || 'support@bloodsearch.org').trim(),
-    superAdminEmail: (env.VITE_SUPER_ADMIN_EMAIL || 'shamimrakib015@gmail.com').trim(),
+    superAdminEmail: (env.VITE_SUPER_ADMIN_EMAIL || 'Authorized Super Owner').trim(),
     defaultRealOnlyMode: env.VITE_DEFAULT_REAL_ONLY_MODE === 'true',
   };
 }

@@ -346,13 +346,17 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
     });
   };
 
-  // 1. Subscribe to Global Real-Time Community Messages
+  // 1. Subscribe to Global Real-Time Community Messages (re-subscribes on Auth hydration)
   useEffect(() => {
+    if (!cloudAuthUid) {
+      setCommunityMessages([]);
+      return;
+    }
     const unsub = subscribeCommunityMessages((msgs) => {
       setCommunityMessages(msgs);
     });
     return () => unsub();
-  }, []);
+  }, [cloudAuthUid]);
 
   // 2. Subscribe to My Real-Time 1-to-1 Direct Chat Rooms
   useEffect(() => {

@@ -28,7 +28,10 @@ const EXCLUDED_NAMES = new Set([
   '.vercel',
   '.env',
   '.env.local',
+  '.env.development',
+  '.env.test',
   '.env.production',
+  'backups',
   'firebase-applet-config.json',
   '.firebaserc',
 ]);
@@ -106,6 +109,13 @@ VITE_SUPPORT_PHONE="16263"
 VITE_SUPPORT_EMAIL="support@yourdomain.com"
 VITE_SUPER_ADMIN_EMAIL="${buyerAdminEmail}"
 VITE_DEFAULT_REAL_ONLY_MODE="true"
+
+# Primary Application Database — Neon PostgreSQL (Server-Side Only — NEVER prefix with VITE_)
+DATABASE_URL=""
+DIRECT_DATABASE_URL=""
+DB_CUTOVER_MODE="NEON_PRIMARY"
+NEON_PLAN_TIER="FREE"
+DB_POOL_MAX="10"
 
 # Optional Production Gateways (Server-Side Secrets)
 APP_URL="https://yourdomain.com"

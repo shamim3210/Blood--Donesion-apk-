@@ -38,8 +38,8 @@ interface MobileAppHeaderProps {
   onOpenAuthModal: () => void;
   onOpenRegisterModal: (role?: 'USER' | 'ADMIN') => void;
   onOpenFamilyModal: () => void;
-  onOpenArchitectureModal: () => void;
-  onOpenSlideDeck: () => void;
+  onOpenArchitectureModal?: () => void;
+  onOpenSlideDeck?: () => void;
   onOpenPlayStoreModal?: () => void;
   onOpenCommercialModal?: () => void;
   isDeckMode: boolean;

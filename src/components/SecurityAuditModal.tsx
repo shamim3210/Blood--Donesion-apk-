@@ -3,14 +3,6 @@ import { AuditLogEntry, Language } from '../types';
 import { getTranslation } from '../utils/translations';
 import {
   DATABASE_COLLECTION_ARCHITECTURES,
-  FIREBASE_APP_CHECK_URL,
-  FIREBASE_BACKUPS_URL,
-  FIREBASE_DATA_CONSOLE_URL,
-  FIREBASE_PROJECT_ID,
-  FIREBASE_RULES_CONSOLE_URL,
-  FIREBASE_SETTINGS_URL,
-  FIRESTORE_DATABASE_ID,
-  GCP_API_CREDENTIALS_URL,
   IS_APP_CHECK_CONFIGURED,
   SmartDatabaseHealthReport,
   runSmartDatabaseHealthAndSecurityAudit,
@@ -18,12 +10,8 @@ import {
 import {
   ShieldCheck,
   Lock,
-  Key,
   Terminal,
   CheckCircle2,
-  ShieldAlert,
-  Database,
-  ExternalLink,
   Server,
   UserCheck,
   RefreshCw,
@@ -100,51 +88,43 @@ export const SecurityAuditModal: React.FC<SecurityAuditModalProps> = ({ logs, la
           ? 'সক্রিয়'
           : 'Active'
         : lang === 'bn'
-          ? 'হোস্টিংয়ের পর চালু করুন'
-          : 'Recommended',
-      title: lang === 'bn' ? 'Firebase App Check (reCAPTCHA v3 / Play Integrity)' : 'Firebase App Check Attestation',
+          ? 'সার্ভার-সাইড গার্ড সক্রিয়'
+          : 'Server-Gated',
+      title: lang === 'bn' ? 'PostgreSQL মেইন ডাটাবেস আইসোলেশন (/api/v1/*)' : 'PostgreSQL Main Database Isolation (/api/v1/*)',
       desc:
         lang === 'bn'
-          ? 'বট বা স্ক্রিপ্ট দিয়ে ডাটাবেস স্ক্র্যাপিং বন্ধ করতে App Check চালু করে সাইট কী `VITE_RECAPTCHA_V3_SITE_KEY`-এ বসান।'
-          : 'Blocks non-app scripts and bots from calling Firestore directly via `VITE_RECAPTCHA_V3_SITE_KEY`.',
-      href: FIREBASE_APP_CHECK_URL,
-      btnLabel: lang === 'bn' ? 'App Check খুলুন' : 'Open App Check',
+          ? 'ডাটাবেস ক্রেডেনশিয়াল ও পুল শুধুমাত্র ব্যাকএন্ড সার্ভারে সীমাবদ্ধ; APK বা ব্রাউজার থেকে সরাসরি ডাটাবেসে প্রবেশ অসম্ভব।'
+          : 'Database credentials and connection pools live exclusively on the backend server; zero direct APK/browser DB access.',
     },
     {
-      statusText: lang === 'bn' ? 'গুরুত্বপূর্ণ' : 'High Priority',
-      title: lang === 'bn' ? 'Google Cloud API Key ডোমেইন লক (HTTP Referrer)' : 'API Key Domain & API Restrictions',
+      statusText: lang === 'bn' ? 'সক্রিয়' : 'Active',
+      title: lang === 'bn' ? 'অ্যান্টি-স্ক্যানার, CSRF ও ইনজেকশন ফায়ারওয়াল' : 'Anti-Scanner, CSRF & Injection Firewall',
       desc:
         lang === 'bn'
-          ? 'আপনার লাইভ ডোমেইন ছাড়া অন্য কোনো ওয়েবসাইট যেন আপনার Firebase API Key ব্যবহার করতে না পারে তা লক করুন।'
-          : 'Restrict your Browser API Key to your production domains and limit APIs to Auth & Cloud Firestore.',
-      href: GCP_API_CREDENTIALS_URL,
-      btnLabel: lang === 'bn' ? 'API Key লক করুন' : 'Restrict API Key',
+          ? 'স্বয়ংক্রিয় হ্যাকিং টুল (sqlmap/nikto), ক্রস-সাইট CSRF রিকোয়েস্ট এবং প্যারামিটারাইজড SQL কোয়েরি দ্বারা ইনজেকশন সম্পূর্ণ ব্লক।'
+          : 'Automated vulnerability scanners, cross-site CSRF mutations, and prototype/SQL injection payloads are blocked at ingress.',
     },
     {
-      statusText: lang === 'bn' ? 'অথেনটিকেশন শিল্ড' : 'Auth Shield',
-      title: lang === 'bn' ? 'Email Enumeration ও SMS Region (+880) পলিসি' : 'Email Enumeration & SMS Region Shield',
+      statusText: lang === 'bn' ? 'সক্রিয়' : 'Active',
+      title: lang === 'bn' ? 'অ্যাডমিন ব্রুট-ফোর্স লকআউট ও টোকেন ভেরিফিকেশন' : 'Admin Brute-Force Lockout & Token Gate',
       desc:
         lang === 'bn'
-          ? 'কার কার ইমেইল রেজিস্টার্ড তা গোপন রাখতে এবং বিদেশি নম্বরে SMS বিল রোধে শুধু Bangladesh (+880) অ্যালাউ করুন।'
-          : 'Enable Email Enumeration Protection and restrict SMS OTP regions strictly to Bangladesh (+880).',
-      href: FIREBASE_SETTINGS_URL,
-      btnLabel: lang === 'bn' ? 'Auth Settings খুলুন' : 'Auth Settings',
+          ? 'অ্যাডমিন পরিচয় গোপন রাখা হয়েছে এবং ৫ বার ভুল চেষ্টায় স্বয়ংক্রিয়ভাবে ১৫ মিনিটের লকআউট কার্যকর হয়।'
+          : 'Admin identities are salted/hashed with zero email hints and automatic 5-attempt 15-minute brute-force lockout.',
     },
     {
-      statusText: lang === 'bn' ? 'ডাটা রিকভারি' : 'Disaster Recovery',
-      title: lang === 'bn' ? 'Firestore ব্যাকআপ ও লাইভ রুলস মনিটর' : 'Automated Backups & Rules Monitor',
+      statusText: lang === 'bn' ? 'সক্রিয়' : 'Active',
+      title: lang === 'bn' ? 'রেট-লিমিটেড ডোনার কন্টাক্ট প্রাইভেসি' : 'Rate-Limited Donor Contact Protection',
       desc:
         lang === 'bn'
-          ? 'দুর্ঘটনাবশত ডাটা মুছে গেলে ফিরিয়ে আনতে Point-in-Time Recovery অথবা অ্যাডমিন প্যানেল থেকে JSON ব্যাকআপ রাখুন।'
-          : 'Configure scheduled Firestore backups / PITR and monitor denied read/write attempts in the Rules tab.',
-      href: FIREBASE_BACKUPS_URL,
-      btnLabel: lang === 'bn' ? 'Backup প্যানেল' : 'Open Backups',
+          ? 'রক্তদাতার সম্মতি অনুযায়ী কল, WhatsApp, SMS ও Facebook খোলা থাকে কিন্তু বাল্ক ডাটা স্ক্র্যাপিং সম্পূর্ণ নিষিদ্ধ।'
+          : 'Preserves opted-in Call, WhatsApp, SMS & Facebook for real seekers while blocking bulk directory scraping.',
     },
   ];
 
   return (
     <div className="space-y-6 text-left">
-      {/* Header & Direct Console Controls */}
+      {/* Header */}
       <div className="bg-white dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 rounded-2xl p-5 sm:p-6">
         <div className="flex items-start sm:items-center justify-between gap-4 flex-wrap pb-5 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-3">
@@ -157,34 +137,15 @@ export const SecurityAuditModal: React.FC<SecurityAuditModalProps> = ({ logs, la
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
                 {lang === 'bn'
-                  ? `প্রজেক্ট: ${FIREBASE_PROJECT_ID} · ডাটাবেস: ${FIRESTORE_DATABASE_ID.slice(0, 28)}...`
-                  : `Project: ${FIREBASE_PROJECT_ID} · Database: ${FIRESTORE_DATABASE_ID.slice(0, 28)}...`}
+                  ? 'সার্ভার-সাইড PostgreSQL মেইন ডাটাবেস ও জিরো-ট্রাস্ট ফায়ারওয়াল মনিটর'
+                  : 'Server-Side PostgreSQL Main Database & Zero-Trust Firewall Monitor'}
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <a
-              href={FIREBASE_DATA_CONSOLE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>{lang === 'bn' ? 'লাইভ ডাটাবেস টেবিল খুলুন' : 'Open Live Database'}</span>
-              <ExternalLink className="w-3 h-3 opacity-80" />
-            </a>
-
-            <a
-              href={FIREBASE_RULES_CONSOLE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 border border-slate-700 whitespace-nowrap shrink-0 transition-colors"
-            >
-              <Lock className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{lang === 'bn' ? 'লাইভ সিকিউরিটি রুলস' : 'Inspect Live Rules'}</span>
-              <ExternalLink className="w-3 h-3 opacity-70" />
-            </a>
+          <div className="px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-bold inline-flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5" />
+            <span>{lang === 'bn' ? 'সর্বোচ্চ নিরাপত্তা সক্রিয়' : 'High Security Enforced'}</span>
           </div>
         </div>
 
@@ -464,16 +425,6 @@ export const SecurityAuditModal: React.FC<SecurityAuditModalProps> = ({ logs, la
                     {step.desc}
                   </p>
                 </div>
-
-                <a
-                  href={step.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1 shrink-0 self-start sm:self-center whitespace-nowrap transition-colors"
-                >
-                  <span>{step.btnLabel}</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
               </div>
             ))}
           </div>

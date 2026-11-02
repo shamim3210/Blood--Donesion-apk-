@@ -10,7 +10,7 @@ import {
   signInWithGoogleReal,
   signInWithGoogleIdToken,
   GOOGLE_OAUTH_CLIENT_ID,
-  registerOrLoginRealEmailPassword,
+  signInAdminEmailPasswordStrict,
   refreshVerifiedEmailSessionWithPassword,
   sendRealPasswordReset,
   resendVerificationEmailForCurrentUser,
@@ -48,19 +48,13 @@ import {
   ScamReportItem,
   AdminInviteLockItem,
   RegisteredAdminItem,
-  BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
   DATABASE_COLLECTION_ARCHITECTURES,
-  FIREBASE_DATA_CONSOLE_URL,
-  FIREBASE_PROJECT_ID,
-  FIRESTORE_DATABASE_ID,
-  FIREBASE_SETTINGS_URL,
-  FIREBASE_RULES_CONSOLE_URL,
-  GCP_API_CREDENTIALS_URL,
   SmartDatabaseHealthReport,
   adminSmartCleanupCompletedRequestsInFirestore,
   runSmartDatabaseHealthAndSecurityAudit,
   User,
 } from '../../firebase';
+import { verifyAdminWithMainServer } from '../../utils/secureMainDbClient';
 import { getSecurityDiagnostics, markRuntimeVerifiedAdminUid } from '../../utils/securityShield';
 import { CURRENT_APP_VERSION } from '../../utils/appUpdateManager';
 import { getStandaloneAdminFullUrl } from '../../utils/adminRoute';
@@ -157,7 +151,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const gsiAdminRef = useRef<HTMLDivElement | null>(null);
 
-  const [adminEmailInput, setAdminEmailInput] = useState(BOOTSTRAPPED_SUPER_ADMIN_EMAIL);
+  const [adminEmailInput, setAdminEmailInput] = useState('');
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [isEmailSigningIn, setIsEmailSigningIn] = useState(false);
@@ -209,7 +203,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [confirmPurgeCloudTest, setConfirmPurgeCloudTest] = useState(false);
   const [isPurgingCloudTest, setIsPurgingCloudTest] = useState(false);
 
-  // Owner Security Vault states (exclusively for shamimrakib015@gmail.com)
+  // Owner Security Vault states (exclusively for verified Super Owner)
   const [inviteLocks, setInviteLocks] = useState<AdminInviteLockItem[]>([]);
   const [registeredAdmins, setRegisteredAdmins] = useState<RegisteredAdminItem[]>([]);
   const [newInviteCode, setNewInviteCode] = useState('');
@@ -553,7 +547,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     async (u: User, methodLabel: string) => {
       setFirebaseUser(u);
       setIsPanelLockedBySession(false);
-      const verifiedAdmin = await checkIsVerifiedAdminInFirestore(u);
+      const serverCheck = await verifyAdminWithMainServer();
+      if (serverCheck.lockedOut) {
+        markRuntimeVerifiedAdminUid(null);
+        setIsVerifiedCloudAdmin(false);
+        setIsAdminAuthenticated(false);
+        setPinError(
+          lang === 'bn'
+            ? 'অতিরিক্ত ভুল অ্যাডমিন প্রবেশের চেষ্টার কারণে এই সেশন ১৫ মিনিটের জন্য ব্লক করা হয়েছে।'
+            : 'Too many unauthorized admin sign-in attempts. Locked for 15 minutes.'
+        );
+        return false;
+      }
+
+      const verifiedAdmin =
+        serverCheck.isAdmin || (await checkIsVerifiedAdminInFirestore(u));
       markRuntimeVerifiedAdminUid(verifiedAdmin ? u.uid : null);
       setIsVerifiedCloudAdmin(verifiedAdmin);
       if (verifiedAdmin) {
@@ -561,27 +569,24 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setPinError(null);
         setAdminEmailNotice(null);
         setPendingEmailVerifyCheck(false);
-        onLogAudit('STATUS_CHANGE', `Verified Admin signed in (${methodLabel}): ${u.email}`);
+        onLogAudit('STATUS_CHANGE', `Verified Admin signed in (${methodLabel})`);
         return true;
       }
 
-      if (
-        u.email?.toLowerCase() === BOOTSTRAPPED_SUPER_ADMIN_EMAIL.toLowerCase() &&
-        !u.emailVerified
-      ) {
+      if (u.email && !u.emailVerified) {
         setPendingEmailVerifyCheck(true);
         setAdminEmailNotice(
           lang === 'bn'
-            ? `আপনার ${u.email} ইনবক্সে একটি ভেরিফিকেশন লিংক পাঠানো হয়েছে। ইমেইল খুলে লিংকটিতে ১ বার ক্লিক করে নিচের "ভেরিফাই সম্পন্ন — প্রবেশ করুন" বাটনে চাপুন, অথবা Google ট্যাব ব্যবহার করুন।`
-            : `A verification link was sent to ${u.email}. Click the link in your inbox once, then click "I Verified — Enter Console" below, or sign in via Google.`
+            ? `আপনার ইমেইলটি এখনো ভেরিফাই করা হয়নি। ইনবক্স থেকে ভেরিফিকেশন লিংক ক্লিক করে নিচের বাটনে চাপুন, অথবা Google ট্যাব ব্যবহার করুন।`
+            : `Your email address is not verified yet. Verify your inbox link first, then click "I Verified — Enter Console" below, or use Google 1-Click.`
         );
         return false;
       }
 
       setPinError(
         lang === 'bn'
-          ? `আপনার অ্যাকাউন্ট (${u.email}) অ্যাডমিন তালিকায় নেই। শুধুমাত্র সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) সরাসরি প্রবেশ করতে পারবেন, অথবা কো-অ্যাডমিন ইনভাইট কোড দিন।`
-          : `Your account (${u.email}) is not authorized as Admin. Only Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) or holders of an active Co-Admin code may enter.`
+          ? 'প্রবেশাধিকার প্রত্যাখ্যাত! এই অ্যাকাউন্টটি অনুমোদিত অ্যাডমিন তালিকায় নেই।'
+          : 'Access Denied! This account is not authorized for Admin Console access.'
       );
       return false;
     },
@@ -698,20 +703,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
     setIsEmailSigningIn(true);
     try {
-      const res = await registerOrLoginRealEmailPassword(
+      const signedInUser = await signInAdminEmailPasswordStrict(
         cleanEmail,
-        adminPasswordInput,
-        false,
-        'Super Admin'
+        adminPasswordInput
       );
-      await verifySignedInAdminCandidate(res.user, 'Admin Email & Password');
+      await verifySignedInAdminCandidate(signedInUser, 'Admin Email & Password');
     } catch (err: any) {
       const code = String(err?.code || '');
-      if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+      if (
+        code === 'auth/wrong-password' ||
+        code === 'auth/invalid-credential' ||
+        code === 'auth/user-not-found'
+      ) {
         setPinError(
           lang === 'bn'
-            ? 'পাসওয়ার্ড মেলেনি (অথবা এই Gmail দিয়ে আগে শুধু Google লগইন করা হয়েছিল)। নিচে "Gmail-এ নতুন পাসওয়ার্ড সেট লিংক পাঠান" বাটনে ১ ক্লিক করে পাসওয়ার্ড সেট করে নিন।'
-            : 'Incorrect password (or this Gmail previously used Google Sign-In only). Click "Send Password Setup Link to Gmail" below to set your password in 10 seconds.'
+            ? 'ইমেইল বা পাসওয়ার্ড মেলেনি (অথবা এই অ্যাকাউন্টে পাসওয়ার্ড সেট করা নেই)। অনুমোদিত অ্যাডমিন হলে নিচে পাসওয়ার্ড রিসেট লিংক ব্যবহার করুন।'
+            : 'Invalid admin credentials (or password not configured). Authorized admins can request a setup link below.'
         );
       } else {
         const parsed = parseFirebaseAuthError(err);
@@ -1041,8 +1048,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                 {lang === 'bn'
-                  ? `বর্তমান অ্যাকাউন্ট (${firebaseUser?.email || firebaseUser?.phoneNumber}) সুপার ওনার নয়। সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) অ্যাকাউন্টে সুইচ করতে নিচের বাটনে চাপুন।`
-                  : `Current session (${firebaseUser?.email || firebaseUser?.phoneNumber}) is not the Super Owner. Switch to ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL} below.`}
+                  ? `বর্তমান অ্যাকাউন্ট (${firebaseUser?.email || firebaseUser?.phoneNumber}) অ্যাডমিন কনসোলের জন্য অনুমোদিত নয়। অনুমোদিত অ্যাডমিন অ্যাকাউন্টে সুইচ করতে নিচের বাটনে চাপুন।`
+                  : `Current session (${firebaseUser?.email || firebaseUser?.phoneNumber}) is not authorized for Admin Console access. Switch to an authorized Admin account below.`}
               </p>
             </div>
 
@@ -1066,8 +1073,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <ShieldCheck className="w-4 h-4 shrink-0" />
                 <span>
                   {lang === 'bn'
-                    ? `সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) অ্যাকাউন্টে সুইচ করুন`
-                    : `Switch to Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL})`}
+                    ? 'অনুমোদিত অ্যাডমিন অ্যাকাউন্টে সুইচ করুন'
+                    : 'Switch to Authorized Admin Account'}
                 </span>
               </button>
 
@@ -1204,7 +1211,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       : '03. Cloud Firewall & Ownership Lock'}
                   </div>
                   <div className="text-slate-600 dark:text-slate-400 font-mono text-[11px] truncate">
-                    Owner: {BOOTSTRAPPED_SUPER_ADMIN_EMAIL}
+                    Zero-Trust PostgreSQL + Server Token Gate
                   </div>
                 </div>
               </div>
@@ -1305,27 +1312,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                      {lang === 'bn' ? 'সুপার ওনার / অ্যাডমিন ইমেইল' : 'Super Owner / Admin Email'}
+                      {lang === 'bn' ? 'অনুমোদিত অ্যাডমিন ইমেইল' : 'Authorized Admin Email'}
                     </label>
-                    {adminEmailInput.trim().toLowerCase() !==
-                      BOOTSTRAPPED_SUPER_ADMIN_EMAIL.toLowerCase() && (
-                      <button
-                        type="button"
-                        onClick={() => setAdminEmailInput(BOOTSTRAPPED_SUPER_ADMIN_EMAIL)}
-                        className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                      >
-                        {lang === 'bn' ? 'ওনার ইমেইল বসান' : 'Fill Owner Email'}
-                      </button>
-                    )}
                   </div>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
                       type="email"
                       required
+                      autoComplete="off"
                       value={adminEmailInput}
                       onChange={(e) => setAdminEmailInput(e.target.value)}
-                      placeholder={BOOTSTRAPPED_SUPER_ADMIN_EMAIL}
+                      placeholder={
+                        lang === 'bn'
+                          ? 'আপনার অনুমোদিত অ্যাডমিন ইমেইল লিখুন...'
+                          : 'Enter authorized admin email...'
+                      }
                       className="w-full h-11 pl-10 pr-3.5 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-[#070c17] border border-slate-300 dark:border-slate-700/90 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-amber-500"
                     />
                   </div>
@@ -1421,8 +1423,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                       <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
                         {lang === 'bn'
-                          ? `প্রিভিউ বক্সের ভেতরে ব্রাউজার সিকিউরিটির কারণে পপ-আপ ব্লক থাকে। নিচের বাটনে চাপলে নতুন ট্যাবে /admin খুলবে—সেখানে ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL} সিলেক্ট করলেই সরাসরি অ্যাডমিন প্যানেল খুলে যাবে।`
-                          : `Preview frames block Google OAuth popups. Open /admin in a full browser tab below and select ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL} for instant 1-click access.`}
+                          ? 'প্রিভিউ বক্সের ভেতরে ব্রাউজার সিকিউরিটির কারণে পপ-আপ ব্লক থাকে। নিচের বাটনে চাপলে নতুন ট্যাবে /admin খুলবে—সেখানে আপনার অনুমোদিত অ্যাডমিন Google অ্যাকাউন্ট দিয়ে সরাসরি প্রবেশ করতে পারবেন।'
+                          : 'Preview frames block Google OAuth popups. Open /admin in a full browser tab below and sign in with your authorized Admin Google account.'}
                       </p>
                     </div>
 
@@ -1444,8 +1446,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <div className="space-y-3.5">
                     <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                       {lang === 'bn'
-                        ? `নিচের বাটনে ক্লিক করে আপনার সুপার ওনার Google অ্যাকাউন্ট (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) সিলেক্ট করুন—কোনো পাসওয়ার্ড বা কোড ছাড়াই সরাসরি প্রবেশ করবেন।`
-                        : `Select your Super Owner Google account (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) below for instant passwordless access.`}
+                        ? 'নিচের বাটনে ক্লিক করে আপনার অনুমোদিত অ্যাডমিন Google অ্যাকাউন্ট সিলেক্ট করুন—সার্ভার ভেরিফিকেশনের মাধ্যমে সরাসরি প্রবেশ করবেন।'
+                        : 'Select your authorized Admin Google account below for server-verified passwordless access.'}
                     </p>
 
                     <button
@@ -1456,8 +1458,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <ShieldCheck className="w-4 h-4 shrink-0" />
                       <span>
                         {lang === 'bn'
-                          ? `${BOOTSTRAPPED_SUPER_ADMIN_EMAIL} (Google) দিয়ে প্রবেশ করুন`
-                          : `Continue with Google (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL})`}
+                          ? 'অনুমোদিত Google অ্যাকাউন্ট দিয়ে প্রবেশ করুন'
+                          : 'Continue with Authorized Admin Google'}
                       </span>
                     </button>
 
@@ -1475,8 +1477,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <form onSubmit={handleAdminSecretUnlock} className="space-y-4">
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#070c17] border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                   {lang === 'bn'
-                    ? `নোট: আপনি যদি মূল সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) হন, তবে আপনার কোনো কোড লাগবে না—বাম পাশের "ইমেইল ও পাসওয়ার্ড" বা "Google ১-ক্লিক" ট্যাব থেকে সরাসরি লগইন করুন। এই ঘরটি শুধুমাত্র আপনার আমন্ত্রিত কো-অ্যাডমিনদের জন্য।`
-                    : `Note: If you are the Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}), NO code is needed—use "Email & Password" or "Google 1-Click". This tab is exclusively for invited Co-Admins holding an Owner-issued key.`}
+                    ? 'নোট: মূল সুপার ওনারের কোনো কোড লাগবে না—"ইমেইল ও পাসওয়ার্ড" বা "Google ১-ক্লিক" ট্যাব থেকে সরাসরি লগইন করুন। এই ঘরটি শুধুমাত্র আমন্ত্রিত কো-অ্যাডমিনদের জন্য।'
+                    : 'Note: The Super Owner never needs a code—use "Email & Password" or "Google 1-Click". This tab is exclusively for invited Co-Admins holding an Owner-issued key.'}
                 </div>
 
                 <div className="space-y-1.5">
@@ -2764,32 +2766,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         : 'Live Cloud Database & Firewall Audit'}
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono truncate">
-                      {FIREBASE_PROJECT_ID} · {FIRESTORE_DATABASE_ID}
+                      PostgreSQL Primary Engine (/api/v1/*) · Zero-Trust Firewall Active
                     </p>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <a
-                      href={FIREBASE_DATA_CONSOLE_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="min-h-[38px] px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
-                    >
-                      <Database className="w-3.5 h-3.5" />
-                      <span>{lang === 'bn' ? 'Firestore টেবিল' : 'Firestore Data'}</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-
-                    <a
-                      href={FIREBASE_RULES_CONSOLE_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
-                    >
-                      <Lock className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>{lang === 'bn' ? 'সিকিউরিটি রুলস' : 'Rules Console'}</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
                   </div>
                 </div>
 
@@ -2968,8 +2946,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                   {lang === 'bn'
-                    ? `স্থায়ী সুপার ওনার: ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL} · আপনি কাউকে ইনভাইট কোড না দিলে অন্য কেউ কখনোই অ্যাডমিন হতে পারবে না।`
-                    : `Permanent Super Owner: ${BOOTSTRAPPED_SUPER_ADMIN_EMAIL} · Nobody can claim admin rights unless issued a key below.`}
+                    ? 'সার্ভার-ভেরিফাইড সুপার ওনার ভল্ট · আপনি কাউকে ইনভাইট কোড না দিলে অন্য কেউ কখনোই অ্যাডমিন হতে পারবে না।'
+                    : 'Server-verified Super Owner Vault · Nobody can claim admin rights unless issued a key below.'}
                 </p>
               </div>
 
@@ -3010,8 +2988,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {!isSuperOwner ? (
                 <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200">
                   {lang === 'bn'
-                    ? `শুধুমাত্র সুপার ওনার (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) নতুন ইনভাইট কোড তৈরি বা কো-অ্যাডমিন বাতিল করতে পারবেন।`
-                    : `Only Super Owner (${BOOTSTRAPPED_SUPER_ADMIN_EMAIL}) can create invite keys or revoke co-admins.`}
+                    ? 'শুধুমাত্র সুপার ওনার নতুন ইনভাইট কোড তৈরি বা কো-অ্যাডমিন বাতিল করতে পারবেন।'
+                    : 'Only the verified Super Owner can create invite keys or revoke co-admins.'}
                 </div>
               ) : (
                 <>
@@ -3166,33 +3144,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </>
               )}
 
-              <div className="space-y-2.5 pt-4 border-t border-slate-200 dark:border-slate-800/90">
+              <div className="space-y-1.5 pt-4 border-t border-slate-200 dark:border-slate-800/90">
                 <div className="text-xs font-bold text-slate-900 dark:text-white">
                   {lang === 'bn'
-                    ? '03. ডোমেইন ও ক্লাউড API সুরক্ষা শর্টকাট'
-                    : '03. Cloud Domain & API Restriction Shortcuts'}
+                    ? '03. অরিজিন ও এপিআই ফায়ারওয়াল স্ট্যাটাস'
+                    : '03. Origin & API Firewall Status'}
                 </div>
-                <p className="text-xs text-slate-500 font-mono truncate">Origin: {secDiag.origin}</p>
-                <div className="flex flex-wrap gap-2">
-                  <a
-                    href={FIREBASE_SETTINGS_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200 inline-flex items-center gap-1.5 hover:border-amber-500"
-                  >
-                    <span>Authorized Domains</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                  <a
-                    href={GCP_API_CREDENTIALS_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200 inline-flex items-center gap-1.5 hover:border-amber-500"
-                  >
-                    <span>API Key Restrictions</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
+                <p className="text-xs text-slate-500 font-mono truncate">
+                  Origin: {secDiag.origin} · CSRF + Scanner Shield Active
+                </p>
               </div>
             </section>
           )}

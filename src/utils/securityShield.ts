@@ -1,7 +1,5 @@
 import {
   auth,
-  BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
-  FIREBASE_PROJECT_ID,
   isBootstrappedAdminUser,
   onAuthStateChanged,
 } from '../firebase';
@@ -22,8 +20,8 @@ let initialized = false;
 let verifiedCloudAdminUid: string | null = null;
 
 /**
- * Marks a Firebase UID as verified Cloud Admin for local cache consistency.
- * Even if tampered in memory, all Firestore writes & reads remain enforced server-side by firestore.rules.
+ * Marks a Firebase UID as verified Cloud/Server Admin for local cache consistency.
+ * Even if tampered in memory, all backend PostgreSQL & Firestore operations remain enforced server-side.
  */
 export function markRuntimeVerifiedAdminUid(uid: string | null): void {
   verifiedCloudAdminUid = uid;
@@ -35,13 +33,26 @@ function scrubForgedLocalRoleEscalation(): void {
     sessionStorage.removeItem('bloodsearch_admin_auth');
     localStorage.removeItem('bloodsearch_admin_auth');
 
+    // Scrub any legacy stored owner email in whitelabel config cache
+    const wlRaw = localStorage.getItem('bloodsearch_whitelabel_config');
+    if (wlRaw && wlRaw.includes('@gmail.com')) {
+      try {
+        const wlParsed = JSON.parse(wlRaw);
+        if (wlParsed && typeof wlParsed === 'object' && typeof wlParsed.superAdminEmail === 'string') {
+          wlParsed.superAdminEmail = 'Authorized Super Owner';
+          localStorage.setItem('bloodsearch_whitelabel_config', JSON.stringify(wlParsed));
+        }
+      } catch {
+        localStorage.removeItem('bloodsearch_whitelabel_config');
+      }
+    }
+
     const raw = localStorage.getItem('bloodsearch_current_user');
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return;
 
-    const hasAdminClaim =
-      parsed.role === 'ADMIN' || parsed.panelType === 'ADMIN';
+    const hasAdminClaim = parsed.role === 'ADMIN' || parsed.panelType === 'ADMIN';
     if (!hasAdminClaim) return;
 
     const currentUser = auth.currentUser;
@@ -59,7 +70,6 @@ function scrubForgedLocalRoleEscalation(): void {
       localStorage.setItem('bloodsearch_current_user', JSON.stringify(sanitized));
     }
   } catch {
-    // Ignore malformed JSON and remove tampered payload
     try {
       localStorage.removeItem('bloodsearch_current_user');
     } catch {}
@@ -70,15 +80,14 @@ export function initRuntimeSecurityShield(): void {
   if (initialized || typeof window === 'undefined') return;
   initialized = true;
 
-  // 1. Anti-Self-XSS Browser Console Warning (Protects Owner & Users from social-engineering paste attacks)
+  // 1. Anti-Self-XSS Browser Console Warning (Zero owner email or internal project ID disclosure!)
   try {
     console.log(
       '%c🛑 থামুন! STOP — BloodSearch Security Shield',
       'color:#e11d48;font-size:22px;font-weight:900;'
     );
     console.log(
-      '%cকেউ যদি আপনাকে এখানে কোনো কোড কপি-পেস্ট করতে বলে (যেমন "ফ্রি ভেরিফিকেশন" বা "অ্যাডমিন আনলক"), তবে তা ১০০% প্রতারণা (Self-XSS Scam)। এখানে কখনোই অপরিচিত কোড পেস্ট করবেন না।\nOwner Locked To: ' +
-        BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
+      '%cকেউ যদি আপনাকে এখানে কোনো কোড কপি-পেস্ট করতে বলে (যেমন "ফ্রি ভেরিফিকেশন" বা "অ্যাডমিন আনলক"), তবে তা ১০০% প্রতারণা (Self-XSS Scam)। এখানে কখনোই অপরিচিত কোড পেস্ট করবেন না।',
       'color:#f59e0b;font-size:13px;font-weight:700;'
     );
   } catch {}
@@ -130,7 +139,8 @@ export function initRuntimeSecurityShield(): void {
       return;
     }
     if (e.dataTransfer) {
-      const uri = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain') || '';
+      const uri =
+        e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain') || '';
       if (/^(javascript|vbscript|data)\s*:/i.test(uri.trim()) || e.type === 'drop') {
         e.preventDefault();
       } else if (e.type === 'dragover') {
@@ -152,8 +162,8 @@ export function getSecurityDiagnostics(): SecurityDiagnostics {
       isInIframe: false,
       isTrustedEnvironment: true,
       runtimeShieldActive: true,
-      ownerEmail: BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
-      firebaseProjectId: FIREBASE_PROJECT_ID,
+      ownerEmail: 'Protected (Server-Verified)',
+      firebaseProjectId: 'Protected',
     };
   }
 
@@ -190,10 +200,11 @@ export function getSecurityDiagnostics(): SecurityDiagnostics {
     hostname,
     isHttpsOrLocal,
     isStandaloneApp,
+    isStandaloneApp_unused: undefined,
     isInIframe,
     isTrustedEnvironment: isTrustedHost && isHttpsOrLocal,
     runtimeShieldActive: initialized,
-    ownerEmail: BOOTSTRAPPED_SUPER_ADMIN_EMAIL,
-    firebaseProjectId: FIREBASE_PROJECT_ID,
-  };
+    ownerEmail: 'Protected (Server-Verified)',
+    firebaseProjectId: 'Protected',
+  } as SecurityDiagnostics;
 }

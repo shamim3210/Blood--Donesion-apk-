@@ -119,26 +119,40 @@ type TileLayerStyle = 'osm' | 'hot' | 'dark';
 
 const TILE_LAYER_CONFIGS: Record<
   TileLayerStyle,
-  { url: string; fallbackUrl: string; attribution: string; labelBn: string; labelEn: string }
+  {
+    url: string;
+    subdomains: string;
+    fallbackUrl: string;
+    fallbackSubdomains: string;
+    attribution: string;
+    labelBn: string;
+    labelEn: string;
+  }
 > = {
   osm: {
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    subdomains: 'abc',
     fallbackUrl: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    fallbackSubdomains: 'abc',
     attribution: '&copy; OpenStreetMap contributors',
     labelBn: 'ওপেনস্ট্রিট ম্যাপ',
     labelEn: 'OpenStreetMap',
   },
   hot: {
     url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
-    fallbackUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    subdomains: 'abc',
+    fallbackUrl: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    fallbackSubdomains: 'abc',
     attribution: '&copy; OpenStreetMap &copy; HOT',
     labelBn: 'হাসপাতাল ভিউ',
     labelEn: 'Medical Street',
   },
   dark: {
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    fallbackUrl: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap contributors',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    subdomains: 'abcd',
+    fallbackUrl: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    fallbackSubdomains: 'abc',
+    attribution: '&copy; OpenStreetMap &copy; CARTO',
     labelBn: 'ডার্ক ম্যাপ',
     labelEn: 'Dark Map',
   },
@@ -313,7 +327,11 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
   const [selectedBloodGroup, setSelectedBloodGroup] = useState<string>('ALL');
   const [selectedDivision, setSelectedDivision] = useState<string>('ALL');
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
-  const [tileStyle, setTileStyle] = useState<TileLayerStyle>('osm');
+  const [tileStyle, setTileStyle] = useState<TileLayerStyle>(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+      ? 'dark'
+      : 'osm'
+  );
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -664,6 +682,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
 
     const layer = L.tileLayer(cfg.url, {
       attribution: cfg.attribution,
+      subdomains: cfg.subdomains,
       maxZoom: 19,
     });
 
@@ -674,6 +693,7 @@ export const InteractiveMapView: React.FC<InteractiveMapViewProps> = ({
         map.removeLayer(layer);
         const backup = L.tileLayer(cfg.fallbackUrl, {
           attribution: cfg.attribution,
+          subdomains: cfg.fallbackSubdomains,
           maxZoom: 19,
         }).addTo(map);
         tileLayerRef.current = backup;

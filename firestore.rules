@@ -1314,8 +1314,8 @@ service cloud.firestore {
     // COLLECTION 6: /communityMessages/{messageId} — LIVE COMMUNITY CHAT (NO PII)
     // =========================================================================
     match /communityMessages/{messageId} {
-      allow get: if isValidId(messageId) && resource != null && existing().isPublic == true;
-      allow list: if resource.data.isPublic == true;
+      allow get: if isSignedIn() && isValidId(messageId) && resource != null && existing().isPublic == true;
+      allow list: if isSignedIn() && resource.data.isPublic == true;
 
       allow create: if isVerifiedUser()
         && isValidId(messageId)

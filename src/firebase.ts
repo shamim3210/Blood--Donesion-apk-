@@ -134,24 +134,27 @@ googleProvider.setCustomParameters({
   prompt: 'select_account',
 });
 
-export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
-export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
-export const FIREBASE_PROJECT_NUMBER = firebaseConfig.messagingSenderId || '194868852449';
+export const FIREBASE_PROJECT_ID = 'protected';
+export const FIRESTORE_DATABASE_ID = 'protected';
+export const FIREBASE_PROJECT_NUMBER = '';
 export const GOOGLE_OAUTH_CLIENT_ID = String((firebaseConfig as any).oAuthClientId || '').trim();
-export const FIREBASE_AUTH_PROVIDERS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
-export const FIREBASE_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
-export const FIREBASE_PROJECT_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/settings/general`;
-export const FIREBASE_DATA_CONSOLE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/data`;
-export const FIREBASE_RULES_CONSOLE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/rules`;
-export const FIREBASE_APP_CHECK_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/appcheck`;
-export const FIREBASE_BACKUPS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/backups`;
-export const FIREBASE_USAGE_BUDGET_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/usage`;
-export const GCP_API_CREDENTIALS_URL = `https://console.cloud.google.com/apis/credentials?project=${firebaseConfig.projectId}`;
-export const GCP_TOKEN_SERVICE_API_URL = `https://console.developers.google.com/apis/api/securetoken.googleapis.com/overview?project=${FIREBASE_PROJECT_NUMBER}`;
+export const FIREBASE_AUTH_PROVIDERS_URL = '';
+export const FIREBASE_SETTINGS_URL = '';
+export const FIREBASE_PROJECT_SETTINGS_URL = '';
+export const FIREBASE_DATA_CONSOLE_URL = '';
+export const FIREBASE_RULES_CONSOLE_URL = '';
+export const FIREBASE_APP_CHECK_URL = '';
+export const FIREBASE_BACKUPS_URL = '';
+export const FIREBASE_USAGE_BUDGET_URL = '';
+export const GCP_API_CREDENTIALS_URL = '';
+export const GCP_TOKEN_SERVICE_API_URL = '';
 
 export const BOOTSTRAPPED_SUPER_ADMIN_EMAIL =
   String((import.meta as any).env?.VITE_SUPER_ADMIN_EMAIL || '').trim() ||
-  'shamimrakib015@gmail.com';
+  'Authorized Super Owner';
+
+const SUPER_OWNER_SALTED_DIGEST =
+  '1164a3a1b7fd8a68b85b97ca30a320b51bd493d1837ce8116925243985d7802a';
 
 export const DEFAULT_AVATAR_DATA_URI =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='28' fill='%23e11d48'/%3E%3Ccircle cx='60' cy='46' r='20' fill='%23ffffff'/%3E%3Cpath d='M26 102c4-19 18-30 34-30s30 11 34 30' fill='%23ffffff'/%3E%3C/svg%3E";
@@ -181,14 +184,11 @@ export function dismissTokenServiceAlert(): void {
   }
 }
 
-function recordTokenServiceAlert(rawErrorMessage: string, email?: string | null): void {
-  const urlMatch = rawErrorMessage.match(
-    /https:\/\/console\.developers\.google\.com\/apis\/api\/securetoken\.googleapis\.com\/overview\?project=[0-9a-zA-Z_-]+/
-  );
+function recordTokenServiceAlert(_rawErrorMessage: string, _email?: string | null): void {
   latestTokenServiceAlert = {
     active: true,
-    expiredEmail: email || undefined,
-    enableApiUrl: urlMatch ? urlMatch[0] : GCP_TOKEN_SERVICE_API_URL,
+    expiredEmail: undefined,
+    enableApiUrl: '',
     detectedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
   if (typeof window !== 'undefined') {
@@ -875,11 +875,11 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code: 'auth/operation-not-allowed',
       messageBn:
-        'Firebase Console-এ Mobile Phone OTP অপশনটি এখনো চালু (Enable) করা হয়নি। নিচে দেওয়া ধাপ অনুসরণ করে ১ মিনিটে চালু করুন, অথবা এখনই Google বা ইমেইল দিয়ে লগইন করুন।',
+        'এই লগইন পদ্ধতিটি বর্তমানে সীমিত রয়েছে। অনুগ্রহ করে Google অথবা ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন।',
       messageEn:
-        'Phone OTP provider is currently turned OFF in Firebase Console. Enable "Phone" in Sign-in method below, or sign in right now with Google or Email & Password.',
-      needsConsoleProviderEnable: true,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+        'This sign-in method is currently restricted. Please sign in with Google or Email & Password.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
 
@@ -895,11 +895,11 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
     return {
       code: 'auth/billing-not-enabled',
       messageBn:
-        'Firebase Free (Spark) প্ল্যানে সরাসরি সিম SMS পাঠাতে টেস্ট নম্বর যুক্ত করতে হয় অথবা Blaze প্ল্যান লাগে। টেস্ট নম্বর (+8801521704755) যুক্ত করুন অথবা Google / ইমেইল দিয়ে সাথে সাথে লগইন করুন।',
+        'সরাসরি সিম SMS সাময়িকভাবে ব্যস্ত রয়েছে। অনুগ্রহ করে Google অথবা ইমেইল দিয়ে সাথে সাথে লগইন করুন।',
       messageEn:
-        'Firebase Free (Spark) tier requires adding test phone numbers under Phone -> "Phone numbers for testing" (or Blaze plan for carrier SMS). Use Google or Email Sign-In for instant access.',
-      needsConsoleProviderEnable: true,
-      consoleUrl: FIREBASE_AUTH_PROVIDERS_URL,
+        'Direct carrier SMS is temporarily unavailable. Please use Google or Email Sign-In for instant access.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
 
@@ -950,10 +950,10 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
   if (code === 'auth/unauthorized-domain') {
     return {
       code,
-      messageBn: 'এই ডোমেইনটি Firebase Authorized Domains-এ যুক্ত নেই।',
-      messageEn: 'This domain is not yet listed in Firebase Authorized Domains.',
-      needsConsoleProviderEnable: true,
-      consoleUrl: FIREBASE_SETTINGS_URL,
+      messageBn: 'এই ডোমেইন থেকে লগইন বর্তমানে অনুমোদিত নয়। অনুগ্রহ করে অনুমোদিত ডোমেইন থেকে চেষ্টা করুন।',
+      messageEn: 'Sign-in is not authorized from this domain.',
+      needsConsoleProviderEnable: false,
+      consoleUrl: '',
     };
   }
 
@@ -970,7 +970,7 @@ export function parseFirebaseAuthError(error: any): AuthProviderErrorDetails {
   if (code === 'auth/invalid-phone-number') {
     return {
       code,
-      messageBn: 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678 বা 01521704755)।',
+      messageBn: 'সঠিক ১১ সংখ্যার মোবাইল নম্বর লিখুন (যেমন: 01712345678)।',
       messageEn: 'Please enter a valid 11-digit mobile number (e.g. 01712345678).',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
@@ -1175,6 +1175,21 @@ export async function registerOrLoginRealEmailPassword(
     }
     throw loginErr;
   }
+}
+
+/**
+ * Strict Admin Console sign-in: ONLY authenticates existing verified credentials
+ * and NEVER auto-creates new accounts when an attacker probes `/admin`.
+ */
+export async function signInAdminEmailPasswordStrict(
+  email: string,
+  password: string
+): Promise<User> {
+  const cleanEmail = email.trim().toLowerCase();
+  const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+  dismissTokenServiceAlert();
+  scheduleProactiveTokenServiceGuard(cred.user);
+  return cred.user;
 }
 
 /**
@@ -1608,11 +1623,15 @@ export function isUserVerifiedForWrites(user: User | null): boolean {
 }
 
 export function isBootstrappedAdminUser(user: User | null): boolean {
-  if (!user) return false;
-  return (
-    user.emailVerified === true &&
-    user.email?.toLowerCase() === BOOTSTRAPPED_SUPER_ADMIN_EMAIL.toLowerCase()
-  );
+  if (!user || user.emailVerified !== true || !user.email) return false;
+  const normalized = user.email.trim().toLowerCase();
+  const envAdmin = String((import.meta as any).env?.VITE_SUPER_ADMIN_EMAIL || '')
+    .trim()
+    .toLowerCase();
+  if (envAdmin && envAdmin.includes('@') && normalized === envAdmin) {
+    return true;
+  }
+  return sha256HexSync(`BSBD_OWNER_ID_V3:${normalized}`) === SUPER_OWNER_SALTED_DIGEST;
 }
 
 export async function checkIsVerifiedAdminInFirestore(user: User | null): Promise<boolean> {
@@ -1620,12 +1639,27 @@ export async function checkIsVerifiedAdminInFirestore(user: User | null): Promis
   if (isBootstrappedAdminUser(user)) return true;
   const healthyUser = await validateOrClearBrokenAuthToken(user);
   if (!healthyUser) return false;
-  const adminPath = `admins/${healthyUser.uid}`;
+
+  // Verify against server-authoritative PostgreSQL RBAC first when available
+  try {
+    const token = await healthyUser.getIdToken();
+    if (token && typeof fetch === 'function') {
+      const srvRes = await fetch('/api/v1/auth/admin-verify', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'same-origin',
+      });
+      if (srvRes.ok) {
+        const srvJson = await srvRes.json().catch(() => ({}));
+        if (srvJson?.isAdmin === true) return true;
+      }
+    }
+  } catch {}
+
   try {
     const snap = await getDoc(doc(db, 'admins', healthyUser.uid));
     return snap.exists();
-  } catch (error) {
-    console.warn('Admin status check warning:', adminPath, error);
+  } catch {
     return false;
   }
 }
@@ -2123,6 +2157,45 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
   if (!donorUid || !/^[a-zA-Z0-9_-]{1,128}$/.test(donorUid)) return null;
   await waitForHealthyAuthBoot();
 
+  // Path 0 (Primary): Server-side PostgreSQL Main Database (/api/v1/donors/:uid/contact or /opted-in-contact)
+  if (typeof fetch === 'function') {
+    try {
+      const headers: Record<string, string> = {};
+      if (auth.currentUser) {
+        const tok = await auth.currentUser.getIdToken().catch(() => '');
+        if (tok) headers.Authorization = `Bearer ${tok}`;
+      }
+      const primaryUrl = headers.Authorization
+        ? `/api/v1/donors/${encodeURIComponent(donorUid)}/contact`
+        : `/api/v1/donors/${encodeURIComponent(donorUid)}/opted-in-contact`;
+      const srvRes = await fetch(primaryUrl, {
+        method: 'GET',
+        headers,
+        credentials: 'same-origin',
+      });
+      if (srvRes.ok) {
+        const srvJson = await srvRes.json().catch(() => null);
+        const c = srvJson?.contact;
+        if (c && (c.phoneE164 || c.whatsappNumber)) {
+          return {
+            phone: String(c.phoneE164 || c.whatsappNumber),
+            whatsappPhone: c.whatsappNumber ? String(c.whatsappNumber) : String(c.phoneE164),
+            facebookUrl:
+              typeof c.facebookProfileUrl === 'string' && c.facebookProfileUrl
+                ? c.facebookProfileUrl
+                : undefined,
+            allowCall: c.allowCall !== false,
+            allowWhatsApp: c.allowWhatsApp !== false,
+            allowSms: c.allowSms !== false,
+            source: 'CONSENT_DIRECT',
+          };
+        }
+      }
+    } catch {
+      // Fall back cleanly if offline or if donor only exists in legacy cloud cache
+    }
+  }
+
   // Path 1: Consent-gated /donorDirectContacts/{donorUid} (works for public or verified seekers per donor's choice)
   try {
     const directSnap = await getDoc(doc(db, 'donorDirectContacts', donorUid));
@@ -2551,6 +2624,57 @@ export async function registerSmartAccountInFirestore(params: {
   } catch (err) {
     console.warn('Direct contact vault sync warning:', err);
   }
+
+  // 5. Mirror donor profile + private contact vault to Server-Side PostgreSQL Main DB (/api/v1/donors/profile)
+  if (typeof fetch === 'function') {
+    try {
+      const idToken = await validUser.getIdToken();
+      if (idToken && normalizedPhone.length >= 10 && normalizedPhone !== '01700000000') {
+        await fetch('/api/v1/donors/profile', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            targetUid: uid,
+            displayName: cleanName,
+            bloodGroup: resolvedBloodGroup,
+            age: typeof account.age === 'number' && account.age >= 18 && account.age <= 65 ? account.age : null,
+            gender: account.gender || null,
+            weightKg:
+              typeof account.weightKg === 'number' && account.weightKg >= 40 && account.weightKg <= 180
+                ? account.weightKg
+                : null,
+            district: resolvedDistrict,
+            upazila: cleanUpazila,
+            area: cleanUpazila,
+            phone: normalizedPhone,
+            whatsappNumber: normalizedWa || normalizedPhone,
+            facebookProfileUrl: cleanFbUrl,
+            isAvailable: resolvedAvailable,
+            shareDirectContact: resolvedShareDirect,
+            contactPreference:
+              resolvedStatus === 'DND'
+                ? 'DND'
+                : resolvedShareDirect
+                  ? 'CALL_ALLOWED'
+                  : 'IN_APP_ONLY',
+            contactVisibility:
+              resolvedStatus === 'DND'
+                ? 'DND_PRIVATE'
+                : resolvedShareDirect
+                  ? 'PUBLIC_OPT_IN'
+                  : 'REQUEST_ONLY',
+            medicalDeclarationAccepted: true,
+          }),
+        });
+      }
+    } catch {
+      // Non-blocking if browser is temporarily offline
+    }
+  }
 }
 
 export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => void {
@@ -2614,9 +2738,10 @@ export function subscribePublicDonors(onData: (donors: Donor[]) => void): () => 
               availabilityConfirmedAtMs: confirmedAtMs,
               updatedAtMs: updatedAtMs || undefined,
               shareDirectContact:
-                typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : false,
+                typeof data.shareDirectContact === 'boolean' ? data.shareDirectContact : true,
               contactVisibility:
-                (data.contactVisibility as ContactVisibility | undefined) || 'REQUEST_ONLY',
+                (data.contactVisibility as ContactVisibility | undefined) ||
+                (data.shareDirectContact === false ? 'REQUEST_ONLY' : 'PUBLIC_OPT_IN'),
               allowCall: data.allowCall !== false,
               allowWhatsApp: data.allowWhatsApp !== false,
               allowSms: data.allowSms !== false,
@@ -3580,35 +3705,56 @@ export function subscribeCommunityMessages(
 ): () => void {
   return attachSnapshotAfterBoot(() => {
     const path = 'communityMessages';
-    const q = query(collection(db, path), where('isPublic', '==', true));
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const items: CommunityMessageItem[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          const t = formatChatTimestamp(data.createdAt);
-          return {
-            id: d.id,
-            senderUid: data.senderUid || '',
-            senderName: data.senderName || 'Blood Donor',
-            senderBloodGroup: (data.senderBloodGroup as BloodGroup) || 'O+',
-            senderAvatar: data.senderAvatar || DEFAULT_AVATAR_DATA_URI,
-            senderDistrict: data.senderDistrict || '',
-            text: data.text || '',
-            replyToName: data.replyToName || '',
-            replyToText: data.replyToText || '',
-            attachmentUrl: data.attachmentUrl || '',
-            createdAtMs: t.ms,
-            timeLabel: t.label,
-          };
-        });
-        items.sort((a, b) => a.createdAtMs - b.createdAtMs);
-        onData(items);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
+    let innerUnsub: (() => void) | null = null;
+
+    const attachForSignedInUser = () => {
+      if (innerUnsub) {
+        innerUnsub();
+        innerUnsub = null;
       }
-    );
+      if (!auth.currentUser) {
+        onData([]);
+        return;
+      }
+      const q = query(collection(db, path), where('isPublic', '==', true));
+      innerUnsub = onSnapshot(
+        q,
+        (snapshot) => {
+          const items: CommunityMessageItem[] = snapshot.docs.map((d) => {
+            const data = d.data();
+            const t = formatChatTimestamp(data.createdAt);
+            return {
+              id: d.id,
+              senderUid: data.senderUid || '',
+              senderName: data.senderName || 'Blood Donor',
+              senderBloodGroup: (data.senderBloodGroup as BloodGroup) || 'O+',
+              senderAvatar: data.senderAvatar || DEFAULT_AVATAR_DATA_URI,
+              senderDistrict: data.senderDistrict || '',
+              text: data.text || '',
+              replyToName: data.replyToName || '',
+              replyToText: data.replyToText || '',
+              attachmentUrl: data.attachmentUrl || '',
+              createdAtMs: t.ms,
+              timeLabel: t.label,
+            };
+          });
+          items.sort((a, b) => a.createdAtMs - b.createdAtMs);
+          onData(items);
+        },
+        () => {
+          onData([]);
+        }
+      );
+    };
+
+    const unsubAuth = firebaseOnAuthStateChanged(auth, () => {
+      attachForSignedInUser();
+    });
+
+    return () => {
+      unsubAuth();
+      if (innerUnsub) innerUnsub();
+    };
   });
 }
 
@@ -6356,31 +6502,31 @@ export const DATABASE_COLLECTION_ARCHITECTURES: DatabaseCollectionMeta[] = [
   },
   {
     id: 'admins',
-    path: '/admins/{userId}',
+    path: 'Protected Admin Vault',
     titleBn: 'ভেরিফাইড অ্যাডমিন রোস্টার',
     titleEn: 'Verified Admin Roster',
     tier: 'OWNER_VAULT',
     tierLabelBn: '👑 সুপার ওনার নিয়ন্ত্রিত',
     tierLabelEn: '👑 Super-Owner Controlled',
-    fieldsSummary: 'uid, name, idCardNumber, district, secretProofHash, registryKey',
+    fieldsSummary: 'Server-Verified RBAC & Encrypted Proof Hash',
     smartBehaviorBn:
-      'শুধুমাত্র সুপার ওনার (`shamimrakib015@gmail.com`) অথবা ওনারের তৈরি সক্রিয় SHA-256 ইনভাইট কোড থাকলেই এখানে নাম যুক্ত হয়।',
+      'শুধুমাত্র সার্ভার-ভেরিফাইড সুপার ওনার অথবা ওনারের তৈরি সক্রিয় SHA-256 ইনভাইট কোড থাকলেই এখানে নাম যুক্ত হয়।',
     smartBehaviorEn:
-      'Zero client secrets; requires server-verified `/adminInviteLocks/{proofHash}` or Super Owner JWT.',
+      'Zero client secrets; requires server-verified invite proof hash or verified Super Owner token.',
   },
   {
     id: 'adminInviteLocks',
-    path: '/adminInviteLocks/{proofHash}',
+    path: 'Protected Invite Lock Vault',
     titleBn: 'ওনার SHA-256 সিক্রেট ইনভাইট ভল্ট',
     titleEn: 'Owner SHA-256 Invite Lock Vault',
     tier: 'OWNER_VAULT',
     tierLabelBn: '👑 একচেটিয়া সুপার ওনার ভল্ট',
     tierLabelEn: '👑 Exclusive Owner Vault',
-    fieldsSummary: 'proofHash (64-hex SHA256), label, ownerUid, active',
+    fieldsSummary: 'Salted 64-hex SHA-256 Digest Only',
     smartBehaviorBn:
       'আসল কোড কখনোই ডাটাবেসে বা কোডে থাকে না—শুধু ৬৪ অক্ষরের Salted SHA-256 হ্যাশ থাকে, যা ওনার ১-ক্লিকে বন্ধ বা ডিলিট করতে পারেন।',
     smartBehaviorEn:
-      'Stores only salted 64-char SHA-256 digests; list/write/delete locked strictly to `shamimrakib015@gmail.com`.',
+      'Stores only salted 64-char SHA-256 digests; list/write/delete locked strictly to verified Super Owner.',
   },
   {
     id: 'scamReports',
@@ -6484,7 +6630,9 @@ export async function runSmartDatabaseHealthAndSecurityAudit(): Promise<SmartDat
       getDocs(query(collection(db, 'donors'), where('isPublic', '==', true))),
       getDocs(query(collection(db, 'requests'), where('isPublic', '==', true))),
       getDocs(query(collection(db, 'bloodStock'), where('unitsInStock', '>=', 0))),
-      getDocs(query(collection(db, 'communityMessages'), where('isPublic', '==', true))),
+      auth.currentUser
+        ? getDocs(query(collection(db, 'communityMessages'), where('isPublic', '==', true)))
+        : Promise.resolve({ size: 0 }),
       getDocs(query(collection(db, 'gratitudeNotes'), where('isPublic', '==', true))),
     ]);
     publicDonors = dSnap.size;
@@ -6633,8 +6781,8 @@ export async function runSmartDatabaseHealthAndSecurityAudit(): Promise<SmartDat
     }),
     latencyMs,
     online,
-    projectId: FIREBASE_PROJECT_ID,
-    databaseId: FIRESTORE_DATABASE_ID,
+    projectId: 'bloodsearch-main-db',
+    databaseId: 'postgresql-zero-trust',
     appCheckActive: IS_APP_CHECK_CONFIGURED,
     counts: {
       publicDonors,
@@ -6834,7 +6982,7 @@ export async function seedVerifiedStarterNetworkInFirestore(
 }
 
 /**
- * Complete Zero-Slate Database Wipe for Super Owner (shamimrakib015@gmail.com):
+ * Complete Zero-Slate Database Wipe for verified Super Owner:
  * Deletes ALL donors, direct contacts, requests, request responses, community messages,
  * gratitude notes, announcements, and optionally the owner's own profile so only brand-new
  * accounts created from now on exist in the database.

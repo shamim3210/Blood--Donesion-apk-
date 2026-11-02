@@ -31,6 +31,7 @@ import {
   canSeekerViewDirectContact,
   buildDirectCallHref,
   buildWhatsAppHref,
+  buildDirectSmsHref,
   isPhoneMaskedOrInvalid,
 } from '../utils/donorMatcher';
 import {
@@ -176,6 +177,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
         facebookUrl?: string;
         allowCall?: boolean;
         allowWhatsApp?: boolean;
+        allowSms?: boolean;
       }
     >
   >({});
@@ -1245,17 +1247,22 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
               const allowCall = cachedDirect?.allowCall ?? donor.allowCall !== false;
               const allowWhatsApp =
                 cachedDirect?.allowWhatsApp ?? donor.allowWhatsApp !== false;
+              const allowSms = cachedDirect?.allowSms ?? donor.allowSms !== false;
+
+              const emergencyQuickMsg =
+                lang === 'bn'
+                  ? `আসসালামু আলাইকুম ${donor.name}, জরুরি রক্তের (${donor.bloodGroup}) প্রয়োজনে BloodSearch থেকে যোগাযোগ করছি। আপনি কি রক্তদানে প্রস্তুত আছেন?`
+                  : `Hello ${donor.name}, reaching out via BloodSearch for an urgent ${donor.bloodGroup} blood need. Are you currently available?`;
 
               const directCallHref =
                 consentCheck.allowed && allowCall ? buildDirectCallHref(effectiveRawPhone) : null;
               const directWaHref =
                 consentCheck.allowed && allowWhatsApp
-                  ? buildWhatsAppHref(
-                      effectiveWaPhone,
-                      lang === 'bn'
-                        ? `আসসালামু আলাইকুম ${donor.name}, জরুরি রক্তের (${donor.bloodGroup}) প্রয়োজনে BloodSearch থেকে যোগাযোগ করছি। আপনি কি রক্তদানে প্রস্তুত আছেন?`
-                        : `Hello ${donor.name}, reaching out via BloodSearch for an urgent ${donor.bloodGroup} blood need. Are you currently available?`
-                    )
+                  ? buildWhatsAppHref(effectiveWaPhone, emergencyQuickMsg)
+                  : null;
+              const directSmsHref =
+                consentCheck.allowed && allowSms
+                  ? buildDirectSmsHref(effectiveRawPhone, emergencyQuickMsg)
                   : null;
 
               const isConfirmedMatch = confirmedDonorId === donor.id;
@@ -1450,8 +1457,8 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                       <span className="truncate">
                         {consentCheck.allowed
                           ? lang === 'bn'
-                            ? 'সরাসরি কল, WhatsApp ও Facebook খোলা আছে'
-                            : 'Direct Call, WhatsApp & Facebook ready'
+                            ? 'সরাসরি কল, WhatsApp, SMS ও Facebook খোলা আছে'
+                            : 'Direct Call, WhatsApp, SMS & Facebook ready'
                           : lang === 'bn'
                             ? 'ইন-অ্যাপ চ্যাট বা অনুমতির মাধ্যমে যোগাযোগ'
                             : 'Chat or request contact'}
@@ -1470,23 +1477,29 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                     </div>
 
                     {consentCheck.allowed ? (
-                      <div className="grid grid-cols-3 gap-2">
+                      <div
+                        className={`grid gap-2 ${
+                          effectiveFacebookUrl
+                            ? 'grid-cols-2 sm:grid-cols-4'
+                            : 'grid-cols-3'
+                        }`}
+                      >
                         {directCallHref ? (
                           <a
                             href={directCallHref}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <Phone className="w-3.5 h-3.5 shrink-0" />
-                            <span>{lang === 'bn' ? 'কল করুন' : 'Call'}</span>
+                            <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
                           </a>
                         ) : (
                           <button
                             type="button"
                             onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-crimson flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <Phone className="w-3.5 h-3.5 shrink-0" />
-                            <span>{t.callDonor}</span>
+                            <span>{lang === 'bn' ? 'কল' : 'Call'}</span>
                           </button>
                         )}
 
@@ -1495,7 +1508,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                             href={directWaHref}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageCircle className="w-3.5 h-3.5 shrink-0" />
                             <span>WhatsApp</span>
@@ -1504,60 +1517,42 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                           <button
                             type="button"
                             onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-emerald flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageCircle className="w-3.5 h-3.5 shrink-0" />
                             <span>WhatsApp</span>
                           </button>
                         )}
 
-                        {effectiveFacebookUrl ? (
+                        {directSmsHref ? (
                           <a
-                            href={effectiveFacebookUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-facebook flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                            <span>Facebook</span>
-                          </a>
-                        ) : effectiveRawPhone ? (
-                          <button
-                            type="button"
-                            onClick={() => handleCopyDirectPhone(donor.id, effectiveRawPhone)}
-                            className={`w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                              copiedDonorId === donor.id ? 'btn-emerald' : 'btn-indigo'
-                            }`}
-                          >
-                            {copiedDonorId === donor.id ? (
-                              <>
-                                <Check className="w-3.5 h-3.5 shrink-0" />
-                                <span>{lang === 'bn' ? 'কপি হয়েছে' : 'Copied'}</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3.5 h-3.5 shrink-0" />
-                                <span>{lang === 'bn' ? 'নম্বর কপি' : 'Copy No.'}</span>
-                              </>
-                            )}
-                          </button>
-                        ) : onStartChatWithDonor ? (
-                          <button
-                            type="button"
-                            onClick={() => onStartChatWithDonor(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-violet flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            href={directSmsHref}
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-sky flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
                             <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                            <span>{lang === 'bn' ? 'চ্যাট' : 'Chat'}</span>
-                          </button>
+                            <span>SMS</span>
+                          </a>
                         ) : (
                           <button
                             type="button"
                             onClick={() => onRevealPhone(donor)}
-                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-xl btn-sky flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-sky flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
-                            <span>{lang === 'bn' ? 'বিস্তারিত' : 'Details'}</span>
+                            <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                            <span>SMS</span>
                           </button>
+                        )}
+
+                        {effectiveFacebookUrl && (
+                          <a
+                            href={effectiveFacebookUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full min-h-[42px] px-2 py-2 text-xs font-bold rounded-xl btn-facebook flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                            <span>Facebook</span>
+                          </a>
                         )}
                       </div>
                     ) : (

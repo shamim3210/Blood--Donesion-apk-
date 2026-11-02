@@ -316,6 +316,15 @@ export function buildWhatsAppHref(
   return message ? `${base}?text=${encodeURIComponent(message)}` : base;
 }
 
+export function buildDirectSmsHref(
+  rawPhone: string | null | undefined,
+  message?: string
+): string | null {
+  const e164 = normalizeValidBangladeshMobileE164(rawPhone);
+  if (!e164) return null;
+  return message ? `sms:${e164}?body=${encodeURIComponent(message)}` : `sms:${e164}`;
+}
+
 export function rankDonorsForSeeker(
   donors: Donor[],
   criteria: SeekerSearchCriteria
