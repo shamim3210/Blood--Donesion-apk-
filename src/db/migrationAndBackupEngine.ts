@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { count, eq, sql } from 'drizzle-orm';
-import type { BloodSearchDatabase } from './index.ts';
-import { hashIdentifier, maskBangladeshPhone } from './repositories/bloodSearchRepo.ts';
+import type { BloodSearchDatabase } from './index';
+import { hashIdentifier, maskBangladeshPhone } from './repositories/bloodSearchRepo';
 import {
   adminRoles,
   ALL_BLOODSEARCH_TABLES,
@@ -28,7 +28,7 @@ import {
   userConsents,
   users,
   verificationRecords,
-} from './schema.ts';
+} from './schema';
 
 /**
  * All 18 Firestore collections inspected in `firebase-blueprint.json`:

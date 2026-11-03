@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { ensureMainPostgresReady, type BloodSearchDatabase } from '../db/index.ts';
-import { evaluateNeonHealthAndLimits } from '../db/neonMonitor.ts';
+import { ensureMainPostgresReady, type BloodSearchDatabase } from '../db/index';
+import { evaluateNeonHealthAndLimits } from '../db/neonMonitor';
 import {
   createBloodRequestWithAlertsTx,
   DomainSecurityError,
@@ -26,8 +26,8 @@ import {
   writeAuditLog,
   type AuthenticatedActor,
   type ResolvedActor,
-} from '../db/repositories/bloodSearchRepo.ts';
-import { extractHashedClientIp, verifyServerFirebaseIdentity } from './firebaseAuthVerifier.ts';
+} from '../db/repositories/bloodSearchRepo';
+import { extractHashedClientIp, verifyServerFirebaseIdentity } from './firebaseAuthVerifier';
 
 export interface NeonApiRouterOptions {
   verifyActorOverride?: (token: string) => Promise<AuthenticatedActor | null>;

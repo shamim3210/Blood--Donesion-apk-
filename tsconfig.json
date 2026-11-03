@@ -24,5 +24,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["dist", "api", "src/server/vercelAppBundle.mjs"]
+  "exclude": ["dist"]
 }

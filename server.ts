@@ -4,16 +4,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService.ts';
-import { createNeonApiRouter } from './src/server/neonRoutes.ts';
-import type { AuthenticatedActor } from './src/db/repositories/bloodSearchRepo.ts';
+import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService';
+import { createNeonApiRouter } from './src/server/neonRoutes';
+import type { AuthenticatedActor } from './src/db/repositories/bloodSearchRepo';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = process.cwd();
 
 export interface VerifiedCaller {
   uid: string;
@@ -1058,10 +1056,11 @@ export function createEmergencyApiApp(options?: {
 }
 
 if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
+  const entryArg = process.argv[1] ? path.basename(process.argv[1]) : '';
   const isDirectEntry =
     !process.env.VERCEL &&
-    Boolean(process.argv[1]) &&
-    path.resolve(process.argv[1]) === path.resolve(__filename);
+    !process.env.AWS_LAMBDA_FUNCTION_NAME &&
+    (entryArg === 'server.ts' || entryArg === 'server.js');
 
   if (isDirectEntry) {
     (async () => {
@@ -1074,7 +1073,8 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
         if (!enableHmr) {
           process.env.DISABLE_HMR = 'true';
         }
-        const { createServer: createViteServer } = await import('vite');
+        const viteSpecifier = ['vi', 'te'].join('');
+        const { createServer: createViteServer } = await import(viteSpecifier);
         const vite = await createViteServer({
           server: {
             middlewareMode: true,

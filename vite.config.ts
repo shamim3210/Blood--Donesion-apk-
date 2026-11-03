@@ -118,18 +118,11 @@ export default defineConfig(() => {
       bloodsearchVersionManifestPlugin(appVersion, appBuildId),
       VitePWA({
         registerType: 'autoUpdate',
+        includeManifestIcons: false,
         devOptions: {
           enabled: false,
           type: 'module',
         },
-        includeAssets: [
-          'favicon-64x64.png',
-          'icon.svg',
-          'apple-touch-icon.png',
-          'assets/aistudio/image_771fa3d8.png',
-          'assets/bloodsearch-emblem-mark.png',
-          'assets/bloodsearch-logo-squircle.png',
-        ],
         manifest: {
           id: '/',
           name: 'BloodSearch - Bangladesh Emergency Blood Network',
@@ -194,10 +187,12 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          cacheId: 'bloodsearch-pwa-v3',
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           skipWaiting: true,
           clientsClaim: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webmanifest}'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          dontCacheBustURLsMatching: /^assets\/.*-[a-zA-Z0-9_-]{8}\./,
           globIgnores: [
             '**/version.json',
             '**/firebase-applet-config.json',
@@ -206,6 +201,7 @@ export default defineConfig(() => {
             '**/drizzle/**',
             '**/backups/**',
             '**/*.sql',
+            '**/assets/aistudio/**',
           ],
           cleanupOutdatedCaches: true,
           // Never intercept API routes, live version manifest, PWA manifest, static assets, Firebase Auth handler, or Android TWA assetlinks

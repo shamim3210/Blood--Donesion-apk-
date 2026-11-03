@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { and, asc, between, count, desc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
-import type { BloodSearchDatabase } from '../index.ts';
-import { checkPostgisAvailability } from '../neonMonitor.ts';
+import type { BloodSearchDatabase } from '../index';
+import { checkPostgisAvailability } from '../neonMonitor';
 import {
   adminRoles,
   auditLogs,
@@ -20,7 +20,7 @@ import {
   requestResponses,
   userConsents,
   users,
-} from '../schema.ts';
+} from '../schema';
 
 export type ServerActorRole = 'SUPER_ADMIN' | 'CO_ADMIN' | 'MODERATOR' | 'USER';
 

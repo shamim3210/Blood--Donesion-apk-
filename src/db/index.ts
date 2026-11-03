@@ -1,13 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { PGlite } from '@electric-sql/pglite';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import pg from 'pg';
-import { CORE_BOOTSTRAP_SQL } from './bootstrapSql.mjs';
-import { buildNeonPoolConfig, redactDatabaseUrl, type ValidatedNeonConnectionInfo } from './neonConfig.ts';
-import * as schema from './schema.ts';
+import { CORE_BOOTSTRAP_SQL } from './bootstrapSql';
+import { buildNeonPoolConfig, redactDatabaseUrl, type ValidatedNeonConnectionInfo } from './neonConfig';
+import * as schema from './schema';
 
 if (typeof window !== 'undefined' || typeof document !== 'undefined') {
   throw new Error(
@@ -15,9 +14,7 @@ if (typeof window !== 'undefined' || typeof document !== 'undefined') {
   );
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ROOT_DIR = path.resolve(__dirname, '..', '..');
+const ROOT_DIR = process.cwd();
 const EMBEDDED_PG_DIR = path.join(ROOT_DIR, '.data', 'bloodsearch-main-pg');
 
 export type BloodSearchDatabase = NodePgDatabase<typeof schema> | PgliteDatabase<typeof schema>;
@@ -187,12 +184,14 @@ export async function ensureMainPostgresReady(
   if (!embeddedInitPromise) {
     embeddedInitPromise = (async () => {
       try {
+        const pglitePkg = ['@electric-sql', 'pglite'].join('/');
+        const drizzlePglitePkg = ['drizzle-orm', 'pglite'].join('/');
         const [{ PGlite: PGliteRuntime }, { drizzle: drizzlePgliteRuntime }] = await Promise.all([
-          import('@electric-sql/pglite'),
-          import('drizzle-orm/pglite'),
+          import(pglitePkg),
+          import(drizzlePglitePkg),
         ]);
         fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true, mode: 0o700 });
-        const client = new PGliteRuntime(EMBEDDED_PG_DIR);
+        const client: PGlite = new PGliteRuntime(EMBEDDED_PG_DIR);
         await client.waitReady;
 
         const checkRes = await client.query<{ cnt: number }>(

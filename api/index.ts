@@ -1,42 +1,19 @@
-// Vercel Node 20 ESM Serverless Entrypoint — Fail-Safe Express & Neon Bridge
-import 'dotenv';
-import 'drizzle-orm';
-import 'drizzle-orm/node-postgres';
-import 'drizzle-orm/pg-core';
-import 'express';
-import 'firebase-admin/app';
-import 'firebase-admin/auth';
-import 'pg';
-import '../src/db/bootstrapSql.mjs';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createEmergencyApiApp } from '../server';
 
 process.env.BLOODSEARCH_SERVERLESS_MODE ||= 'true';
 process.env.BLOODSEARCH_DISABLE_EMBEDDED_PG ||= 'true';
 
-let cachedExpressApp = null;
-let bundleLoadFailedAtMs = 0;
+let cachedApp: ReturnType<typeof createEmergencyApiApp> | null = null;
 
-async function getExpressApp() {
-  if (cachedExpressApp) return cachedExpressApp;
-  if (Date.now() - bundleLoadFailedAtMs < 5_000) return null;
-
-  try {
-    const bundleUrl = new URL('../src/server/vercelAppBundle.mjs', import.meta.url).href;
-    const mod = await import(bundleUrl);
-    if (typeof mod?.createEmergencyApiApp === 'function') {
-      cachedExpressApp = mod.createEmergencyApiApp();
-      return cachedExpressApp;
-    }
-  } catch (err) {
-    bundleLoadFailedAtMs = Date.now();
-    console.error(
-      '[VercelApi] Express bundle initialization warning:',
-      err instanceof Error ? err.name : 'UnknownError'
-    );
+function getApp() {
+  if (!cachedApp) {
+    cachedApp = createEmergencyApiApp();
   }
-  return null;
+  return cachedApp;
 }
 
-function sendSafeJsonFallback(req, res) {
+function sendSafeJsonFallback(req: IncomingMessage, res: ServerResponse) {
   if (res.headersSent) return;
   const rawUrl = String(req.url || '/');
   const pathname = rawUrl.split('?')[0] || '/';
@@ -111,21 +88,20 @@ function sendSafeJsonFallback(req, res) {
   );
 }
 
-export default async function handler(req, res) {
+export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {
-    const app = await getExpressApp();
-    if (!app) {
-      sendSafeJsonFallback(req, res);
-      return;
-    }
-
-    await new Promise((resolve) => {
-      const done = () => resolve(undefined);
+    const app = getApp();
+    await new Promise<void>((resolve) => {
+      const done = () => resolve();
       res.once('finish', done);
       res.once('close', done);
       res.once('error', done);
       try {
-        app(req, res, (err) => {
+        (app as unknown as (
+          req: IncomingMessage,
+          res: ServerResponse,
+          next: (err?: unknown) => void
+        ) => void)(req, res, (err) => {
           if (err && !res.headersSent) {
             sendSafeJsonFallback(req, res);
           }

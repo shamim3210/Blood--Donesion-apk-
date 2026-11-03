@@ -10,7 +10,14 @@ export interface ServerAdminVerificationResult {
 }
 
 let mainServerApiMissing = false;
-let mainServerBackoffUntilMs = 0;
+
+function isServerBackedOff(): boolean {
+  return Date.now() < Number((globalThis as Record<string, unknown>).__bsServerBackoffUntilMs || 0);
+}
+
+function triggerServerBackoff(ms = 60_000): void {
+  (globalThis as Record<string, unknown>).__bsServerBackoffUntilMs = Date.now() + ms;
+}
 
 async function getBearerHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
@@ -34,7 +41,7 @@ async function getBearerHeaders(): Promise<Record<string, string>> {
  * Verifies Admin / Super-Owner role strictly against the server-side PostgreSQL RBAC & lockout shield.
  */
 export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificationResult> {
-  if (mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) {
+  if (mainServerApiMissing || isServerBackedOff()) {
     return { ok: false, isAdmin: false, role: 'USER' };
   }
   try {
@@ -52,7 +59,7 @@ export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificati
       return { ok: false, isAdmin: false, role: 'USER' };
     }
     if (resp.status >= 500) {
-      mainServerBackoffUntilMs = Date.now() + 60_000;
+      triggerServerBackoff();
       return { ok: false, isAdmin: false, role: 'USER' };
     }
     const data = await resp.json().catch(() => ({}));
@@ -102,7 +109,7 @@ export async function syncDonorProfileToMainDb(payload: {
     | 'DND_PRIVATE';
   bio?: string | null;
 }): Promise<boolean> {
-  if (mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) return false;
+  if (mainServerApiMissing || isServerBackedOff()) return false;
   try {
     const headers = await getBearerHeaders();
     if (!headers.Authorization) return false;
@@ -185,7 +192,7 @@ export async function syncBloodRequestToMainDb(req: BloodRequest): Promise<boole
  * so server-persisted donors are available alongside real-time updates without raw bulk PII dumps.
  */
 export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
-  if (mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) return [];
+  if (mainServerApiMissing || isServerBackedOff()) return [];
   try {
     const resp = await fetch('/api/v1/donors/search?availableOnly=false&limit=50', {
       method: 'GET',
@@ -196,7 +203,7 @@ export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
       return [];
     }
     if (resp.status >= 500) {
-      mainServerBackoffUntilMs = Date.now() + 60_000;
+      triggerServerBackoff();
       return [];
     }
     if (!resp.ok) return [];
@@ -261,7 +268,7 @@ export async function resolveOptedInDonorContactFromMainDb(donorUid: string): Pr
   allowWhatsApp?: boolean;
   allowSms?: boolean;
 } | null> {
-  if (!donorUid || mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) return null;
+  if (!donorUid || mainServerApiMissing || isServerBackedOff()) return null;
   try {
     const headers = await getBearerHeaders();
     // Try authenticated endpoint first if signed in, otherwise opted-in single-donor endpoint
@@ -275,7 +282,7 @@ export async function resolveOptedInDonorContactFromMainDb(donorUid: string): Pr
       credentials: 'same-origin',
     });
     if (resp.status >= 500) {
-      mainServerBackoffUntilMs = Date.now() + 60_000;
+      triggerServerBackoff();
       return null;
     }
     if (!resp.ok) return null;

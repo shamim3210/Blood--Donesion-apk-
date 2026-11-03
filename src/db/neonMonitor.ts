@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import type { BloodSearchDatabase } from './index.ts';
-import type { ValidatedNeonConnectionInfo } from './neonConfig.ts';
+import type { BloodSearchDatabase } from './index';
+import type { ValidatedNeonConnectionInfo } from './neonConfig';
 
 /**
  * Verified Official Neon Free Plan Limits (Verified against neon.com documentation):

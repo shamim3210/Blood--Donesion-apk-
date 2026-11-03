@@ -13,6 +13,5 @@ backups/
 *.dump
 *.sql.gz
 *.map
-src/server/vercelAppBundle.mjs
 
 

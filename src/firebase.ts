@@ -2151,7 +2151,13 @@ export interface UnmaskedDonorContactPayload {
  * 3. `/users/{donorUid}` strictly when caller is the donor owner or a verified Admin.
  * Never throws on privacy denial—returns `null` cleanly so UI shows private fallback options.
  */
-let mainDbContactBackoffUntilMs = 0;
+function getSharedServerBackoffUntilMs(): number {
+  return Number((globalThis as Record<string, unknown>).__bsServerBackoffUntilMs || 0);
+}
+
+function setSharedServerBackoffUntilMs(untilMs: number): void {
+  (globalThis as Record<string, unknown>).__bsServerBackoffUntilMs = untilMs;
+}
 
 export async function fetchUnmaskedDonorContactIfAuthorized(
   donorUid: string
@@ -2160,7 +2166,7 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
   await waitForHealthyAuthBoot();
 
   // Path 0 (Primary): Server-side PostgreSQL Main Database (/api/v1/donors/:uid/contact or /opted-in-contact)
-  if (typeof fetch === 'function' && Date.now() >= mainDbContactBackoffUntilMs) {
+  if (typeof fetch === 'function' && Date.now() >= getSharedServerBackoffUntilMs()) {
     try {
       const headers: Record<string, string> = {};
       if (auth.currentUser) {
@@ -2176,7 +2182,7 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
         credentials: 'same-origin',
       });
       if (srvRes.status >= 500 || srvRes.status === 404) {
-        mainDbContactBackoffUntilMs = Date.now() + 60_000;
+        setSharedServerBackoffUntilMs(Date.now() + 60_000);
       } else if (srvRes.ok) {
         const srvJson = await srvRes.json().catch(() => null);
         const c = srvJson?.contact;
@@ -2196,7 +2202,7 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
         }
       }
     } catch {
-      mainDbContactBackoffUntilMs = Date.now() + 30_000;
+      setSharedServerBackoffUntilMs(Date.now() + 30_000);
     }
   }
 

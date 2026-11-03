@@ -1,13 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Request } from 'express';
 import { cert, getApps, initializeApp, type App as FirebaseAdminApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { hashIdentifier, type AuthenticatedActor } from '../db/repositories/bloodSearchRepo.ts';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { hashIdentifier, type AuthenticatedActor } from '../db/repositories/bloodSearchRepo';
 
 interface AppletFirebaseConfig {
   projectId?: string;
@@ -17,8 +13,7 @@ interface AppletFirebaseConfig {
 function readLocalFirebaseConfig(): AppletFirebaseConfig {
   const candidates = [
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
-    path.resolve(__dirname, '..', 'firebase-applet-config.json'),
-    path.resolve(__dirname, '..', '..', 'firebase-applet-config.json'),
+    path.resolve(process.cwd(), '..', 'firebase-applet-config.json'),
   ];
   for (const cfgPath of candidates) {
     try {

@@ -2,12 +2,12 @@ import crypto from 'node:crypto';
 import {
   type BangladeshMobileOperator,
   validateBangladeshMobile,
-} from '../utils/bdPhoneValidator.ts';
+} from '../utils/bdPhoneValidator';
 import {
   createSmsGatewayFromEnv,
   type SmsGatewayProvider,
   type SmsGatewayProviderId,
-} from './smsGateway.ts';
+} from './smsGateway';
 
 /**
  * BloodSearch Secure Server-Side OTP Engine (Phases 2, 4, 5)
