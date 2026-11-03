@@ -130,8 +130,8 @@ const TILE_LAYER_CONFIGS: Record<
   }
 > = {
   osm: {
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    subdomains: 'abc',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    subdomains: '',
     fallbackUrl: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
     fallbackSubdomains: 'abc',
     attribution: '&copy; OpenStreetMap contributors',
@@ -141,18 +141,18 @@ const TILE_LAYER_CONFIGS: Record<
   hot: {
     url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
     subdomains: 'abc',
-    fallbackUrl: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    fallbackSubdomains: 'abc',
+    fallbackUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    fallbackSubdomains: '',
     attribution: '&copy; OpenStreetMap &copy; HOT',
     labelBn: 'হাসপাতাল ভিউ',
     labelEn: 'Medical Street',
   },
   dark: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    subdomains: 'abcd',
-    fallbackUrl: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    subdomains: '',
+    fallbackUrl: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
     fallbackSubdomains: 'abc',
-    attribution: '&copy; OpenStreetMap &copy; CARTO',
+    attribution: '&copy; OpenStreetMap contributors',
     labelBn: 'ডার্ক ম্যাপ',
     labelEn: 'Dark Map',
   },

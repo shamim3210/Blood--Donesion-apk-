@@ -164,7 +164,7 @@ export function createEmergencyApiApp(options?: {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob: https:",
-    `connect-src 'self' https://*.googleapis.com https://www.gstatic.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.tile.openstreetmap.fr https://*.basemaps.cartocdn.com${devWsSources}`,
+    `connect-src 'self' https://*.googleapis.com https://www.gstatic.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.tile.openstreetmap.fr${devWsSources}`,
     "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://www.google.com",
     "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com https://*.run.app",
     "worker-src 'self' blob:",

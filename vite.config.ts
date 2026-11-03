@@ -187,7 +187,7 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          cacheId: 'bloodsearch-pwa-v3',
+          cacheId: 'bloodsearch-pwa-v4',
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           skipWaiting: true,
           clientsClaim: true,
@@ -231,10 +231,10 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /^https:\/\/(?:(?:[abc]\.)?tile\.openstreetmap\.(?:org|fr)|[abcd]\.basemaps\.cartocdn\.com)\/.*/i,
+              urlPattern: /^https:\/\/(?:[abc]\.)?tile\.openstreetmap\.(?:org|fr)\/.*/i,
               handler: 'StaleWhileRevalidate',
               options: {
-                cacheName: 'bangladesh-map-tiles-cache',
+                cacheName: 'bangladesh-map-tiles-cache-v2',
                 expiration: {
                   maxEntries: 250,
                   maxAgeSeconds: 60 * 60 * 24 * 7,
