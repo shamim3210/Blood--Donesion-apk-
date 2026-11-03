@@ -1856,7 +1856,7 @@ export function normalizeFacebookProfileUrl(raw?: string | null): string | null 
   }
 
   // Case 1: Full or protocol-less Facebook / FB URL
-  if (/^(https?:\/\/)?(www\.|m\.|web\.)?(facebook\.com|fb\.com|fb\.me)\/.+/i.test(trimmed)) {
+  if (/^(https?:\/\/)?(www\.|m\.|web\.|mbasic\.)?(facebook\.com|fb\.com|fb\.me)\/.+/i.test(trimmed)) {
     if (!/^https?:\/\//i.test(trimmed)) {
       trimmed = `https://${trimmed}`;
     } else if (/^http:\/\//i.test(trimmed)) {
@@ -1864,8 +1864,14 @@ export function normalizeFacebookProfileUrl(raw?: string | null): string | null 
     }
     try {
       const parsed = new URL(trimmed);
+      if (parsed.username || parsed.password) {
+        return null;
+      }
+      if (!/^(www\.|m\.|web\.|mbasic\.)?(facebook\.com|fb\.com|fb\.me)$/i.test(parsed.hostname)) {
+        return null;
+      }
       const pathAndQuery = `${parsed.pathname}${parsed.search}`.replace(/\/+$/, '');
-      if (!pathAndQuery || pathAndQuery === '/' || pathAndQuery.length < 2) {
+      if (!pathAndQuery || pathAndQuery === '/' || pathAndQuery.length < 2 || /[<>"'\s]/.test(pathAndQuery)) {
         return null;
       }
       const normalized = `https://${parsed.hostname.toLowerCase()}${pathAndQuery}`;
@@ -2351,7 +2357,7 @@ export async function registerSmartAccountInFirestore(params: {
   const resolvedEmergencyOptIn = account.emergencyAlertsOptIn !== false;
   const resolvedAlertsPaused = account.alertsPaused === true;
   const cleanFbUrl = clampStr(
-    normalizeFacebookProfileUrl(account.facebookUrl || donor.facebookUrl) || account.facebookUrl,
+    normalizeFacebookProfileUrl(account.facebookUrl || donor.facebookUrl),
     8,
     200,
     'https://facebook.com/profile'

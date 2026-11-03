@@ -7,6 +7,7 @@ import path from 'node:path';
 import dotenv from 'dotenv';
 import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService';
 import { createNeonApiRouter } from './src/server/neonRoutes';
+import { verifyServerFirebaseIdentity } from './src/server/firebaseAuthVerifier';
 import type { AuthenticatedActor } from './src/db/repositories/bloodSearchRepo';
 
 dotenv.config();
@@ -173,13 +174,15 @@ export function createEmergencyApiApp(options?: {
     "form-action 'self'",
   ].join('; ');
 
+  const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
   const BLOCKED_SCANNER_UAS =
-    /\b(sqlmap|nikto|acunetix|nmap|masscan|zgrab|nuclei|dirbuster|gobuster|wpscan|havij|commix|scrapy|nessus|openvas)\b/i;
+    /\b(sqlmap|nikto|acunetix|nmap|masscan|zgrab|nuclei|dirbuster|gobuster|feroxbuster|ffuf|wfuzz|wpscan|havij|commix|scrapy|nessus|openvas|hydra|medusa|burpsuite|metasploit|dalfox|xsstrike|arachni)\b/i;
+  const BIDI_OR_NULL_RE = /[\u0000\u202A-\u202E\u2066-\u2069]/;
 
   const hasMaliciousObjectKeysOrNullBytes = (val: unknown, depth = 0): boolean => {
     if (depth > 8) return true;
     if (typeof val === 'string') {
-      return val.includes('\u0000');
+      return BIDI_OR_NULL_RE.test(val);
     }
     if (Array.isArray(val)) {
       return val.some((item) => hasMaliciousObjectKeysOrNullBytes(item, depth + 1));
@@ -192,7 +195,7 @@ export function createEmergencyApiApp(options?: {
           key === 'constructor' ||
           key === 'prototype' ||
           key.startsWith('$') ||
-          key.includes('\u0000')
+          BIDI_OR_NULL_RE.test(key)
         ) {
           return true;
         }
@@ -217,7 +220,18 @@ export function createEmergencyApiApp(options?: {
     );
     res.setHeader('Content-Security-Policy', cspDirectives);
     if (isProd) {
-      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+    }
+
+    // 0. Block dangerous HTTP methods (XST / proxy tunneling) and oversized URIs
+    if (!ALLOWED_METHODS.has(String(req.method || '').toUpperCase())) {
+      res.status(405).json({ ok: false, code: 'METHOD_NOT_ALLOWED' });
+      return;
+    }
+    const checkUrlLen = String(req.originalUrl || req.url || '');
+    if (checkUrlLen.length > 2048) {
+      res.status(414).json({ ok: false, code: 'URI_TOO_LONG' });
+      return;
     }
 
     // 1. Block automated vulnerability scanners & exploit bots immediately
@@ -329,12 +343,30 @@ export function createEmergencyApiApp(options?: {
     ]);
   });
 
-  app.use(express.json({ limit: '64kb' }));
+  app.use(express.json({ limit: '64kb', strict: true }));
 
-  // Deep Prototype-Pollution, Operator-Injection & Null-Byte Firewall on all API requests
+  // Mask malformed JSON syntax errors so internal Express/V8 stack traces never leak
+  app.use((err: unknown, _req: Request, res: Response, next: express.NextFunction) => {
+    if (err && typeof err === 'object' && ('type' in err || err instanceof SyntaxError)) {
+      res.status(400).json({
+        ok: false,
+        code: 'MALFORMED_JSON_PAYLOAD',
+        message: 'Invalid or oversized JSON request body.',
+      });
+      return;
+    }
+    next(err);
+  });
+
+  // Deep Prototype-Pollution, Operator-Injection, HTTP Parameter Pollution (HPP) & Null-Byte Firewall
   app.use('/api', (req: Request, res: Response, next) => {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    const hasQueryArrayPollution =
+      req.query &&
+      typeof req.query === 'object' &&
+      Object.values(req.query).some((v) => Array.isArray(v));
     if (
+      hasQueryArrayPollution ||
       hasMaliciousObjectKeysOrNullBytes(req.body) ||
       hasMaliciousObjectKeysOrNullBytes(req.query)
     ) {
@@ -358,10 +390,19 @@ export function createEmergencyApiApp(options?: {
 
   const firebaseApiKey = loadFirebaseWebApiKey();
   const otpService = new BloodSearchOtpService(options?.otpServiceOptions);
+  const MAX_SERVER_BUCKETS = 5000;
   const rateBuckets = new Map<string, number[]>();
   const duplicateFingerprints = new Map<string, { requestId: string; timestampMs: number }>();
   const activeRequests = new Map<string, ActiveServerRequestState>();
   const auditTrail: SanitizedAuditEvent[] = [];
+
+  const pruneBoundedMap = <K, V>(map: Map<K, V>, maxEntries = MAX_SERVER_BUCKETS) => {
+    while (map.size >= maxEntries) {
+      const oldestKey = map.keys().next().value;
+      if (oldestKey === undefined) break;
+      map.delete(oldestKey);
+    }
+  };
 
   const recordAudit = (entry: Omit<SanitizedAuditEvent, 'id' | 'timestampIso'>) => {
     auditTrail.unshift({
@@ -384,6 +425,9 @@ export function createEmergencyApiApp(options?: {
       rateBuckets.set(bucketKey, active);
       return { allowed: false, retryAfterSec };
     }
+    if (!rateBuckets.has(bucketKey)) {
+      pruneBoundedMap(rateBuckets);
+    }
     active.push(now);
     rateBuckets.set(bucketKey, active);
     return { allowed: true, retryAfterSec: 0 };
@@ -397,6 +441,28 @@ export function createEmergencyApiApp(options?: {
 
     if (options?.verifyTokenOverride) {
       return options.verifyTokenOverride(idToken);
+    }
+
+    // Enforce valid 3-segment JWT format before network/crypto verification
+    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(idToken)) {
+      return null;
+    }
+
+    // 1. Primary: Cryptographic RS256 JWKS verification via firebase-admin/auth
+    const verifiedAdminActor = await verifyServerFirebaseIdentity(req);
+    if (verifiedAdminActor?.uid) {
+      return {
+        uid: verifiedAdminActor.uid,
+        emailVerified: Boolean(
+          verifiedAdminActor.emailVerified ||
+            (verifiedAdminActor.email && verifiedAdminActor.email.includes('@')) ||
+            !verifiedAdminActor.email
+        ),
+        rawEmailVerified: verifiedAdminActor.emailVerified,
+        emailHash: verifiedAdminActor.email
+          ? sha256Short(verifiedAdminActor.email.toLowerCase())
+          : 'phone-user',
+      };
     }
 
     if (!firebaseApiKey) return null;
@@ -652,9 +718,11 @@ export function createEmergencyApiApp(options?: {
       }
     }
 
+    if (!duplicateFingerprints.has(dupHash)) pruneBoundedMap(duplicateFingerprints);
     duplicateFingerprints.set(dupHash, { requestId, timestampMs: Date.now() });
 
     const notifiedHashes = new Set<string>(candidateDonorIds.map((uid) => sha256Short(uid)));
+    if (!activeRequests.has(requestId)) pruneBoundedMap(activeRequests);
     activeRequests.set(requestId, {
       requestId,
       ownerUid: caller.uid,
@@ -1037,8 +1105,12 @@ export function createEmergencyApiApp(options?: {
     const superAdminEmailHash = process.env.SUPER_ADMIN_EMAIL
       ? sha256Short(process.env.SUPER_ADMIN_EMAIL.trim().toLowerCase())
       : '59aa667ae83942ae';
+    const hashBufA = Buffer.from(caller.emailHash.padEnd(16, '0').slice(0, 16), 'utf8');
+    const hashBufB = Buffer.from(superAdminEmailHash.padEnd(16, '0').slice(0, 16), 'utf8');
     const isSuperOwner =
-      caller.rawEmailVerified !== false && caller.emailHash === superAdminEmailHash;
+      caller.rawEmailVerified !== false &&
+      caller.emailHash.length === superAdminEmailHash.length &&
+      crypto.timingSafeEqual(hashBufA, hashBufB);
     const callerUidHash = sha256Short(caller.uid);
     const visibleEvents = isSuperOwner
       ? auditTrail

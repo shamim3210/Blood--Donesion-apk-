@@ -388,14 +388,45 @@ export async function upsertUserAndDonorProfileTx(
       })
       .returning();
 
+    const sanitizeDbFacebookUrl = (raw?: string | null): string | null => {
+      if (!raw) return null;
+      let s = String(raw).trim();
+      if (!s || /[<>"'\u0000\r\n]|javascript:|vbscript:|data:/i.test(s)) return null;
+      if (/^(https?:\/\/)?(www\.|m\.|web\.|mbasic\.)?(facebook\.com|fb\.com|fb\.me)\/.+/i.test(s)) {
+        if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+        else s = s.replace(/^http:\/\//i, 'https://');
+        try {
+          const u = new URL(s);
+          if (u.username || u.password) return null;
+          if (!/^(www\.|m\.|web\.|mbasic\.)?(facebook\.com|fb\.com|fb\.me)$/i.test(u.hostname)) {
+            return null;
+          }
+          const clean = `https://${u.hostname.toLowerCase()}${u.pathname}${u.search}`.replace(/\/+$/, '');
+          return clean.length >= 12 && clean.length <= 200 ? clean : null;
+        } catch {
+          return null;
+        }
+      }
+      const handle = s.replace(/^@+/, '').replace(/^\/+|\/+$/g, '');
+      if (/^[a-zA-Z0-9._-]{3,80}$/.test(handle) && !handle.includes('..')) {
+        return `https://facebook.com/${handle}`;
+      }
+      return null;
+    };
+
+    const safeFacebookUrl = sanitizeDbFacebookUrl(input.facebookProfileUrl);
+    const safeStreetAddress = input.exactStreetAddress
+      ? assertCleanText(input.exactStreetAddress, 'exactStreetAddress', 400, 1)
+      : null;
+
     await tx
       .insert(privateContacts)
       .values({
         userUid: input.targetUid,
         phoneE164,
         whatsappNumber: whatsappE164,
-        facebookProfileUrl: input.facebookProfileUrl ? String(input.facebookProfileUrl).slice(0, 300) : null,
-        exactStreetAddress: input.exactStreetAddress ? String(input.exactStreetAddress).slice(0, 400) : null,
+        facebookProfileUrl: safeFacebookUrl,
+        exactStreetAddress: safeStreetAddress,
         contactVisibility: visibility,
         updatedAt: now,
       })
@@ -404,8 +435,8 @@ export async function upsertUserAndDonorProfileTx(
         set: {
           phoneE164,
           whatsappNumber: whatsappE164,
-          facebookProfileUrl: input.facebookProfileUrl ? String(input.facebookProfileUrl).slice(0, 300) : null,
-          exactStreetAddress: input.exactStreetAddress ? String(input.exactStreetAddress).slice(0, 400) : null,
+          facebookProfileUrl: safeFacebookUrl,
+          exactStreetAddress: safeStreetAddress,
           contactVisibility: visibility,
           updatedAt: now,
         },

@@ -4,6 +4,7 @@ import { getTranslation } from '../utils/translations';
 import {
   auth,
   fetchUnmaskedDonorContactIfAuthorized,
+  normalizeFacebookProfileUrl,
   sendContactConsentRequestInFirestore,
   submitScamReportInFirestore,
 } from '../firebase';
@@ -172,7 +173,9 @@ export const PhoneRevealModal: React.FC<PhoneRevealModalProps> = ({
     (!isPhoneMaskedOrInvalid(donor.whatsappPhone) && consentStatus.allowed
       ? donor.whatsappPhone
       : activePhone);
-  const activeFacebook = resolvedContact?.facebookUrl || donor.facebookUrl;
+  const activeFacebook = normalizeFacebookProfileUrl(
+    resolvedContact?.facebookUrl || donor.facebookUrl
+  );
 
   const hasUnmaskedAuthorizedPhone =
     consentStatus.allowed && !isPhoneMaskedOrInvalid(activePhone);

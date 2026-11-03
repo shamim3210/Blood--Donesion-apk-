@@ -96,6 +96,17 @@ service cloud.firestore {
         );
     }
 
+    // Enforces strict Facebook HTTPS domain allowlist at Firestore kernel (blocks phishing & open-redirect URLs)
+    function isSafeFacebookUrl(fb) {
+      return fb is string
+        && fb.size() <= 200
+        && isSafeText(fb)
+        && (
+          fb.size() == 0 ||
+          fb.matches('^https://([a-zA-Z0-9-]+\\.)?(facebook\\.com|fb\\.com|fb\\.me)/[a-zA-Z0-9._/?=&%+\\-]+$')
+        );
+    }
+
     // Global Consistency Gate: verifies caller owns a schema-validated /users/{uid} account or is Admin
     function hasRegisteredUserProfile() {
       return isSignedIn() && (
@@ -128,7 +139,7 @@ service cloud.firestore {
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 120 && isSafeText(data.email)
         && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 24 && isSafeText(data.phone)
         && data.whatsappPhone is string && data.whatsappPhone.size() >= 6 && data.whatsappPhone.size() <= 24 && isSafeText(data.whatsappPhone)
-        && data.facebookUrl is string && data.facebookUrl.size() >= 8 && data.facebookUrl.size() <= 200 && isSafeText(data.facebookUrl)
+        && data.facebookUrl is string && data.facebookUrl.size() >= 12 && isSafeFacebookUrl(data.facebookUrl)
         && isValidBloodGroup(data.bloodGroup)
         && data.division is string && data.division.size() >= 2 && data.division.size() <= 40 && isSafeText(data.division)
         && data.district is string && data.district.size() >= 2 && data.district.size() <= 40 && isSafeText(data.district)
@@ -208,7 +219,7 @@ service cloud.firestore {
         && data.district is string && data.district.size() >= 2 && data.district.size() <= 40 && isSafeText(data.district)
         && data.upazila is string && data.upazila.size() >= 2 && data.upazila.size() <= 120 && isSafeText(data.upazila)
         && data.maskedPhone is string && data.maskedPhone.size() >= 4 && data.maskedPhone.size() <= 24 && data.maskedPhone.matches('.*\\*\\*.*') && isSafeText(data.maskedPhone)
-        && (!('facebookUrl' in data) || (data.facebookUrl is string && data.facebookUrl.size() <= 200 && isSafeText(data.facebookUrl)))
+        && (!('facebookUrl' in data) || isSafeFacebookUrl(data.facebookUrl))
         && data.available is bool
         && (!('availabilityStatus' in data) || isValidAvailabilityStatus(data.availabilityStatus))
         && (!('availabilityConfirmedAt' in data) || data.availabilityConfirmedAt is timestamp)
@@ -248,7 +259,7 @@ service cloud.firestore {
         && isValidId(data.ownerUid)
         && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 24 && isSafeText(data.phone)
         && data.whatsappPhone is string && data.whatsappPhone.size() <= 24 && isSafeText(data.whatsappPhone)
-        && (!('facebookUrl' in data) || (data.facebookUrl is string && data.facebookUrl.size() <= 200 && isSafeText(data.facebookUrl)))
+        && (!('facebookUrl' in data) || isSafeFacebookUrl(data.facebookUrl))
         && data.shareDirectContact is bool
         && isValidContactVisibility(data.contactVisibility)
         && isValidAvailabilityStatus(data.availabilityStatus)
@@ -422,13 +433,13 @@ service cloud.firestore {
         && isValidBloodGroup(data.participantOneGroup)
         && isSafeMediaUri(data.participantOneAvatar)
         && data.participantOneWhatsapp is string && data.participantOneWhatsapp.size() <= 24 && isSafeText(data.participantOneWhatsapp)
-        && data.participantOneFb is string && data.participantOneFb.size() <= 200 && isSafeText(data.participantOneFb)
+        && isSafeFacebookUrl(data.participantOneFb)
         && isValidId(data.participantTwoUid)
         && data.participantTwoName is string && data.participantTwoName.size() >= 1 && data.participantTwoName.size() <= 80 && isSafeText(data.participantTwoName)
         && isValidBloodGroup(data.participantTwoGroup)
         && isSafeMediaUri(data.participantTwoAvatar)
         && data.participantTwoWhatsapp is string && data.participantTwoWhatsapp.size() <= 24 && isSafeText(data.participantTwoWhatsapp)
-        && data.participantTwoFb is string && data.participantTwoFb.size() <= 200 && isSafeText(data.participantTwoFb)
+        && isSafeFacebookUrl(data.participantTwoFb)
         && data.lastMessage is string && data.lastMessage.size() <= 500 && isSafeText(data.lastMessage)
         && isValidId(data.lastSenderUid)
         && data.createdAt is timestamp

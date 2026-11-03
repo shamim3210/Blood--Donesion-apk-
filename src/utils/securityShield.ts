@@ -100,6 +100,14 @@ export function initRuntimeSecurityShield(): void {
   window.addEventListener('bloodsearch_user_changed', () => {
     scrubForgedLocalRoleEscalation();
   });
+  window.addEventListener('focus', () => {
+    scrubForgedLocalRoleEscalation();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      scrubForgedLocalRoleEscalation();
+    }
+  });
   try {
     onAuthStateChanged(auth, (u) => {
       if (!u) {
@@ -109,6 +117,34 @@ export function initRuntimeSecurityShield(): void {
     });
   } catch {}
 
+  // 2B. Untrusted Cross-Origin Clickjacking Detection (allows same-origin & AI Studio preview hosts)
+  try {
+    if (window.self !== window.top) {
+      const ref = (document.referrer || '').trim();
+      if (ref) {
+        const refHost = new URL(ref).hostname.toLowerCase();
+        const selfHost = window.location.hostname.toLowerCase();
+        const isTrustedEmbedHost =
+          refHost === selfHost ||
+          refHost === 'localhost' ||
+          refHost === '127.0.0.1' ||
+          refHost === 'aistudio.google.com' ||
+          refHost.endsWith('.google.com') ||
+          refHost.endsWith('.googleusercontent.com') ||
+          refHost.endsWith('.run.app');
+        if (!isTrustedEmbedHost) {
+          document.documentElement.setAttribute('data-untrusted-frame', '1');
+          document.body.innerHTML =
+            '<div style="padding:32px;font-family:system-ui,sans-serif;text-align:center;background:#0f172a;color:#fff;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;">' +
+            '<h1 style="font-size:20px;font-weight:800;color:#fb7185;margin-bottom:12px;">Security Alert: Untrusted Embedded Frame Blocked</h1>' +
+            '<p style="font-size:14px;max-width:440px;line-height:1.6;color:#cbd5e1;">BloodSearch cannot be embedded inside unauthorized external websites to protect your account and donor privacy. Please open BloodSearch directly in your browser.</p>' +
+            '</div>';
+          return;
+        }
+      }
+    }
+  } catch {}
+
   // 3. APK WebView & Browser Reverse-Tabnabbing + Dangerous URI Scheme Firewall
   const guardAnchorClicks = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;
@@ -116,7 +152,7 @@ export function initRuntimeSecurityShield(): void {
     if (!anchor) return;
 
     const rawHref = (anchor.getAttribute('href') || '').trim();
-    if (/^(javascript|vbscript|data\s*:\s*text\/html)\s*:/i.test(rawHref)) {
+    if (/^(javascript|vbscript|file|blob|data\s*:\s*(text\/html|application\/xhtml|image\/svg))\s*:/i.test(rawHref)) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -131,6 +167,21 @@ export function initRuntimeSecurityShield(): void {
   };
   document.addEventListener('click', guardAnchorClicks, true);
   document.addEventListener('auxclick', guardAnchorClicks, true);
+
+  // 3B. Form Action Hijacking Guard (blocks javascript: / cross-origin form submission injection)
+  document.addEventListener(
+    'submit',
+    (e: SubmitEvent) => {
+      const form = e.target as HTMLFormElement | null;
+      if (!form) return;
+      const action = (form.getAttribute('action') || '').trim();
+      if (action && /^(javascript|vbscript|data)\s*:/i.test(action)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true
+  );
 
   // 4. Block untrusted Drag-and-Drop HTML/URI injection into APK WebViews & Browser Windows
   const blockUntrustedDrop = (e: DragEvent) => {

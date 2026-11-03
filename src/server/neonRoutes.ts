@@ -43,8 +43,17 @@ export interface NeonApiRouterOptions {
  */
 export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   const router = Router();
+  const MAX_ROUTER_BUCKETS = 5000;
   const rateBuckets = new Map<string, number[]>();
   const adminFailureBuckets = new Map<string, number[]>();
+
+  const pruneRouterMap = <K, V>(map: Map<K, V>) => {
+    while (map.size >= MAX_ROUTER_BUCKETS) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  };
 
   const enforceRateLimit = (
     res: Response,
@@ -66,6 +75,7 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
       });
       return false;
     }
+    if (!rateBuckets.has(bucketKey)) pruneRouterMap(rateBuckets);
     history.push(now);
     rateBuckets.set(bucketKey, history);
     return true;
@@ -74,7 +84,13 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   const checkAdminLockout = (res: Response, key: string): boolean => {
     const windowMs = 15 * 60_000;
     const now = Date.now();
-    const failures = (adminFailureBuckets.get(key) || []).filter((ts) => now - ts < windowMs);
+    const raw = adminFailureBuckets.get(key);
+    if (!raw) return true;
+    const failures = raw.filter((ts) => now - ts < windowMs);
+    if (failures.length === 0) {
+      adminFailureBuckets.delete(key);
+      return true;
+    }
     adminFailureBuckets.set(key, failures);
     if (failures.length >= 5) {
       const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - (failures[0] || now))) / 1000));
@@ -94,6 +110,7 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     const windowMs = 15 * 60_000;
     const now = Date.now();
     const failures = (adminFailureBuckets.get(key) || []).filter((ts) => now - ts < windowMs);
+    if (!adminFailureBuckets.has(key)) pruneRouterMap(adminFailureBuckets);
     failures.push(now);
     adminFailureBuckets.set(key, failures);
   };

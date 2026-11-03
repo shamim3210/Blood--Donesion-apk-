@@ -13,15 +13,24 @@ function getApp() {
   return cachedApp;
 }
 
+const ALLOWED_HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+
+function applyFallbackSecurityHeaders(res: ServerResponse) {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+}
+
 function sendSafeJsonFallback(req: IncomingMessage, res: ServerResponse) {
   if (res.headersSent) return;
   const rawUrl = String(req.url || '/');
   const pathname = rawUrl.split('?')[0] || '/';
 
   res.statusCode = 200;
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+  applyFallbackSecurityHeaders(res);
 
   if (pathname.endsWith('/donors/search')) {
     res.end(
@@ -89,6 +98,22 @@ function sendSafeJsonFallback(req: IncomingMessage, res: ServerResponse) {
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
+  const method = String(req.method || 'GET').toUpperCase();
+  if (!ALLOWED_HTTP_METHODS.has(method)) {
+    res.statusCode = 405;
+    applyFallbackSecurityHeaders(res);
+    res.end(JSON.stringify({ ok: false, code: 'METHOD_NOT_ALLOWED' }));
+    return;
+  }
+
+  const rawUrl = String(req.url || '/');
+  if (rawUrl.length > 2048 || rawUrl.includes('\u0000')) {
+    res.statusCode = 414;
+    applyFallbackSecurityHeaders(res);
+    res.end(JSON.stringify({ ok: false, code: 'URI_TOO_LONG_OR_MALFORMED' }));
+    return;
+  }
+
   try {
     const app = getApp();
     await new Promise<void>((resolve) => {

@@ -29,6 +29,7 @@ import {
   sanitizeFirestoreIdPart,
   compressChatAttachmentImage,
   checkActionCooldownGuard,
+  normalizeFacebookProfileUrl,
   CommunityMessageItem,
   DirectChatRoomItem,
   DirectMessageItem,
@@ -983,15 +984,19 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
             <div className="text-[10px] font-mono text-slate-300">
               GPS: {parsed.locationPin.lat}, {parsed.locationPin.lng}
             </div>
-            <a
-              href={parsed.locationPin.mapsUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] flex items-center justify-center gap-1 transition-colors"
-            >
-              <span>Google Maps-এ ডিরেকশন দেখুন</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
+            {/^https:\/\/(www\.)?google\.com\/maps\b|^https:\/\/maps\.google\.com\b/i.test(
+              parsed.locationPin.mapsUrl
+            ) && (
+              <a
+                href={parsed.locationPin.mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] flex items-center justify-center gap-1 transition-colors"
+              >
+                <span>Google Maps-এ ডিরেকশন দেখুন</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
           </div>
         )}
 
@@ -1498,13 +1503,9 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
               <span>WhatsApp</span>
             </button>
 
-            {!isCommunityActive && enrichedPeer?.peerFb && (
+            {!isCommunityActive && normalizeFacebookProfileUrl(enrichedPeer?.peerFb) && (
               <a
-                href={
-                  enrichedPeer.peerFb.startsWith('http')
-                    ? enrichedPeer.peerFb
-                    : `https://${enrichedPeer.peerFb}`
-                }
+                href={normalizeFacebookProfileUrl(enrichedPeer?.peerFb)!}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors cursor-pointer"
@@ -1517,9 +1518,10 @@ export const DonorChatView: React.FC<DonorChatViewProps> = ({
             {!isCommunityActive &&
               enrichedPeer?.peerWhatsapp &&
               !enrichedPeer.peerWhatsapp.includes('*') &&
-              !enrichedPeer.peerWhatsapp.includes('X') && (
+              !enrichedPeer.peerWhatsapp.includes('X') &&
+              /^\+?\d{8,16}$/.test(enrichedPeer.peerWhatsapp.replace(/[^\d+]/g, '')) && (
                 <a
-                  href={`tel:${enrichedPeer.peerWhatsapp}`}
+                  href={`tel:${enrichedPeer.peerWhatsapp.replace(/[^\d+]/g, '')}`}
                   className="p-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-colors cursor-pointer"
                   title="সরাসরি কল করুন"
                 >

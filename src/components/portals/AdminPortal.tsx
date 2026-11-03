@@ -52,6 +52,7 @@ import {
   SmartDatabaseHealthReport,
   adminSmartCleanupCompletedRequestsInFirestore,
   runSmartDatabaseHealthAndSecurityAudit,
+  normalizeFacebookProfileUrl,
   User,
 } from '../../firebase';
 import { verifyAdminWithMainServer } from '../../utils/secureMainDbClient';
@@ -1970,13 +1971,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   ? 'অপেক্ষমাণ'
                                   : 'Pending'}
                             </span>
-                            {donor.facebookUrl && (
+                            {normalizeFacebookProfileUrl(donor.facebookUrl) && (
                               <>
                                 <span className="text-xs text-slate-400" aria-hidden="true">
                                   ·
                                 </span>
                                 <a
-                                  href={donor.facebookUrl}
+                                  href={normalizeFacebookProfileUrl(donor.facebookUrl)!}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-xs text-amber-600 dark:text-amber-400 hover:underline inline-flex items-center gap-0.5"
