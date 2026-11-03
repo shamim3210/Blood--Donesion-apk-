@@ -99,7 +99,11 @@ export function validateAndNormalizeNeonUrl(
     );
   }
 
-  const trimmed = (rawUrl || '').trim();
+  const trimmed = (rawUrl || '')
+    .trim()
+    .replace(/^psql\s+/i, '')
+    .replace(/^['"]+|['"]+$/g, '')
+    .trim();
   if (!trimmed) {
     return {
       configured: false,
@@ -177,6 +181,10 @@ export function validateAndNormalizeNeonUrl(
     );
   }
 
+  if (parsed.searchParams.has('channel_binding')) {
+    parsed.searchParams.delete('channel_binding');
+  }
+
   const database = parsed.pathname.replace(/^\//, '') || 'neondb';
   const normalizedString = parsed.toString();
 
@@ -214,8 +222,19 @@ export function buildNeonPoolConfig(env: NodeJS.ProcessEnv = process.env): {
   const isLocalHost = info.host === 'localhost' || info.host === '127.0.0.1';
   const maxConnections = Math.min(25, Math.max(2, Number(env.DB_POOL_MAX || 10)));
 
+  let runtimeConnectionString = info.connectionString;
+  if (!isLocalHost) {
+    try {
+      const runtimeParsed = new URL(info.connectionString);
+      runtimeParsed.searchParams.delete('sslmode');
+      runtimeConnectionString = runtimeParsed.toString();
+    } catch {
+      runtimeConnectionString = info.connectionString;
+    }
+  }
+
   const poolConfig: PoolConfig = {
-    connectionString: info.connectionString,
+    connectionString: runtimeConnectionString,
     max: maxConnections,
     idleTimeoutMillis: 20_000, // Release idle clients cleanly before Neon 5-min autosuspend
     connectionTimeoutMillis: 12_000, // Accommodate Neon Free Plan ~300-500ms cold wake-up from scale-to-zero
@@ -226,6 +245,7 @@ export function buildNeonPoolConfig(env: NodeJS.ProcessEnv = process.env): {
       : {
           rejectUnauthorized: true,
           minVersion: 'TLSv1.2',
+          servername: info.host,
         },
   };
 

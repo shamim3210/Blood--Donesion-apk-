@@ -275,10 +275,28 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     const ipHash = extractHashedClientIp(req);
     if (!enforceRateLimit(res, `donorsearch:${ipHash}`, 60, 60_000)) return;
 
-    const db = await requireDatabase(res);
-    if (!db) return;
-
     try {
+      const { db } = await ensureMainPostgresReady();
+      if (!db) {
+        const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+        const limit = Math.min(50, Math.max(1, Math.floor(Number(req.query.limit) || 20)));
+        res.json({
+          ok: true,
+          dbConfigured: false,
+          items: [],
+          pagination: {
+            page,
+            limit,
+            totalItems: 0,
+            totalPages: 1,
+            hasNextPage: false,
+            hasPrevPage: page > 1,
+          },
+          geoStrategy: 'NONE',
+        });
+        return;
+      }
+
       const result = await searchPublicDonorsPaginated(db, {
         bloodGroup: req.query.bloodGroup ? String(req.query.bloodGroup) : undefined,
         includeCompatible: req.query.includeCompatible === 'true',
@@ -294,7 +312,27 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
 
       res.json({ ok: true, ...result });
     } catch (err) {
-      handleRouteError(res, err);
+      if (err instanceof DomainSecurityError) {
+        handleRouteError(res, err);
+        return;
+      }
+      const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+      const limit = Math.min(50, Math.max(1, Math.floor(Number(req.query.limit) || 20)));
+      res.status(200).json({
+        ok: true,
+        dbConfigured: false,
+        degraded: true,
+        items: [],
+        pagination: {
+          page,
+          limit,
+          totalItems: 0,
+          totalPages: 1,
+          hasNextPage: false,
+          hasPrevPage: page > 1,
+        },
+        geoStrategy: 'NONE',
+      });
     }
   });
 
@@ -354,10 +392,15 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     // Strict anti-scraping cap: single-donor lookup only (max 20/min per IP)
     if (!enforceRateLimit(res, `optincontact:${ipHash}`, 20, 60_000)) return;
 
-    const db = await requireDatabase(res);
-    if (!db) return;
+    const silentFrontendProbe = req.query.silent === '1';
 
     try {
+      const { db } = await ensureMainPostgresReady();
+      if (!db) {
+        res.json({ ok: false, dbConfigured: false, found: false, contact: null });
+        return;
+      }
+
       const contact = await getPublicOptedInDonorContactTx(
         db,
         String(req.params.donorUid || ''),
@@ -371,6 +414,22 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         },
       });
     } catch (err) {
+      if (err instanceof DomainSecurityError) {
+        if (err.code === 'DONOR_CONTACT_NOT_FOUND') {
+          res.json({ ok: false, found: false, contact: null });
+          return;
+        }
+        if (silentFrontendProbe && err.httpStatus === 403) {
+          res.json({ ok: false, restricted: true, code: err.code, contact: null });
+          return;
+        }
+        handleRouteError(res, err);
+        return;
+      }
+      if (silentFrontendProbe) {
+        res.status(200).json({ ok: false, degraded: true, contact: null });
+        return;
+      }
       handleRouteError(res, err);
     }
   });
@@ -379,10 +438,23 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     const ipHash = extractHashedClientIp(req);
     if (!enforceRateLimit(res, `contactunmask:${ipHash}`, 12, 60_000)) return;
 
-    const db = await requireDatabase(res);
-    if (!db) return;
+    const silentFrontendProbe = req.query.silent === '1';
 
     try {
+      const { db } = await ensureMainPostgresReady();
+      if (!db) {
+        if (silentFrontendProbe) {
+          res.json({ ok: false, dbConfigured: false, found: false, contact: null });
+          return;
+        }
+        res.status(503).json({
+          ok: false,
+          code: 'NEON_DATABASE_UNCONFIGURED',
+          message: 'Primary PostgreSQL database is temporarily unavailable.',
+        });
+        return;
+      }
+
       const actor = await requireAuthenticatedActor(req, res, db);
       if (!actor) return;
       if (!enforceRateLimit(res, `contactunmask:uid:${actor.uid}`, 10, 60_000)) return;
@@ -396,6 +468,16 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
 
       res.json({ ok: true, contact });
     } catch (err) {
+      if (silentFrontendProbe && err instanceof DomainSecurityError) {
+        if (err.code === 'DONOR_CONTACT_NOT_FOUND' || err.httpStatus === 403) {
+          res.json({ ok: false, restricted: err.httpStatus === 403, code: err.code, contact: null });
+          return;
+        }
+      }
+      if (silentFrontendProbe && !(err instanceof DomainSecurityError)) {
+        res.status(200).json({ ok: false, degraded: true, contact: null });
+        return;
+      }
       handleRouteError(res, err);
     }
   });

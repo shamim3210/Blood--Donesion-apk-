@@ -182,9 +182,15 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     >
   >({});
 
+  const attemptedDirectContactIdsRef = useRef<Set<string>>(new Set());
+
   const isVerifiedSeeker = Boolean(
     isUserVerifiedForWrites(auth.currentUser) || getStoredDevOtpSandboxSession()
   );
+
+  useEffect(() => {
+    attemptedDirectContactIdsRef.current.clear();
+  }, [isVerifiedSeeker]);
 
   useEffect(() => {
     if (presetGroup !== undefined) {
@@ -532,7 +538,7 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
     [rankedResults, visibleCount]
   );
 
-  // Pre-resolve authorized direct contacts for visible opted-in cloud donors
+  // Pre-resolve authorized direct contacts for visible opted-in cloud donors (at most once per donor ID)
   useEffect(() => {
     let cancelled = false;
     const toResolve = visibleRanked
@@ -540,12 +546,17 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
       .filter((d) => {
         if (!isPhoneMaskedOrInvalid(d.phone)) return false;
         if (resolvedDirectContacts[d.id]) return false;
+        if (attemptedDirectContactIdsRef.current.has(d.id)) return false;
         if (/^(d|donor-)\d+$/.test(d.id)) return false;
         return canSeekerViewDirectContact(d, isVerifiedSeeker).allowed;
       })
       .slice(0, 12);
 
     if (toResolve.length === 0) return;
+
+    for (const d of toResolve) {
+      attemptedDirectContactIdsRef.current.add(d.id);
+    }
 
     Promise.all(
       toResolve.map(async (d) => {
@@ -1083,6 +1094,31 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             )}
           </div>
         </div>
+
+        {/* Helpful 1-Tap Banner when active Blood Group / District filter hides other registered donors */}
+        {donors.length > rankedResults.length &&
+          (selectedGroup !== 'ALL' ||
+            selectedDistrict !== 'ALL' ||
+            onlyAvailable ||
+            onlyVerified ||
+            searchQuery.trim() !== '') && (
+            <div className="mt-2.5 p-2.5 rounded-xl bg-sky-50/90 dark:bg-sky-950/35 border border-sky-200/80 dark:border-sky-800/70 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-sky-950 dark:text-sky-200 font-semibold">
+                {lang === 'bn'
+                  ? `ডিরেক্টরিতে মোট ${donors.length} জন নিবন্ধিত রক্তদাতা আছেন (${selectedGroup !== 'ALL' ? `বর্তমানে ${selectedGroup} গ্রুপের ফিল্টার চালু` : 'ফিল্টার চালু'})।`
+                  : `${donors.length} registered donors in directory (${selectedGroup !== 'ALL' ? `filtered for ${selectedGroup}` : 'filters active'}).`}
+              </span>
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="min-h-[34px] px-3 py-1 rounded-lg btn-sky font-bold text-xs cursor-pointer whitespace-nowrap shrink-0"
+              >
+                {lang === 'bn'
+                  ? `সব রক্তের গ্রুপ দেখুন (${donors.length} জন)`
+                  : `Show All ${donors.length} Donors`}
+              </button>
+            </div>
+          )}
 
         {/* Clean Optional More Filters (Collapsed by Default) */}
         {showMoreFilters && (

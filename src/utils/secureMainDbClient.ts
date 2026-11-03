@@ -10,6 +10,7 @@ export interface ServerAdminVerificationResult {
 }
 
 let mainServerApiMissing = false;
+let mainServerBackoffUntilMs = 0;
 
 async function getBearerHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
@@ -33,7 +34,7 @@ async function getBearerHeaders(): Promise<Record<string, string>> {
  * Verifies Admin / Super-Owner role strictly against the server-side PostgreSQL RBAC & lockout shield.
  */
 export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificationResult> {
-  if (mainServerApiMissing) {
+  if (mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) {
     return { ok: false, isAdmin: false, role: 'USER' };
   }
   try {
@@ -48,6 +49,10 @@ export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificati
     });
     if (resp.status === 404) {
       mainServerApiMissing = true;
+      return { ok: false, isAdmin: false, role: 'USER' };
+    }
+    if (resp.status >= 500) {
+      mainServerBackoffUntilMs = Date.now() + 60_000;
       return { ok: false, isAdmin: false, role: 'USER' };
     }
     const data = await resp.json().catch(() => ({}));
@@ -89,15 +94,24 @@ export async function syncDonorProfileToMainDb(payload: {
   facebookProfileUrl?: string | null;
   isAvailable?: boolean;
   shareDirectContact?: boolean;
-  contactVisibility?: 'PUBLIC_OPT_IN' | 'REQUEST_ONLY' | 'EMERGENCY_VERIFIED_ONLY' | 'DND_PRIVATE';
+  contactVisibility?:
+    | 'PUBLIC_OPT_IN'
+    | 'VERIFIED_SEEKERS'
+    | 'REQUEST_ONLY'
+    | 'EMERGENCY_VERIFIED_ONLY'
+    | 'DND_PRIVATE';
   bio?: string | null;
 }): Promise<boolean> {
-  if (mainServerApiMissing) return false;
+  if (mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) return false;
   try {
     const headers = await getBearerHeaders();
     if (!headers.Authorization) return false;
 
     const shareDirect = payload.shareDirectContact !== false;
+    const normalizedVisibility =
+      payload.contactVisibility === 'VERIFIED_SEEKERS'
+        ? 'EMERGENCY_VERIFIED_ONLY'
+        : payload.contactVisibility || (shareDirect ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY');
     const resp = await fetch('/api/v1/donors/profile', {
       method: 'POST',
       headers,
@@ -119,8 +133,7 @@ export async function syncDonorProfileToMainDb(payload: {
         isAvailable: payload.isAvailable !== false,
         shareDirectContact: shareDirect,
         contactPreference: shareDirect ? 'CALL_ALLOWED' : 'IN_APP_ONLY',
-        contactVisibility:
-          payload.contactVisibility || (shareDirect ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY'),
+        contactVisibility: normalizedVisibility,
         medicalDeclarationAccepted: true,
         bio: payload.bio || null,
       }),
@@ -172,7 +185,7 @@ export async function syncBloodRequestToMainDb(req: BloodRequest): Promise<boole
  * so server-persisted donors are available alongside real-time updates without raw bulk PII dumps.
  */
 export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
-  if (mainServerApiMissing) return [];
+  if (mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) return [];
   try {
     const resp = await fetch('/api/v1/donors/search?availableOnly=false&limit=50', {
       method: 'GET',
@@ -180,6 +193,10 @@ export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
     });
     if (resp.status === 404) {
       mainServerApiMissing = true;
+      return [];
+    }
+    if (resp.status >= 500) {
+      mainServerBackoffUntilMs = Date.now() + 60_000;
       return [];
     }
     if (!resp.ok) return [];
@@ -244,19 +261,23 @@ export async function resolveOptedInDonorContactFromMainDb(donorUid: string): Pr
   allowWhatsApp?: boolean;
   allowSms?: boolean;
 } | null> {
-  if (!donorUid) return null;
+  if (!donorUid || mainServerApiMissing || Date.now() < mainServerBackoffUntilMs) return null;
   try {
     const headers = await getBearerHeaders();
     // Try authenticated endpoint first if signed in, otherwise opted-in single-donor endpoint
     const url = headers.Authorization
-      ? `/api/v1/donors/${encodeURIComponent(donorUid)}/contact`
-      : `/api/v1/donors/${encodeURIComponent(donorUid)}/opted-in-contact`;
+      ? `/api/v1/donors/${encodeURIComponent(donorUid)}/contact?silent=1`
+      : `/api/v1/donors/${encodeURIComponent(donorUid)}/opted-in-contact?silent=1`;
 
     const resp = await fetch(url, {
       method: 'GET',
       headers,
       credentials: 'same-origin',
     });
+    if (resp.status >= 500) {
+      mainServerBackoffUntilMs = Date.now() + 60_000;
+      return null;
+    }
     if (!resp.ok) return null;
     const data = await resp.json();
     const c = data?.contact;

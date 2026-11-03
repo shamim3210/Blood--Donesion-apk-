@@ -1,6 +1,11 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "{src/server/vercelAppBundle.mjs,src/db/bootstrapSql.mjs,firebase-applet-config.json}"
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",

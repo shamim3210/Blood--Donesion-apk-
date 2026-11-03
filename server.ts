@@ -67,14 +67,25 @@ const ESCALATION_TIERS = [
 ];
 
 function loadFirebaseWebApiKey(): string {
-  try {
-    const cfgPath = path.join(__dirname, 'firebase-applet-config.json');
-    const raw = fs.readFileSync(cfgPath, 'utf8');
-    const parsed = JSON.parse(raw) as { apiKey?: string };
-    return parsed.apiKey || '';
-  } catch {
-    return '';
+  const envKey = (process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || '').trim();
+  if (envKey) return envKey;
+  const candidates = [
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    path.join(__dirname, 'firebase-applet-config.json'),
+    path.resolve(__dirname, '..', 'firebase-applet-config.json'),
+  ];
+  for (const cfgPath of candidates) {
+    try {
+      if (fs.existsSync(cfgPath)) {
+        const raw = fs.readFileSync(cfgPath, 'utf8');
+        const parsed = JSON.parse(raw) as { apiKey?: string };
+        if (parsed.apiKey) return parsed.apiKey;
+      }
+    } catch {
+      // Continue
+    }
   }
+  return '';
 }
 
 export function sha256Short(input: string): string {
@@ -1046,54 +1057,56 @@ export function createEmergencyApiApp(options?: {
   return app;
 }
 
-async function startServer() {
-  const PORT = Number(process.env.PORT) || 3000;
-  const app = createEmergencyApiApp();
-  const httpServer = http.createServer(app);
+if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
+  const isDirectEntry =
+    !process.env.VERCEL &&
+    Boolean(process.argv[1]) &&
+    path.resolve(process.argv[1]) === path.resolve(__filename);
 
-  if (process.env.NODE_ENV !== 'production') {
-    const enableHmr = process.env.ENABLE_HMR === 'true' && process.env.DISABLE_HMR !== 'true';
-    if (!enableHmr) {
-      process.env.DISABLE_HMR = 'true';
-    }
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: enableHmr ? { server: httpServer } : false,
-        watch: enableHmr ? {} : null,
-      },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, 'dist');
-    app.use(
-      express.static(distPath, {
-        setHeaders(res, filePath) {
-          if (filePath.endsWith('version.json') || filePath.endsWith('sw.js')) {
-            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-          }
-        },
-      })
-    );
-    app.get('*', (_req: Request, res: Response) => {
-      res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(path.join(distPath, 'index.html'));
+  if (isDirectEntry) {
+    (async () => {
+      const PORT = Number(process.env.PORT) || 3000;
+      const app = createEmergencyApiApp();
+      const httpServer = http.createServer(app);
+
+      if (process.env.NODE_ENV !== 'production') {
+        const enableHmr = process.env.ENABLE_HMR === 'true' && process.env.DISABLE_HMR !== 'true';
+        if (!enableHmr) {
+          process.env.DISABLE_HMR = 'true';
+        }
+        const { createServer: createViteServer } = await import('vite');
+        const vite = await createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: enableHmr ? { server: httpServer } : false,
+            watch: enableHmr ? {} : null,
+          },
+          appType: 'spa',
+        });
+        app.use(vite.middlewares);
+      } else {
+        const distPath = path.join(__dirname, 'dist');
+        app.use(
+          express.static(distPath, {
+            setHeaders(res, filePath) {
+              if (filePath.endsWith('version.json') || filePath.endsWith('sw.js')) {
+                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+              }
+            },
+          })
+        );
+        app.get('*', (_req: Request, res: Response) => {
+          res.setHeader('Cache-Control', 'no-cache');
+          res.sendFile(path.join(distPath, 'index.html'));
+        });
+      }
+
+      httpServer.listen(PORT, '0.0.0.0', () => {
+        console.log(`BloodSearch server listening on http://0.0.0.0:${PORT}`);
+      });
+    })().catch((err) => {
+      console.error('Failed to start server:', err);
+      process.exit(1);
     });
   }
-
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`BloodSearch server listening on http://0.0.0.0:${PORT}`);
-  });
-}
-
-const isDirectEntry =
-  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
-
-if (isDirectEntry) {
-  startServer().catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
-  });
 }

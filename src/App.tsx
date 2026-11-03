@@ -97,6 +97,7 @@ import { useBrandConfig } from './config/brandConfig';
 import {
   fetchDonorsFromMainDb,
   syncBloodRequestToMainDb,
+  syncDonorProfileToMainDb,
 } from './utils/secureMainDbClient';
 import type { CareSuiteTab } from './components/ecosystem/EmergencyCareSuiteModal';
 
@@ -623,18 +624,8 @@ export default function App() {
       }
       if (u) {
         try {
-          // One-time v6 Zero-Slate Reset for verified Super Owner:
-          // Wipes all legacy pre-v6 records once so only authentic accounts remain
-          if (isBootstrappedAdminUser(u)) {
-            const zeroSlateKey = 'bloodsearch_owner_zero_slate_v6';
-            if (localStorage.getItem(zeroSlateKey) !== 'done') {
-              const hasFreshDraft = Boolean(
-                localStorage.getItem('bloodsearch_pending_profile_draft')
-              );
-              await ownerWipeEntireDatabaseZeroSlateV6InFirestore(!hasFreshDraft).catch(() => {});
-              localStorage.setItem(zeroSlateKey, 'done');
-            }
-          }
+          // NOTE: Automatic Zero-Slate database wipe on login is intentionally disabled
+          // so signing in as Super Owner on any new browser/domain never deletes real registered users.
 
           // One-time v7 Chat Zero-Slate Purge: wipe all legacy 1-to-1 direct chats & saved chat history
           const chatZeroKey = `bloodsearch_cloud_chat_zero_v7_${u.uid}`;
@@ -651,6 +642,25 @@ export default function App() {
             if (isSyncedAdmin) syncedProfile.role = 'ADMIN';
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(syncedProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
+
+            if (syncedProfile.phone && !isPhoneMaskedOrInvalid(syncedProfile.phone)) {
+              void syncDonorProfileToMainDb({
+                displayName: syncedProfile.name,
+                bloodGroup: syncedProfile.bloodGroup,
+                age: Number(syncedProfile.age) || null,
+                gender: syncedProfile.gender || null,
+                weightKg: Number(syncedProfile.weightKg) || null,
+                district: syncedProfile.district || 'dhaka',
+                upazila: syncedProfile.upazila || null,
+                area: syncedProfile.upazila || syncedProfile.district || 'Dhaka',
+                phone: syncedProfile.phone,
+                whatsappNumber: syncedProfile.whatsappPhone || syncedProfile.phone,
+                facebookProfileUrl: syncedProfile.facebookUrl || null,
+                isAvailable: syncedProfile.availableToDonate !== false,
+                shareDirectContact: syncedProfile.shareDirectContact !== false,
+                contactVisibility: syncedProfile.contactVisibility,
+              }).catch(() => false);
+            }
 
             setDonors((prev) => {
               const existing = prev.find((d) => d.id === syncedProfile.id);

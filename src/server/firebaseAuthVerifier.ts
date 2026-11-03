@@ -15,13 +15,21 @@ interface AppletFirebaseConfig {
 }
 
 function readLocalFirebaseConfig(): AppletFirebaseConfig {
-  try {
-    const cfgPath = path.resolve(__dirname, '..', '..', 'firebase-applet-config.json');
-    if (!fs.existsSync(cfgPath)) return {};
-    return JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as AppletFirebaseConfig;
-  } catch {
-    return {};
+  const candidates = [
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    path.resolve(__dirname, '..', 'firebase-applet-config.json'),
+    path.resolve(__dirname, '..', '..', 'firebase-applet-config.json'),
+  ];
+  for (const cfgPath of candidates) {
+    try {
+      if (fs.existsSync(cfgPath)) {
+        return JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as AppletFirebaseConfig;
+      }
+    } catch {
+      // Continue to next candidate path
+    }
   }
+  return {};
 }
 
 let cachedAdminApp: FirebaseAdminApp | null = null;
@@ -109,10 +117,11 @@ export async function verifyServerFirebaseIdentity(
   }
 
   // 2. Secondary verification via Google IdentityToolkit accounts:lookup
-  if (cfg.apiKey) {
+  const webApiKey = (process.env.FIREBASE_WEB_API_KEY || cfg.apiKey || '').trim();
+  if (webApiKey) {
     try {
       const resp = await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(cfg.apiKey)}`,
+        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(webApiKey)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

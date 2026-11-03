@@ -151,7 +151,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
   onOpenPlayStore,
 }) => {
   const [rareOnlyFilter, setRareOnlyFilter] = useState(false);
-  const [expressGroup, setExpressGroup] = useState<BloodGroup>('B+');
+  const [expressGroup, setExpressGroup] = useState<BloodGroup | 'ALL'>('ALL');
   const [expressDistrict, setExpressDistrict] = useState<string>('ALL');
 
   const totalReadyDonors = useMemo(
@@ -535,6 +535,15 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+                <button
+                  type="button"
+                  onClick={() => setExpressGroup('ALL')}
+                  className={`min-h-[42px] px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
+                    expressGroup === 'ALL' ? 'btn-crimson' : 'btn-surface'
+                  }`}
+                >
+                  {lang === 'bn' ? 'সব গ্রুপ' : 'All'}
+                </button>
                 {ALL_BLOOD_GROUPS.map((grp) => {
                   const selected = expressGroup === grp;
                   return (
@@ -584,9 +593,13 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 >
                   <Search className="w-4 h-4 shrink-0" />
                   <span>
-                    {lang === 'bn'
-                      ? `${expressGroup} ডোনার খুঁজুন`
-                      : `Find ${expressGroup} Donors`}
+                    {expressGroup === 'ALL'
+                      ? lang === 'bn'
+                        ? 'সব ডোনার খুঁজুন'
+                        : 'Find All Donors'
+                      : lang === 'bn'
+                        ? `${expressGroup} ডোনার খুঁজুন`
+                        : `Find ${expressGroup} Donors`}
                   </span>
                 </button>
 
@@ -594,7 +607,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   type="button"
                   onClick={() =>
                     onOpenSOSWizard({
-                      bloodGroup: expressGroup,
+                      bloodGroup: expressGroup !== 'ALL' ? expressGroup : undefined,
                       district: expressDistrict !== 'ALL' ? expressDistrict : undefined,
                     })
                   }

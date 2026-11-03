@@ -2151,6 +2151,8 @@ export interface UnmaskedDonorContactPayload {
  * 3. `/users/{donorUid}` strictly when caller is the donor owner or a verified Admin.
  * Never throws on privacy denial—returns `null` cleanly so UI shows private fallback options.
  */
+let mainDbContactBackoffUntilMs = 0;
+
 export async function fetchUnmaskedDonorContactIfAuthorized(
   donorUid: string
 ): Promise<UnmaskedDonorContactPayload | null> {
@@ -2158,7 +2160,7 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
   await waitForHealthyAuthBoot();
 
   // Path 0 (Primary): Server-side PostgreSQL Main Database (/api/v1/donors/:uid/contact or /opted-in-contact)
-  if (typeof fetch === 'function') {
+  if (typeof fetch === 'function' && Date.now() >= mainDbContactBackoffUntilMs) {
     try {
       const headers: Record<string, string> = {};
       if (auth.currentUser) {
@@ -2166,14 +2168,16 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
         if (tok) headers.Authorization = `Bearer ${tok}`;
       }
       const primaryUrl = headers.Authorization
-        ? `/api/v1/donors/${encodeURIComponent(donorUid)}/contact`
-        : `/api/v1/donors/${encodeURIComponent(donorUid)}/opted-in-contact`;
+        ? `/api/v1/donors/${encodeURIComponent(donorUid)}/contact?silent=1`
+        : `/api/v1/donors/${encodeURIComponent(donorUid)}/opted-in-contact?silent=1`;
       const srvRes = await fetch(primaryUrl, {
         method: 'GET',
         headers,
         credentials: 'same-origin',
       });
-      if (srvRes.ok) {
+      if (srvRes.status >= 500 || srvRes.status === 404) {
+        mainDbContactBackoffUntilMs = Date.now() + 60_000;
+      } else if (srvRes.ok) {
         const srvJson = await srvRes.json().catch(() => null);
         const c = srvJson?.contact;
         if (c && (c.phoneE164 || c.whatsappNumber)) {
@@ -2192,7 +2196,7 @@ export async function fetchUnmaskedDonorContactIfAuthorized(
         }
       }
     } catch {
-      // Fall back cleanly if offline or if donor only exists in legacy cloud cache
+      mainDbContactBackoffUntilMs = Date.now() + 30_000;
     }
   }
 

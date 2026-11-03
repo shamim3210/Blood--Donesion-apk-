@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
+import type { PGlite } from '@electric-sql/pglite';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { drizzle as drizzlePglite, type PgliteDatabase } from 'drizzle-orm/pglite';
+import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import pg from 'pg';
+import { CORE_BOOTSTRAP_SQL } from './bootstrapSql.mjs';
 import { buildNeonPoolConfig, redactDatabaseUrl, type ValidatedNeonConnectionInfo } from './neonConfig.ts';
 import * as schema from './schema.ts';
 
@@ -26,6 +27,8 @@ let singletonEmbeddedClient: PGlite | null = null;
 let singletonDb: BloodSearchDatabase | null = null;
 let singletonInfo: ValidatedNeonConnectionInfo | null = null;
 let embeddedInitPromise: Promise<BloodSearchDatabase | null> | null = null;
+let neonBootstrapPromise: Promise<boolean> | null = null;
+let neonConnectionHealthy = false;
 let overrideDbForTesting: BloodSearchDatabase | null = null;
 
 /**
@@ -36,30 +39,75 @@ export function setDatabaseOverrideForTesting(db: BloodSearchDatabase | null): v
   overrideDbForTesting = db;
 }
 
-export function createPgliteDrizzle(client: PGlite): PgliteDatabase<typeof schema> {
-  return drizzlePglite(client, { schema });
-}
-
-function readCoreBootstrapSql(): string | null {
+function readCoreBootstrapSql(): string {
   try {
     const drizzleDir = path.join(ROOT_DIR, 'drizzle');
-    if (!fs.existsSync(drizzleDir)) return null;
-    const files = fs
-      .readdirSync(drizzleDir)
-      .filter((f) => f.endsWith('.sql') && f.startsWith('0000_') && !f.startsWith('rollback_'))
-      .sort();
-    if (files.length === 0) return null;
-    return fs.readFileSync(path.join(drizzleDir, files[0]!), 'utf8');
+    if (fs.existsSync(drizzleDir)) {
+      const files = fs
+        .readdirSync(drizzleDir)
+        .filter((f) => f.endsWith('.sql') && f.startsWith('0000_') && !f.startsWith('rollback_'))
+        .sort();
+      if (files.length > 0) {
+        const raw = fs.readFileSync(path.join(drizzleDir, files[0]!), 'utf8');
+        if (raw.trim()) {
+          return raw.replace(/--> statement-breakpoint/g, '\n');
+        }
+      }
+    }
   } catch {
-    return null;
+    // Fall back to embedded idempotent bootstrap SQL when bundled in serverless environments
   }
+  return CORE_BOOTSTRAP_SQL;
+}
+
+function isServerlessEnvironment(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    env.VERCEL ||
+      env.VERCEL_ENV ||
+      env.AWS_LAMBDA_FUNCTION_NAME ||
+      env.BLOODSEARCH_SERVERLESS_MODE === 'true'
+  );
+}
+
+async function ensureNeonPoolSchemaReady(pool: pg.Pool, info: ValidatedNeonConnectionInfo): Promise<boolean> {
+  if (neonConnectionHealthy) return true;
+  if (!neonBootstrapPromise) {
+    neonBootstrapPromise = (async () => {
+      try {
+        const checkRes = await pool.query<{ cnt: number }>(
+          `SELECT COUNT(*)::int AS cnt FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'donor_profiles'`
+        );
+        if (!Number(checkRes.rows[0]?.cnt)) {
+          const statements = CORE_BOOTSTRAP_SQL.split(/\n\s*\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const client = await pool.connect();
+          try {
+            for (const stmt of statements) {
+              await client.query(stmt);
+            }
+          } finally {
+            client.release();
+          }
+        }
+        neonConnectionHealthy = true;
+        return true;
+      } catch (err) {
+        neonBootstrapPromise = null;
+        const safeMsg = err instanceof Error ? redactDatabaseUrl(err.message) : 'Unknown Neon init error';
+        console.error(`[MainPostgres] Neon schema/connection verification failed (${info.redactedUrl}): ${safeMsg}`);
+        return false;
+      }
+    })();
+  }
+  return neonBootstrapPromise;
 }
 
 /**
  * Ensures the server-side PostgreSQL main database is ready for `/api/v1/*` requests:
- *  - Primary: External Neon PostgreSQL over TLS (`DATABASE_URL`).
- *  - Automatic Server-Only Fallback: Persistent embedded PostgreSQL 16 (`PGlite` at `.data/bloodsearch-main-pg`)
- *    isolated strictly on the Express backend filesystem (unreachable from HTTP/browser/APK).
+ *  - Primary: External Neon PostgreSQL over TLS (`DATABASE_URL`), with automatic idempotent 24-table bootstrap.
+ *  - Automatic Server-Only Fallback (non-serverless Node hosts): Persistent embedded PostgreSQL 16 (`PGlite` at `.data/bloodsearch-main-pg`).
+ *  - Serverless Fallback (Vercel without `DATABASE_URL`): Cleanly returns `db: null` without WASM or read-only FS crashes.
  */
 export async function ensureMainPostgresReady(
   env: NodeJS.ProcessEnv = process.env
@@ -68,22 +116,83 @@ export async function ensureMainPostgresReady(
   pool: pg.Pool | null;
   info: ValidatedNeonConnectionInfo;
 }> {
-  const current = getNeonDatabase(env);
-  if (current.db) {
+  if (overrideDbForTesting) {
+    return getNeonDatabase(env);
+  }
+
+  let current: {
+    db: BloodSearchDatabase | null;
+    pool: pg.Pool | null;
+    info: ValidatedNeonConnectionInfo;
+  };
+
+  try {
+    current = getNeonDatabase(env);
+  } catch (err) {
+    if (env !== process.env) {
+      throw err;
+    }
+    const safeMsg = err instanceof Error ? redactDatabaseUrl(err.message) : 'Invalid DATABASE_URL';
+    console.error(`[MainPostgres] DATABASE_URL configuration warning: ${safeMsg}`);
+    current = {
+      db: null,
+      pool: null,
+      info: {
+        configured: false,
+        connectionString: '',
+        redactedUrl: '[INVALID_OR_REDACTED_DATABASE_URI]',
+        host: '',
+        database: '',
+        isNeonHost: false,
+        isPooledEndpoint: false,
+        sslMode: 'unconfigured',
+        environment: env.NODE_ENV === 'production' ? 'production' : 'development',
+        cutoverMode: 'FIRESTORE_PRIMARY',
+        warnings: [safeMsg],
+      },
+    };
+  }
+
+  if (current.db && current.pool) {
+    const ready = await ensureNeonPoolSchemaReady(current.pool, current.info);
+    if (ready) {
+      return current;
+    }
+    // If Neon is unreachable/paused or credentials failed, avoid poisoning subsequent requests with 500s
+    if (isServerlessEnvironment(env)) {
+      return {
+        db: null,
+        pool: null,
+        info: {
+          ...current.info,
+          configured: false,
+          warnings: [...current.info.warnings, 'Neon PostgreSQL endpoint was unreachable during cold start.'],
+        },
+      };
+    }
+  } else if (current.db) {
     return current;
   }
 
-  // Only auto-provision the server's persistent embedded PostgreSQL when using runtime process.env
-  // (keeps explicit unit test calls like getNeonDatabase({ DATABASE_URL: '' }) deterministic).
-  if (env !== process.env || env.BLOODSEARCH_DISABLE_EMBEDDED_PG === 'true') {
+  // Only auto-provision the server's persistent embedded PostgreSQL on non-serverless Node servers
+  if (
+    process.env.BLOODSEARCH_SERVERLESS_MODE === 'true' ||
+    env !== process.env ||
+    env.BLOODSEARCH_DISABLE_EMBEDDED_PG === 'true' ||
+    isServerlessEnvironment(env)
+  ) {
     return current;
   }
 
   if (!embeddedInitPromise) {
     embeddedInitPromise = (async () => {
       try {
+        const [{ PGlite: PGliteRuntime }, { drizzle: drizzlePgliteRuntime }] = await Promise.all([
+          import('@electric-sql/pglite'),
+          import('drizzle-orm/pglite'),
+        ]);
         fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true, mode: 0o700 });
-        const client = new PGlite(EMBEDDED_PG_DIR);
+        const client = new PGliteRuntime(EMBEDDED_PG_DIR);
         await client.waitReady;
 
         const checkRes = await client.query<{ cnt: number }>(
@@ -92,12 +201,12 @@ export async function ensureMainPostgresReady(
         if (!checkRes.rows[0]?.cnt) {
           const ddl = readCoreBootstrapSql();
           if (ddl) {
-            await client.exec(ddl.replace(/--> statement-breakpoint/g, '\n'));
+            await client.exec(ddl);
           }
         }
 
         singletonEmbeddedClient = client;
-        singletonDb = drizzlePglite(client, { schema });
+        singletonDb = drizzlePgliteRuntime(client, { schema });
         singletonInfo = {
           ...current.info,
           configured: true,
@@ -117,11 +226,11 @@ export async function ensureMainPostgresReady(
     })();
   }
 
-  await embeddedInitPromise;
+  const fallbackDb = await embeddedInitPromise;
   return {
-    db: singletonDb,
-    pool: singletonPool,
-    info: singletonInfo || current.info,
+    db: fallbackDb,
+    pool: null,
+    info: fallbackDb && singletonInfo ? singletonInfo : current.info,
   };
 }
 
@@ -191,6 +300,8 @@ export async function closeNeonDatabase(): Promise<void> {
   singletonDb = null;
   singletonInfo = null;
   embeddedInitPromise = null;
+  neonBootstrapPromise = null;
+  neonConnectionHealthy = false;
 }
 
 export { schema };

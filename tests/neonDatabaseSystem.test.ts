@@ -6,9 +6,9 @@ import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { eq, sql } from 'drizzle-orm';
+import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { createEmergencyApiApp } from '../server';
 import {
-  createPgliteDrizzle,
   setDatabaseOverrideForTesting,
   type BloodSearchDatabase,
 } from '../src/db/index';
@@ -30,6 +30,7 @@ import {
   donorProfiles,
   emergencyAlerts,
 } from '../src/db/schema';
+import * as fullSchema from '../src/db/schema';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -109,7 +110,7 @@ describe('BloodSearch Neon PostgreSQL Architecture, Security, Migration & Backup
     // Apply exact Drizzle-generated PostgreSQL DDL statements
     await pgClient.exec(ddlSql.replace(/--> statement-breakpoint/g, '\n'));
 
-    db = createPgliteDrizzle(pgClient);
+    db = drizzlePglite(pgClient, { schema: fullSchema });
     setDatabaseOverrideForTesting(db);
 
     const app = createEmergencyApiApp({
