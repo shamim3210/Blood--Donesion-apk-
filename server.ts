@@ -1141,21 +1141,47 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
       const httpServer = http.createServer(app);
 
       if (process.env.NODE_ENV !== 'production') {
+        let viteMiddleware: express.RequestHandler | null = null;
+        let viteInitError: unknown = null;
+
         const enableHmr = process.env.ENABLE_HMR === 'true' && process.env.DISABLE_HMR !== 'true';
         if (!enableHmr) {
           process.env.DISABLE_HMR = 'true';
         }
-        const viteSpecifier = ['vi', 'te'].join('');
-        const { createServer: createViteServer } = await import(viteSpecifier);
-        const vite = await createViteServer({
-          server: {
-            middlewareMode: true,
-            hmr: enableHmr ? { server: httpServer } : false,
-            watch: enableHmr ? {} : null,
-          },
-          appType: 'spa',
+
+        const viteReady = (async () => {
+          try {
+            const viteSpecifier = ['vi', 'te'].join('');
+            const { createServer: createViteServer } = await import(viteSpecifier);
+            const vite = await createViteServer({
+              server: {
+                middlewareMode: true,
+                hmr: enableHmr ? { server: httpServer } : false,
+                watch: enableHmr ? {} : null,
+              },
+              appType: 'spa',
+            });
+            viteMiddleware = vite.middlewares;
+          } catch (err) {
+            viteInitError = err;
+            console.error('Failed to initialize Vite middleware:', err);
+          }
+        })();
+
+        app.use(async (req, res, next) => {
+          if (!viteMiddleware && !viteInitError) {
+            await viteReady;
+          }
+          if (viteMiddleware) {
+            viteMiddleware(req, res, next);
+            return;
+          }
+          res.status(503).send('Dev server initializing...');
         });
-        app.use(vite.middlewares);
+
+        httpServer.listen(PORT, '0.0.0.0', () => {
+          console.log(`BloodSearch server listening on http://0.0.0.0:${PORT}`);
+        });
       } else {
         const distPath = path.join(__dirname, 'dist');
         app.use(
@@ -1171,11 +1197,11 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
           res.setHeader('Cache-Control', 'no-cache');
           res.sendFile(path.join(distPath, 'index.html'));
         });
-      }
 
-      httpServer.listen(PORT, '0.0.0.0', () => {
-        console.log(`BloodSearch server listening on http://0.0.0.0:${PORT}`);
-      });
+        httpServer.listen(PORT, '0.0.0.0', () => {
+          console.log(`BloodSearch server listening on http://0.0.0.0:${PORT}`);
+        });
+      }
     })().catch((err) => {
       console.error('Failed to start server:', err);
       process.exit(1);
