@@ -1365,10 +1365,7 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
         let viteMiddleware: express.RequestHandler | null = null;
         let viteInitError: unknown = null;
 
-        const enableHmr = process.env.ENABLE_HMR === 'true' && process.env.DISABLE_HMR !== 'true';
-        if (!enableHmr) {
-          process.env.DISABLE_HMR = 'true';
-        }
+        process.env.DISABLE_HMR = 'true';
 
         const viteReady = (async () => {
           try {
@@ -1377,8 +1374,8 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
             const vite = await createViteServer({
               server: {
                 middlewareMode: true,
-                hmr: enableHmr ? { server: httpServer } : false,
-                watch: enableHmr ? {} : null,
+                hmr: false,
+                watch: null,
               },
               appType: 'spa',
             });
