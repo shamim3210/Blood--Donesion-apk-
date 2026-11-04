@@ -143,19 +143,37 @@ export const CommercialHandoverModal: React.FC<CommercialHandoverModalProps> = (
     window.setTimeout(() => setStatusNotice(null), 3000);
   };
 
-  const generatedBuyerEnv = `# Commercial White-Label Configuration (${formBrandName})
+  const generatedBuyerEnv = `# Commercial White-Label & Neon PostgreSQL Configuration (${formBrandName})
+NODE_ENV="production"
+PORT="3000"
+APP_URL="https://${buyerProjectId.trim() || 'bloodsearch.example.org'}"
+CORS_ALLOWED_ORIGINS="https://${buyerProjectId.trim() || 'bloodsearch.example.org'},capacitor://localhost,https://localhost"
+
+# Neon PostgreSQL Primary Database (Server-Only Secrets — NEVER prefix with VITE_)
+DATABASE_URL="postgresql://bloodsearch_runtime:REPLACE_PASSWORD@ep-buyer-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=verify-full"
+DIRECT_DATABASE_URL="postgresql://bloodsearch_migrator:REPLACE_PASSWORD@ep-buyer.ap-southeast-1.aws.neon.tech/neondb?sslmode=verify-full"
+
+# Google Identity Services / OIDC Server Verification
+GOOGLE_CLIENT_ID="REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="REPLACE_WITH_GOOGLE_OAUTH_CLIENT_SECRET"
+VITE_GOOGLE_CLIENT_ID="REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+
+# Super Admin & Cryptographic Secrets
+SUPER_ADMIN_EMAIL="${buyerAdminEmail.trim() || 'admin@buyerdomain.com'}"
+VITE_SUPER_ADMIN_EMAIL="${buyerAdminEmail.trim() || 'admin@buyerdomain.com'}"
+SESSION_HMAC_SECRET="REPLACE_WITH_64_HEX_RANDOM_SECRET"
+OTP_HMAC_SECRET="REPLACE_WITH_64_HEX_RANDOM_SECRET"
+
+# White-Label Branding
 VITE_BRAND_NAME="${formBrandName.trim() || 'BloodSearch'}"
 VITE_BRAND_TAGLINE="${formTagline.trim() || 'FIND BLOOD. SAVE LIFE.'}"
 VITE_ORG_NAME="${formOrgName.trim() || 'Emergency Blood Network'}"
 VITE_SUPPORT_PHONE="${formPhone.trim() || '16263'}"
 VITE_SUPPORT_EMAIL="${formEmail.trim() || 'support@example.org'}"
-VITE_SUPER_ADMIN_EMAIL="${buyerAdminEmail.trim() || 'admin@buyerdomain.com'}"
 VITE_DEFAULT_REAL_ONLY_MODE="${cleanBlankDbMode ? 'true' : 'false'}"
+VITE_API_BASE_URL="https://${buyerProjectId.trim() || 'bloodsearch.example.org'}"
 
-# Optional Production Security & Notification Gateways
-VITE_RECAPTCHA_V3_SITE_KEY=""
-VITE_FIREBASE_VAPID_KEY=""
-FCM_SERVER_KEY=""
+# Optional SMS Gateway (TWILIO or WEBHOOK_BD)
 SMS_PROVIDER="NONE"
 TWILIO_ACCOUNT_SID=""
 TWILIO_AUTH_TOKEN=""
@@ -164,15 +182,14 @@ SMS_WEBHOOK_URL=""
 SMS_WEBHOOK_API_KEY=""
 `;
 
-  const generatedFirebaseTemplate = JSON.stringify(
+  const generatedNeonChecklistJson = JSON.stringify(
     {
-      projectId: buyerProjectId.trim() || 'buyer-blood-network',
-      appId: '1:000000000000:web:replace_with_buyer_app_id',
-      apiKey: 'REPLACE_WITH_BUYER_FIREBASE_WEB_API_KEY',
-      authDomain: `${buyerProjectId.trim() || 'buyer-blood-network'}.firebaseapp.com`,
-      firestoreDatabaseId: '(default)',
-      storageBucket: `${buyerProjectId.trim() || 'buyer-blood-network'}.firebasestorage.app`,
-      messagingSenderId: '000000000000',
+      deploymentDomain: `https://${buyerProjectId.trim() || 'bloodsearch.example.org'}`,
+      googleOAuthRedirectUri: `https://${buyerProjectId.trim() || 'bloodsearch.example.org'}/auth/callback`,
+      androidPackageId: 'bd.bloodsearch.app',
+      primaryDatabase: 'Neon Serverless PostgreSQL (sslmode=verify-full)',
+      tablesCount: 28,
+      superAdminEmail: buyerAdminEmail.trim() || 'admin@buyerdomain.com',
     },
     null,
     2
@@ -180,28 +197,28 @@ SMS_WEBHOOK_API_KEY=""
 
   const buyerPackageCommand = `npm run package:buyer -- --admin="${buyerAdminEmail.trim() || 'admin@buyerdomain.com'}" --brand="${formBrandName.trim() || 'BloodSearch'}"`;
 
-  const salesPitchTextBn = `প্রস্তাবনা: ${formBrandName} — জরুরি রক্তদাতা সন্ধান ও ব্লাড ব্যাংক ম্যানেজমেন্ট প্ল্যাটফর্ম (Web + PWA + Android APK রেডি)
+  const salesPitchTextBn = `প্রস্তাবনা: ${formBrandName} — জরুরি রক্তদাতা সন্ধান ও ব্লাড ব্যাংক ম্যানেজমেন্ট প্ল্যাটফর্ম (Web + PWA + Native Android APK রেডি)
 
 মূল সুবিধাসমূহ:
 ১. দ্রুততম ডোনার সার্চ ও স্মার্ট র‍্যাঙ্কিং: ৬৪ জেলা, রক্তের গ্রুপ, GPS দূরত্ব এবং ডোনারের বর্তমান প্রাপ্যতা অনুযায়ী তাৎক্ষণিক ম্যাচিং।
-২. সরাসরি যোগাযোগ ও প্রাইভেসি সুরক্ষা: সম্মতি দেওয়া ডোনারদের ১-ক্লিকে Call ও WhatsApp সুবিধা এবং প্রাইভেট ডোনারদের নম্বর মাস্কিং ও কনসেন্ট রিকোয়েস্ট।
-৩. অটোমেটিক জরুরি ব্রডকাস্ট ও এস্কেলেশন: একসাথে একাধিক উপযুক্ত ডোনারকে রিয়েল-টাইম নোটিফিকেশন, SMS গেটওয়ে সাপোর্ট এবং সাড়া না পেলে স্বয়ংক্রিয়ভাবে সার্চ পরিধি বৃদ্ধি।
+২. সরাসরি যোগাযোগ ও প্রাইভেসি সুরক্ষা: সম্মতি দেওয়া ডোনারদের ১-ক্লিকে Call, SMS, WhatsApp ও Facebook সুবিধা এবং প্রাইভেট ডোনারদের নম্বর মাস্কিং ও কনসেন্ট রিকোয়েস্ট।
+৩. অটোমেটিক জরুরি ব্রডকাস্ট ও এস্কেলেশন: একসাথে একাধিক উপযুক্ত ডোনারকে রিয়েল-টাইম WebSocket/SSE নোটিফিকেশন, SMS গেটওয়ে সাপোর্ট এবং সাড়া না পেলে স্বয়ংক্রিয়ভাবে সার্চ পরিধি বৃদ্ধি।
 ৪. সম্পূর্ণ অ্যাডমিন ও ব্লাড স্টক প্যানেল: ভেরিফাইড ডোনার ব্যাজ, ব্লাড ব্যাংকের লাইভ ইনভেন্টরি, অ্যান্টি-স্ক্যাম মডারেশন, গ্লোবাল মেগাফোন ঘোষণা এবং সিকিউরিটি অডিট লগ।
-৫. এন্টারপ্রাইজ নিরাপত্তা ও হোয়াইট-লেবেল মালিকানা: Zero-Trust Firestore Security Rules, রেট-লিমিটিং এবং আপনার প্রতিষ্ঠানের নিজস্ব নাম, লোগো ও ডোমেইনে ১০০% মালিকানাসহ সেটআপ।
+৫. এন্টারপ্রাইজ নিরাপত্তা ও হোয়াইট-লেবেল মালিকানা: Neon PostgreSQL 28-Table আইসোলেশন, Google OIDC ভেরিফিকেশন, HttpOnly SHA-256 সেশন, ডিস্ট্রিবিউটেড রেট-লিমিটিং এবং আপনার প্রতিষ্ঠানের নিজস্ব নাম, লোগো ও ডোমেইনে ১০০% মালিকানাসহ সেটআপ।
 
 প্যাকেজ মূল্য (আলোচনা সাপেক্ষে):
 • সিঙ্গেল অর্গানাইজেশন লাইসেন্স: ৳${quoteSinglePrice} BDT
 • হাসপাতাল ও ডায়াগনস্টিক এন্টারপ্রাইজ এডিশন: ৳${quoteEnterprisePrice} BDT
 • ফুল সোর্স কোড ও হোয়াইট-লেবেল মালিকানা: ৳${quoteWhitelabelPrice} BDT`;
 
-  const salesPitchTextEn = `Product Proposal: ${formBrandName} — Real-Time Emergency Blood Donor & Transfusion Dispatch Platform (Web + PWA + Android APK Ready)
+  const salesPitchTextEn = `Product Proposal: ${formBrandName} — Real-Time Emergency Blood Donor & Transfusion Dispatch Platform (Web + PWA + Native Android APK Ready)
 
 Core Capabilities:
 1. Fast Donor Matching & Ranking: Search across all 64 districts by blood group, urgency, GPS/manual distance, and verified donor availability.
-2. Zero-Friction Direct Contact & Privacy Controls: Instant Call & WhatsApp actions for opted-in donors, plus masked phone protection and consent requests for private donors.
-3. Multi-Donor SOS Broadcast & Auto-Escalation: Concurrent real-time alerts with optional SMS/FCM gateways and automatic radius expansion when no response is received.
+2. Zero-Friction Direct Contact & Privacy Controls: Instant Call, SMS, WhatsApp & Facebook actions for opted-in donors, plus masked phone protection and consent requests for private donors.
+3. Multi-Donor SOS Broadcast & Auto-Escalation: Concurrent real-time WebSocket/SSE alerts with optional SMS gateways and automatic radius expansion when no response is received.
 4. Institutional Admin & Blood Bank Suite: Live blood unit inventory, verified donor badges, scam report moderation, broadcast announcements, and tamper-evident audit logs.
-5. Enterprise Security & White-Label Ownership: Hardened Zero-Trust Firestore rules, backend rate-limiting, bilingual UI (Bangla + English), and full white-label deployment on your own domain and Firebase project.
+5. Enterprise Security & White-Label Ownership: Hardened 28-table Neon PostgreSQL database, Google OIDC RS256 verification, HttpOnly SHA-256 opaque sessions, distributed rate-limiting, bilingual UI (Bangla + English), and full white-label deployment on your own domain and Neon database.
 
 Commercial Licensing Options:
 • Single Organization License: BDT ${quoteSinglePrice}
@@ -313,10 +330,10 @@ Commercial Licensing Options:
               </div>
               <div>
                 <div className="text-lg sm:text-xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-                  14
+                  28
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  {lang === 'bn' ? 'সুরক্ষিত ডাটাবেস কালেকশন' : 'Hardened DB Collections'}
+                  {lang === 'bn' ? 'সুরক্ষিত Neon SQL টেবিল' : 'Hardened Neon SQL Tables'}
                 </div>
               </div>
               <div>
@@ -427,7 +444,7 @@ Commercial Licensing Options:
                   </div>
                   <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1 pt-2 border-t border-slate-100 dark:border-slate-800">
                     <div>{lang === 'bn' ? '১০০% ক্লিন TypeScript সোর্স কোড' : '100% Clean TypeScript Full-Stack Code'}</div>
-                    <div>{lang === 'bn' ? 'নিজস্ব Firebase প্রজেক্ট ও Firestore রুলস' : 'Dedicated Firebase & Zero-Trust Rules'}</div>
+                    <div>{lang === 'bn' ? 'নিজস্ব Neon PostgreSQL ও Zero-Trust RBAC' : 'Dedicated Neon PostgreSQL & Zero-Trust RBAC'}</div>
                     <div>{lang === 'bn' ? 'সম্পূর্ণ রি-ব্র্যান্ডিং ও কাস্টমাইজেশন অধিকার' : 'Full Rebranding & Modification Rights'}</div>
                   </div>
                 </div>
@@ -681,15 +698,15 @@ Commercial Licensing Options:
               <label className="space-y-1 block">
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   {lang === 'bn'
-                    ? 'বায়ারের নতুন Firebase Project ID'
-                    : 'Buyer Firebase Project ID'}
+                    ? 'বায়ারের প্রোডাকশন ডোমেইন হোস্টনেম'
+                    : 'Buyer Production Domain Hostname'}
                 </span>
                 <input
                   name="buyerProjectId"
                   type="text"
                   value={buyerProjectId}
                   onChange={(e) => setBuyerProjectId(e.target.value)}
-                  placeholder="buyer-blood-network"
+                  placeholder="bloodsearch.buyerhospital.org"
                   className="w-full min-h-[40px] px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#1e293b] border border-slate-300 dark:border-slate-700 text-sm font-mono text-slate-900 dark:text-white"
                 />
               </label>
@@ -720,8 +737,8 @@ Commercial Licensing Options:
               </pre>
               <p className="text-[11px] text-slate-400 leading-relaxed">
                 {lang === 'bn'
-                  ? 'এই কমান্ডটি আপনার ব্যক্তিগত Firebase কী, .env সিক্রেট, .git এবং node_modules বাদ দিয়ে `buyer-release/` ফোল্ডারে বায়ারের ইমেইল ও ব্র্যান্ডিংসহ ১০০% পরিচ্ছন্ন ডেলিভারি প্যাকেজ তৈরি করে।'
-                  : 'Automatically strips your personal Firebase keys, .env secrets, .git, and node_modules, and outputs a clean `buyer-release/` folder pre-configured with the buyer’s brand and Super Admin email.'}
+                  ? 'এই কমান্ডটি আপনার ব্যক্তিগত .env সিক্রেট, ডাটাবেস কী, .git এবং node_modules বাদ দিয়ে `buyer-release/` ফোল্ডারে বায়ারের ইমেইল ও ব্র্যান্ডিংসহ ১০০% পরিচ্ছন্ন ডেলিভারি প্যাকেজ তৈরি করে।'
+                  : 'Automatically strips personal .env secrets, .git, and node_modules, and outputs a clean `buyer-release/` folder pre-configured with the buyer’s brand and Super Admin email.'}
               </p>
             </div>
 
@@ -734,8 +751,8 @@ Commercial Licensing Options:
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {lang === 'bn'
-                    ? 'ব্র্যান্ডের নাম, হটলাইন ও সুপার অ্যাডমিন ইমেইল সংবলিত রেডি ফাইল।'
-                    : 'Pre-filled with custom brand name, support details, and buyer Super Admin email.'}
+                    ? 'Neon DATABASE_URL, Google OIDC কী ও সুপার অ্যাডমিন ইমেইল সংবলিত রেডি টেমপ্লেট।'
+                    : 'Pre-filled with Neon DATABASE_URL placeholders, Google OIDC, and buyer Super Admin email.'}
                 </p>
                 <div className="flex items-center gap-2 pt-1">
                   <button
@@ -760,20 +777,20 @@ Commercial Licensing Options:
               <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2">
                 <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>{lang === 'bn' ? 'ক্লিন Firebase কনফিগ টেমপ্লেট' : 'Clean Firebase Config Template'}</span>
+                  <span>{lang === 'bn' ? 'Neon ও OAuth হ্যান্ডওভার ম্যানিফেস্ট' : 'Neon & OAuth Handover Manifest'}</span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {lang === 'bn'
-                    ? 'আপনার ব্যক্তিগত প্রজেক্টের বদলে বায়ারের নিজস্ব Firebase প্রজেক্ট বসানোর টেমপ্লেট।'
-                    : 'Placeholder config so you never expose your own Firebase project when selling.'}
+                    ? 'বায়ারের প্রোডাকশন ডোমেইন, Google OAuth কলব্যাক URL ও APK প্যাকেজ আইডি সারাংশ।'
+                    : 'Summary JSON of buyer domain, Google OAuth callback URL, and Android APK package ID.'}
                 </p>
                 <div className="flex items-center gap-2 pt-1">
                   <button
                     type="button"
                     onClick={() =>
                       downloadTextFile(
-                        'firebase-applet-config.example.json',
-                        generatedFirebaseTemplate,
+                        'buyer-deployment-manifest.json',
+                        generatedNeonChecklistJson,
                         'application/json'
                       )
                     }
@@ -784,7 +801,7 @@ Commercial Licensing Options:
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerCopy(generatedFirebaseTemplate, 'fb-copy')}
+                    onClick={() => triggerCopy(generatedNeonChecklistJson, 'fb-copy')}
                     className="min-h-[36px] px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold flex items-center gap-1 cursor-pointer"
                   >
                     {copiedKey === 'fb-copy' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
@@ -800,8 +817,8 @@ Commercial Licensing Options:
                 <Globe className="w-4 h-4 text-rose-600" />
                 <span>
                   {lang === 'bn'
-                    ? 'বিক্রির পর বায়ারকে ডেলিভারি দেওয়ার ৪টি ধাপ (README.md-তে বিস্তারিত যুক্ত আছে):'
-                    : '4-Step Buyer Delivery Checklist (Included in README.md):'}
+                    ? 'বিক্রির পর বায়ারকে ডেলিভারি দেওয়ার ৪টি ধাপ (DEPLOYMENT_GUIDE.md-তে বিস্তারিত যুক্ত আছে):'
+                    : '4-Step Buyer Delivery Checklist (Included in DEPLOYMENT_GUIDE.md):'}
                 </span>
               </div>
               <div>
@@ -811,18 +828,18 @@ Commercial Licensing Options:
               </div>
               <div>
                 {lang === 'bn'
-                  ? '০২. বায়ার নিজের Firebase Console থেকে নতুন প্রজেক্ট খুলে `firebase-applet-config.json` বসাবে এবং Google Sign-In চালু করবে।'
-                  : '02. Buyer creates a Firebase project, pastes their Web SDK keys into `firebase-applet-config.json`, and enables Google Sign-In.'}
+                  ? '০২. বায়ার নিজের Neon Console থেকে PostgreSQL ডাটাবেস খুলে `DATABASE_URL` এবং Google Cloud থেকে `GOOGLE_CLIENT_ID` বসাবে।'
+                  : '02. Buyer creates a Neon PostgreSQL database (`DATABASE_URL`) and Google Cloud OAuth Client (`GOOGLE_CLIENT_ID`).'}
               </div>
               <div>
                 {lang === 'bn'
-                  ? '০৩. `npx firebase-tools deploy --only firestore:rules` চালিয়ে রেডিমেড ১৪-কালেকশন সিকিউরিটি রুলস ডিপ্লয় করবে।'
-                  : '03. Buyer runs `npx firebase-tools deploy --only firestore:rules` to activate the hardened security rules.'}
+                  ? '০৩. `npx drizzle-kit migrate` চালিয়ে ২৮টি সুরক্ষিত PostgreSQL টেবিল ও ইনডেক্স অ্যাক্টিভেট করবে।'
+                  : '03. Buyer runs `npx drizzle-kit migrate` to provision all 28 hardened Neon PostgreSQL tables and indexes.'}
               </div>
               <div>
                 {lang === 'bn'
-                  ? '০৪. Cloud Run / Render / Railway / VPS-এ হোস্ট করবে এবং PWABuilder দিয়ে ৫ মিনিটে Android APK জেনারেট করবে।'
-                  : '04. Deploy full-stack server (`npm run build && npm start`) and generate Android APK via PWABuilder / Bubblewrap.'}
+                  ? '০৪. Cloud Run / Render / Railway / VPS-এ হোস্ট করবে এবং Capacitor (`./gradlew assembleRelease`) দিয়ে সাইনড Android APK জেনারেট করবে।'
+                  : '04. Deploy full-stack server (`npm run build && npm start`) and sign the Capacitor Android APK (`ANDROID_BUILD_GUIDE.md`).'}
               </div>
             </div>
           </div>

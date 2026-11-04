@@ -71,7 +71,7 @@ export function subscribeDetectedBuildUpdate(
 
 /**
  * Checks `/version.json` and `/api/app-version` with cache-busting headers.
- * Works across Cloud Run, Firebase Hosting, Vercel, PWA home-screen apps, and Android TWA APKs.
+ * Works across Cloud Run, Vercel, PWA home-screen apps, and Capacitor Android APKs.
  */
 export async function checkForDeployedBuildUpdateNow(): Promise<{
   updateAvailable: boolean;

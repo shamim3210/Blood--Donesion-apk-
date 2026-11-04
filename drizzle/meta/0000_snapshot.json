@@ -1,5 +1,5 @@
 {
-  "id": "32756fc6-64e7-4670-8127-9a7cae2e490e",
+  "id": "11a66e5c-ca47-41d2-b012-18edc44bfc40",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -181,11 +181,12 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "legacy_announcement_doc_id": {
-          "name": "legacy_announcement_doc_id",
-          "type": "varchar(128)",
+        "announcement_type": {
+          "name": "announcement_type",
+          "type": "varchar(24)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'BROADCAST'"
         },
         "title": {
           "name": "title",
@@ -205,6 +206,25 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'INFO'"
+        },
+        "target_version": {
+          "name": "target_version",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "apk_download_url": {
+          "name": "apk_download_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "force_update": {
+          "name": "force_update",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "is_active": {
           "name": "is_active",
@@ -228,26 +248,17 @@
         }
       },
       "indexes": {
-        "uq_announcements_legacy_id": {
-          "name": "uq_announcements_legacy_id",
-          "columns": [
-            {
-              "expression": "legacy_announcement_doc_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_announcements_active_created": {
-          "name": "idx_announcements_active_created",
+        "idx_announcements_active_type_created": {
+          "name": "idx_announcements_active_type_created",
           "columns": [
             {
               "expression": "is_active",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "announcement_type",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -283,7 +294,16 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_announcements_priority": {
+          "name": "chk_announcements_priority",
+          "value": "\"announcements\".\"priority\" IN ('INFO', 'WARNING', 'CRITICAL')"
+        },
+        "chk_announcements_type": {
+          "name": "chk_announcements_type",
+          "value": "\"announcements\".\"announcement_type\" IN ('BROADCAST', 'OTA_APP_UPDATE')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.audit_logs": {
@@ -434,6 +454,183 @@
         "chk_audit_outcome": {
           "name": "chk_audit_outcome",
           "value": "\"audit_logs\".\"outcome\" IN ('SUCCESS', 'DENIED', 'ERROR')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.auth_identities": {
+      "name": "auth_identities",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_uid": {
+          "name": "user_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_subject": {
+          "name": "provider_subject",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failed_login_count": {
+          "name": "failed_login_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_reset_token_hash": {
+          "name": "password_reset_token_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_reset_expires_at": {
+          "name": "password_reset_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_login_at": {
+          "name": "last_login_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_auth_identities_provider_sub": {
+          "name": "uq_auth_identities_provider_sub",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_auth_identities_user_uid": {
+          "name": "idx_auth_identities_user_uid",
+          "columns": [
+            {
+              "expression": "user_uid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_auth_identities_reset_hash": {
+          "name": "idx_auth_identities_reset_hash",
+          "columns": [
+            {
+              "expression": "password_reset_token_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_identities_user_uid_users_uid_fk": {
+          "name": "auth_identities_user_uid_users_uid_fk",
+          "tableFrom": "auth_identities",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_auth_provider_type": {
+          "name": "chk_auth_provider_type",
+          "value": "\"auth_identities\".\"provider\" IN ('GOOGLE_OIDC', 'EMAIL_PASSWORD', 'PHONE_OTP')"
+        },
+        "chk_auth_failed_non_negative": {
+          "name": "chk_auth_failed_non_negative",
+          "value": "\"auth_identities\".\"failed_login_count\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -771,23 +968,41 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "legacy_request_doc_id": {
-          "name": "legacy_request_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "requester_uid": {
           "name": "requester_uid",
           "type": "varchar(128)",
           "primaryKey": false,
           "notNull": true
         },
+        "target_donor_uid": {
+          "name": "target_donor_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "patient_name": {
           "name": "patient_name",
           "type": "varchar(160)",
           "primaryKey": false,
           "notNull": true
+        },
+        "patient_age": {
+          "name": "patient_age",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "patient_gender": {
+          "name": "patient_gender",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hemoglobin": {
+          "name": "hemoglobin",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
         },
         "blood_group": {
           "name": "blood_group",
@@ -809,12 +1024,26 @@
           "notNull": true,
           "default": 0
         },
+        "is_platelet_request": {
+          "name": "is_platelet_request",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "urgency": {
           "name": "urgency",
           "type": "varchar(20)",
           "primaryKey": false,
           "notNull": true,
           "default": "'URGENT'"
+        },
+        "required_window": {
+          "name": "required_window",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'IMMEDIATE'"
         },
         "status": {
           "name": "status",
@@ -877,6 +1106,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "hospital_slip_data_url": {
+          "name": "hospital_slip_data_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "contact_name": {
           "name": "contact_name",
@@ -958,21 +1193,6 @@
         }
       },
       "indexes": {
-        "uq_blood_requests_legacy_id": {
-          "name": "uq_blood_requests_legacy_id",
-          "columns": [
-            {
-              "expression": "legacy_request_doc_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_requests_status_bg_district": {
           "name": "idx_requests_status_bg_district",
           "columns": [
@@ -1041,6 +1261,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_requests_expires": {
+          "name": "idx_requests_expires",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1055,6 +1296,19 @@
             "uid"
           ],
           "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "blood_requests_target_donor_uid_users_uid_fk": {
+          "name": "blood_requests_target_donor_uid_users_uid_fk",
+          "tableFrom": "blood_requests",
+          "tableTo": "users",
+          "columnsFrom": [
+            "target_donor_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "blood_requests_hospital_id_hospitals_id_fk": {
@@ -1122,12 +1376,6 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "legacy_message_doc_id": {
-          "name": "legacy_message_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "sender_uid": {
           "name": "sender_uid",
           "type": "varchar(128)",
@@ -1139,6 +1387,26 @@
           "type": "varchar(140)",
           "primaryKey": false,
           "notNull": true
+        },
+        "sender_avatar": {
+          "name": "sender_avatar",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sender_role": {
+          "name": "sender_role",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'DONOR'"
+        },
+        "is_verified_donor": {
+          "name": "is_verified_donor",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "sender_blood_group": {
           "name": "sender_blood_group",
@@ -1170,6 +1438,31 @@
           "primaryKey": false,
           "notNull": false
         },
+        "reply_to_id": {
+          "name": "reply_to_id",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reply_to_name": {
+          "name": "reply_to_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reply_to_text": {
+          "name": "reply_to_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reactions_json": {
+          "name": "reactions_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'{}'::jsonb"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1179,24 +1472,30 @@
         }
       },
       "indexes": {
-        "uq_community_msg_legacy_id": {
-          "name": "uq_community_msg_legacy_id",
+        "idx_community_msg_created": {
+          "name": "idx_community_msg_created",
           "columns": [
             {
-              "expression": "legacy_message_doc_id",
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "idx_community_msg_created": {
-          "name": "idx_community_msg_created",
+        "idx_community_msg_district": {
+          "name": "idx_community_msg_district",
           "columns": [
+            {
+              "expression": "district",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "created_at",
               "isExpression": false,
@@ -1231,6 +1530,212 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.contact_requests": {
+      "name": "contact_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "requester_uid": {
+          "name": "requester_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requester_name": {
+          "name": "requester_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "donor_uid": {
+          "name": "donor_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "donor_name": {
+          "name": "donor_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blood_group": {
+          "name": "blood_group",
+          "type": "varchar(5)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "related_request_id": {
+          "name": "related_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "channel_requested": {
+          "name": "channel_requested",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ALL'"
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'PENDING'"
+        },
+        "responded_at": {
+          "name": "responded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_contact_requests_donor_status": {
+          "name": "idx_contact_requests_donor_status",
+          "columns": [
+            {
+              "expression": "donor_uid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_contact_requests_requester_donor": {
+          "name": "idx_contact_requests_requester_donor",
+          "columns": [
+            {
+              "expression": "requester_uid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "donor_uid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "contact_requests_requester_uid_users_uid_fk": {
+          "name": "contact_requests_requester_uid_users_uid_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "users",
+          "columnsFrom": [
+            "requester_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "contact_requests_donor_uid_users_uid_fk": {
+          "name": "contact_requests_donor_uid_users_uid_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "users",
+          "columnsFrom": [
+            "donor_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "contact_requests_related_request_id_blood_requests_id_fk": {
+          "name": "contact_requests_related_request_id_blood_requests_id_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "blood_requests",
+          "columnsFrom": [
+            "related_request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_contact_requests_status": {
+          "name": "chk_contact_requests_status",
+          "value": "\"contact_requests\".\"status\" IN ('PENDING', 'APPROVED', 'DENIED', 'REVOKED', 'EXPIRED')"
+        },
+        "chk_contact_requests_channel": {
+          "name": "chk_contact_requests_channel",
+          "value": "\"contact_requests\".\"channel_requested\" IN ('CALL', 'SMS', 'WHATSAPP', 'FACEBOOK', 'ALL')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.device_tokens": {
       "name": "device_tokens",
       "schema": "",
@@ -1248,8 +1753,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "fcm_token": {
-          "name": "fcm_token",
+        "push_token": {
+          "name": "push_token",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1290,11 +1795,11 @@
         }
       },
       "indexes": {
-        "uq_device_tokens_fcm": {
-          "name": "uq_device_tokens_fcm",
+        "uq_device_tokens_push": {
+          "name": "uq_device_tokens_push",
           "columns": [
             {
-              "expression": "fcm_token",
+              "expression": "push_token",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1353,8 +1858,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.direct_chat_messages": {
-      "name": "direct_chat_messages",
+    "public.direct_messages": {
+      "name": "direct_messages",
       "schema": "",
       "columns": {
         "id": {
@@ -1363,12 +1868,6 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
-        },
-        "legacy_message_doc_id": {
-          "name": "legacy_message_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
         },
         "room_id": {
           "name": "room_id",
@@ -1382,17 +1881,42 @@
           "primaryKey": false,
           "notNull": true
         },
+        "sender_name": {
+          "name": "sender_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sender_blood_group": {
+          "name": "sender_blood_group",
+          "type": "varchar(5)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "message_text": {
           "name": "message_text",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
+        "attachment_type": {
+          "name": "attachment_type",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata_json": {
           "name": "metadata_json",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "is_read": {
+          "name": "is_read",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -1403,21 +1927,6 @@
         }
       },
       "indexes": {
-        "uq_direct_msg_legacy_id": {
-          "name": "uq_direct_msg_legacy_id",
-          "columns": [
-            {
-              "expression": "legacy_message_doc_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_direct_msg_room_created": {
           "name": "idx_direct_msg_room_created",
           "columns": [
@@ -1441,9 +1950,9 @@
         }
       },
       "foreignKeys": {
-        "direct_chat_messages_room_id_direct_chat_rooms_id_fk": {
-          "name": "direct_chat_messages_room_id_direct_chat_rooms_id_fk",
-          "tableFrom": "direct_chat_messages",
+        "direct_messages_room_id_direct_chat_rooms_id_fk": {
+          "name": "direct_messages_room_id_direct_chat_rooms_id_fk",
+          "tableFrom": "direct_messages",
           "tableTo": "direct_chat_rooms",
           "columnsFrom": [
             "room_id"
@@ -1454,9 +1963,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "direct_chat_messages_sender_uid_users_uid_fk": {
-          "name": "direct_chat_messages_sender_uid_users_uid_fk",
-          "tableFrom": "direct_chat_messages",
+        "direct_messages_sender_uid_users_uid_fk": {
+          "name": "direct_messages_sender_uid_users_uid_fk",
+          "tableFrom": "direct_messages",
           "tableTo": "users",
           "columnsFrom": [
             "sender_uid"
@@ -1496,9 +2005,48 @@
           "primaryKey": false,
           "notNull": true
         },
+        "participant_names_json": {
+          "name": "participant_names_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'{}'::jsonb"
+        },
+        "participant_avatars_json": {
+          "name": "participant_avatars_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'{}'::jsonb"
+        },
+        "participant_blood_groups_json": {
+          "name": "participant_blood_groups_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'{}'::jsonb"
+        },
+        "related_request_id": {
+          "name": "related_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hospital_name": {
+          "name": "hospital_name",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_message_preview": {
           "name": "last_message_preview",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_sender_uid": {
+          "name": "last_sender_uid",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
@@ -1586,6 +2134,19 @@
             "uid"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "direct_chat_rooms_related_request_id_blood_requests_id_fk": {
+          "name": "direct_chat_rooms_related_request_id_blood_requests_id_fk",
+          "tableFrom": "direct_chat_rooms",
+          "tableTo": "blood_requests",
+          "columnsFrom": [
+            "related_request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -1821,12 +2382,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "legacy_donor_doc_id": {
-          "name": "legacy_donor_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "donor_smart_id": {
           "name": "donor_smart_id",
           "type": "varchar(40)",
@@ -1838,6 +2393,12 @@
           "type": "varchar(140)",
           "primaryKey": false,
           "notNull": true
+        },
+        "avatar_url": {
+          "name": "avatar_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "blood_group": {
           "name": "blood_group",
@@ -1959,6 +2520,20 @@
           "type": "varchar(32)",
           "primaryKey": false,
           "notNull": false
+        },
+        "has_whatsapp": {
+          "name": "has_whatsapp",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "has_facebook": {
+          "name": "has_facebook",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "rating": {
           "name": "rating",
@@ -2170,12 +2745,6 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "legacy_alert_doc_id": {
-          "name": "legacy_alert_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "request_id": {
           "name": "request_id",
           "type": "uuid",
@@ -2215,6 +2784,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'DISPATCHED'"
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
         },
         "dispatched_at": {
           "name": "dispatched_at",
@@ -2314,11 +2896,15 @@
       "checkConstraints": {
         "chk_emergency_alert_channel": {
           "name": "chk_emergency_alert_channel",
-          "value": "\"emergency_alerts\".\"channel\" IN ('IN_APP', 'FCM_PUSH', 'SMS_FALLBACK')"
+          "value": "\"emergency_alerts\".\"channel\" IN ('IN_APP', 'WEB_PUSH', 'SMS_FALLBACK')"
         },
         "chk_emergency_alert_state": {
           "name": "chk_emergency_alert_state",
-          "value": "\"emergency_alerts\".\"alert_state\" IN ('DISPATCHED', 'DELIVERED', 'ACKNOWLEDGED', 'STOPPED_RESOLVED', 'EXPIRED')"
+          "value": "\"emergency_alerts\".\"alert_state\" IN ('DISPATCHED', 'DELIVERED', 'FAILED_RETRYABLE', 'ACKNOWLEDGED', 'STOPPED_RESOLVED', 'EXPIRED')"
+        },
+        "chk_emergency_alert_retries": {
+          "name": "chk_emergency_alert_retries",
+          "value": "\"emergency_alerts\".\"retry_count\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -2333,12 +2919,6 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
-        },
-        "legacy_note_doc_id": {
-          "name": "legacy_note_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
         },
         "author_uid": {
           "name": "author_uid",
@@ -2355,6 +2935,18 @@
         "honored_donor_uid": {
           "name": "honored_donor_uid",
           "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "honored_donor_name": {
+          "name": "honored_donor_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "blood_group": {
+          "name": "blood_group",
+          "type": "varchar(5)",
           "primaryKey": false,
           "notNull": false
         },
@@ -2379,21 +2971,6 @@
         }
       },
       "indexes": {
-        "uq_gratitude_notes_legacy_id": {
-          "name": "uq_gratitude_notes_legacy_id",
-          "columns": [
-            {
-              "expression": "legacy_note_doc_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_gratitude_notes_created": {
           "name": "idx_gratitude_notes_created",
           "columns": [
@@ -2633,12 +3210,6 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "legacy_trip_doc_id": {
-          "name": "legacy_trip_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "request_id": {
           "name": "request_id",
           "type": "uuid",
@@ -2728,26 +3299,32 @@
         }
       },
       "indexes": {
-        "uq_live_trips_legacy_id": {
-          "name": "uq_live_trips_legacy_id",
-          "columns": [
-            {
-              "expression": "legacy_trip_doc_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_live_trips_request_status": {
           "name": "idx_live_trips_request_status",
           "columns": [
             {
               "expression": "request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "trip_status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_live_trips_donor_status": {
+          "name": "idx_live_trips_donor_status",
+          "columns": [
+            {
+              "expression": "donor_uid",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2809,7 +3386,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_live_trips_status": {
+          "name": "chk_live_trips_status",
+          "value": "\"live_donor_trips\".\"trip_status\" IN ('EN_ROUTE', 'ARRIVED', 'COMPLETED', 'STOPPED')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.login_sessions": {
@@ -2831,6 +3413,12 @@
         },
         "session_token_hash": {
           "name": "session_token_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "csrf_token_hash": {
+          "name": "csrf_token_hash",
           "type": "varchar(128)",
           "primaryKey": false,
           "notNull": true
@@ -2866,6 +3454,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "revoked_reason": {
+          "name": "revoked_reason",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rotated_from_session_id": {
+          "name": "rotated_from_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "expires_at": {
           "name": "expires_at",
@@ -2994,6 +3594,26 @@
           "primaryKey": false,
           "notNull": false
         },
+        "delivery_status": {
+          "name": "delivery_status",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'DELIVERED'"
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata_json": {
           "name": "metadata_json",
           "type": "jsonb",
@@ -3049,6 +3669,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_notifications_delivery_retry": {
+          "name": "idx_notifications_delivery_retry",
+          "columns": [
+            {
+              "expression": "delivery_status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_count",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3079,6 +3720,133 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_notifications_delivery_status": {
+          "name": "chk_notifications_delivery_status",
+          "value": "\"notifications\".\"delivery_status\" IN ('DELIVERED', 'FAILED_RETRYABLE', 'RETRIED_DELIVERED')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.oidc_nonces": {
+      "name": "oidc_nonces",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "nonce_hash": {
+          "name": "nonce_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state_hash": {
+          "name": "state_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ip_hash": {
+          "name": "ip_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "redirect_origin": {
+          "name": "redirect_origin",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_consumed": {
+          "name": "is_consumed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_oidc_nonces_hash": {
+          "name": "uq_oidc_nonces_hash",
+          "columns": [
+            {
+              "expression": "nonce_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_oidc_nonces_state": {
+          "name": "idx_oidc_nonces_state",
+          "columns": [
+            {
+              "expression": "state_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "is_consumed",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_oidc_nonces_expires": {
+          "name": "idx_oidc_nonces_expires",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -3209,6 +3977,234 @@
       },
       "isRLSEnabled": false
     },
+    "public.rate_limit_buckets": {
+      "name": "rate_limit_buckets",
+      "schema": "",
+      "columns": {
+        "bucket_key": {
+          "name": "bucket_key",
+          "type": "varchar(180)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "hit_count": {
+          "name": "hit_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "window_start": {
+          "name": "window_start",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blocked_until": {
+          "name": "blocked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_rate_limit_expires": {
+          "name": "idx_rate_limit_expires",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_rate_limit_hits": {
+          "name": "chk_rate_limit_hits",
+          "value": "\"rate_limit_buckets\".\"hit_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.reports": {
+      "name": "reports",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "reporter_uid": {
+          "name": "reporter_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reporter_name": {
+          "name": "reporter_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accused_uid": {
+          "name": "accused_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accused_name": {
+          "name": "accused_name",
+          "type": "varchar(140)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accused_phone_hash": {
+          "name": "accused_phone_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "category": {
+          "name": "category",
+          "type": "varchar(48)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ILLEGAL_MONEY_DEMAND'"
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'OPEN'"
+        },
+        "resolution_note": {
+          "name": "resolution_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reviewed_by_uid": {
+          "name": "reviewed_by_uid",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_reports_status_created": {
+          "name": "idx_reports_status_created",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reports_reporter_uid_users_uid_fk": {
+          "name": "reports_reporter_uid_users_uid_fk",
+          "tableFrom": "reports",
+          "tableTo": "users",
+          "columnsFrom": [
+            "reporter_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reports_accused_uid_users_uid_fk": {
+          "name": "reports_accused_uid_users_uid_fk",
+          "tableFrom": "reports",
+          "tableTo": "users",
+          "columnsFrom": [
+            "accused_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "reports_reviewed_by_uid_users_uid_fk": {
+          "name": "reports_reviewed_by_uid_users_uid_fk",
+          "tableFrom": "reports",
+          "tableTo": "users",
+          "columnsFrom": [
+            "reviewed_by_uid"
+          ],
+          "columnsTo": [
+            "uid"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_reports_status": {
+          "name": "chk_reports_status",
+          "value": "\"reports\".\"status\" IN ('OPEN', 'UNDER_REVIEW', 'ACTION_TAKEN', 'DISMISSED')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.request_responses": {
       "name": "request_responses",
       "schema": "",
@@ -3219,12 +4215,6 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
-        },
-        "legacy_response_doc_id": {
-          "name": "legacy_response_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
         },
         "request_id": {
           "name": "request_id",
@@ -3379,160 +4369,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.scam_reports": {
-      "name": "scam_reports",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "legacy_report_doc_id": {
-          "name": "legacy_report_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reporter_uid": {
-          "name": "reporter_uid",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "accused_uid": {
-          "name": "accused_uid",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "accused_phone_hash": {
-          "name": "accused_phone_hash",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "category": {
-          "name": "category",
-          "type": "varchar(48)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'ILLEGAL_MONEY_DEMAND'"
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(24)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'OPEN'"
-        },
-        "reviewed_by_uid": {
-          "name": "reviewed_by_uid",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "uq_scam_reports_legacy_id": {
-          "name": "uq_scam_reports_legacy_id",
-          "columns": [
-            {
-              "expression": "legacy_report_doc_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_scam_reports_status": {
-          "name": "idx_scam_reports_status",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "scam_reports_reporter_uid_users_uid_fk": {
-          "name": "scam_reports_reporter_uid_users_uid_fk",
-          "tableFrom": "scam_reports",
-          "tableTo": "users",
-          "columnsFrom": [
-            "reporter_uid"
-          ],
-          "columnsTo": [
-            "uid"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "scam_reports_accused_uid_users_uid_fk": {
-          "name": "scam_reports_accused_uid_users_uid_fk",
-          "tableFrom": "scam_reports",
-          "tableTo": "users",
-          "columnsFrom": [
-            "accused_uid"
-          ],
-          "columnsTo": [
-            "uid"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "scam_reports_reviewed_by_uid_users_uid_fk": {
-          "name": "scam_reports_reviewed_by_uid_users_uid_fk",
-          "tableFrom": "scam_reports",
-          "tableTo": "users",
-          "columnsFrom": [
-            "reviewed_by_uid"
-          ],
-          "columnsTo": [
-            "uid"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.user_consents": {
       "name": "user_consents",
       "schema": "",
@@ -3543,12 +4379,6 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
-        },
-        "legacy_consent_doc_id": {
-          "name": "legacy_consent_doc_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
         },
         "user_uid": {
           "name": "user_uid",
@@ -3586,7 +4416,7 @@
           "type": "varchar(24)",
           "primaryKey": false,
           "notNull": true,
-          "default": "'2.5.0'"
+          "default": "'3.0.0'"
         },
         "reason": {
           "name": "reason",
@@ -3758,6 +4588,12 @@
           "notNull": true,
           "default": false
         },
+        "phone_hint": {
+          "name": "phone_hint",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "varchar(140)",
@@ -3800,7 +4636,7 @@
           "type": "varchar(40)",
           "primaryKey": false,
           "notNull": true,
-          "default": "'firebase'"
+          "default": "'GOOGLE_OIDC'"
         },
         "preferred_language": {
           "name": "preferred_language",
@@ -3815,12 +4651,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'[]'::jsonb"
-        },
-        "legacy_firestore_synced_at": {
-          "name": "legacy_firestore_synced_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",

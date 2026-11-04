@@ -86,6 +86,8 @@ export interface BloodRequest {
   prescriptionImage?: string;
   distanceKm?: number;
   exchangeAllowed?: boolean;
+  lat?: number;
+  lng?: number;
 }
 
 export interface HealthConditions {
@@ -135,6 +137,8 @@ export interface Donor {
   whatsappPhone?: string;
   isCloudRecord?: boolean;
   panelType?: 'USER' | 'ADMIN';
+  lat?: number;
+  lng?: number;
 }
 
 export interface RequestAlertItem {
@@ -317,7 +321,7 @@ export interface UserAccount {
   emergencyContactPhone?: string;
   facebookUrl?: string;
   whatsappPhone?: string;
-  authSource?: 'FIREBASE' | 'DEV_OTP_SANDBOX';
+  authSource?: 'NEON_OIDC' | 'NEON_PASSWORD' | 'NEON_PHONE_OTP' | 'DEV_OTP_SANDBOX';
   mobileOperator?: string;
   createdAt: string;
 }

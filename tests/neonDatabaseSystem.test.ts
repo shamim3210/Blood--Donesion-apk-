@@ -14,10 +14,7 @@ import {
 } from '../src/db/index';
 import {
   exportNeonLogicalBackup,
-  migrateFirestoreSnapshotToNeon,
   restoreAndVerifyNeonBackup,
-  verifyFirestoreToNeonMigration,
-  type FirestoreExportSnapshot,
 } from '../src/db/migrationAndBackupEngine';
 import { redactDatabaseUrl, validateAndNormalizeNeonUrl } from '../src/db/neonConfig';
 import { evaluateNeonHealthAndLimits, resetPostgisCacheForTesting } from '../src/db/neonMonitor';
@@ -110,7 +107,7 @@ describe('BloodSearch Neon PostgreSQL Architecture, Security, Migration & Backup
     // Apply exact Drizzle-generated PostgreSQL DDL statements
     await pgClient.exec(ddlSql.replace(/--> statement-breakpoint/g, '\n'));
 
-    db = drizzlePglite(pgClient, { schema: fullSchema });
+    db = drizzlePglite(pgClient, { schema: fullSchema }) as unknown as BloodSearchDatabase;
     setDatabaseOverrideForTesting(db);
 
     const app = createEmergencyApiApp({
@@ -149,9 +146,9 @@ describe('BloodSearch Neon PostgreSQL Architecture, Security, Migration & Backup
     return { status: resp.status, json };
   }
 
-  it('1. Verifies all 17 core tables + 7 parity tables (24 total) and PostgreSQL CHECK/FK constraints', async () => {
-    assert.equal(CORE_REQUIRED_TABLES.length, 17);
-    assert.equal(ALL_BLOODSEARCH_TABLES.length, 24);
+  it('1. Verifies all 21 core tables + 7 parity tables (28 total) and PostgreSQL CHECK/FK constraints', async () => {
+    assert.equal(CORE_REQUIRED_TABLES.length, 21);
+    assert.equal(ALL_BLOODSEARCH_TABLES.length, 28);
 
     const tblRes = await pgClient.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
@@ -535,52 +532,12 @@ describe('BloodSearch Neon PostgreSQL Architecture, Security, Migration & Backup
     assert.equal(postEscalate.status, 409);
   });
 
-  it('9. Executes lossless 18-collection Firestore-to-Neon migration, SQL rollback, & SHA-256 backup/restore roundtrip', async () => {
-    const sampleFirestoreSnapshot: FirestoreExportSnapshot = {
-      exportedAtIso: new Date().toISOString(),
-      firebaseProjectId: 'fifth-receiver-v5v9p',
-      firestoreDatabaseId: 'ai-studio-bloodsearchbangl-test',
-      collections: {
-        users: [
-          { _docId: 'fb_uid_legacy_1', name: 'Dr. Farhana', email: 'farhana@hospital.bd', bloodGroup: 'B+', district: 'Sylhet' },
-          { _docId: 'fb_uid_legacy_2', name: 'Mehedi Hasan', email: 'mehedi@donor.bd', bloodGroup: 'O+', district: 'Sylhet' },
-        ],
-        admins: [{ _docId: 'fb_uid_legacy_1', email: 'farhana@hospital.bd', role: 'CO_ADMIN', active: true }],
-        adminInviteLocks: [{ _docId: 'proof_hash_abc123', claimedByUid: 'fb_uid_legacy_1' }],
-        donors: [
-          { _docId: 'fb_uid_legacy_2', uid: 'fb_uid_legacy_2', name: 'Mehedi Hasan', bloodGroup: 'O+', age: 29, district: 'Sylhet', location: 'Zindabazar', isAvailable: true, donationsCount: 4 },
-        ],
-        donorDirectContacts: [{ _docId: 'fb_uid_legacy_2', phone: '+8801715001122', shareDirectContact: false }],
-        contactRequests: [{ _docId: 'creq_01', donorUid: 'fb_uid_legacy_2', requesterUid: 'fb_uid_legacy_1', status: 'APPROVED', reason: 'Surgery' }],
-        requests: [
-          { _docId: 'legacy_req_101', requesterUid: 'fb_uid_legacy_1', patientName: 'Kamal Ahmed', bloodGroup: 'O+', bags: 2, urgency: 'CRITICAL', status: 'ACTIVE', hospital: 'MAG Osmani Medical', district: 'Sylhet', location: 'Medical Rd' },
-        ],
-        requestDirectContacts: [{ _docId: 'legacy_req_101', contactName: 'Dr. Farhana', phone: '+8801811998877', shareDirectContact: true }],
-        requestResponses: [{ _docId: 'lresp_1', requestId: 'legacy_req_101', donorUid: 'fb_uid_legacy_2', donorName: 'Mehedi Hasan', bloodGroup: 'O+', status: 'EN_ROUTE' }],
-        requestAlerts: [{ _docId: 'lalert_1', requestId: 'legacy_req_101', targetDonorUid: 'fb_uid_legacy_2', escalationLevel: 1, status: 'DISPATCHED' }],
-        liveDonorTrips: [{ _docId: 'ltrip_1', requestId: 'legacy_req_101', donorUid: 'fb_uid_legacy_2', requesterUid: 'fb_uid_legacy_1', donorName: 'Mehedi Hasan', bloodGroup: 'O+', currentLat: 24.8949, currentLng: 91.8687, status: 'EN_ROUTE' }],
-        bloodStock: [{ _docId: 'O+', bloodGroup: 'O+', units: 18 }],
-        communityMessages: [{ _docId: 'cmsg_1', senderUid: 'fb_uid_legacy_2', senderName: 'Mehedi Hasan', bloodGroup: 'O+', district: 'Sylhet', text: 'Ready to donate O+ in Sylhet!' }],
-        directChats: [{ _docId: 'fb_uid_legacy_1_fb_uid_legacy_2', participants: ['fb_uid_legacy_1', 'fb_uid_legacy_2'], lastMessage: 'On my way' }],
-        directChatMessages: [{ _docId: 'dmsg_1', roomId: 'fb_uid_legacy_1_fb_uid_legacy_2', senderUid: 'fb_uid_legacy_2', text: 'On my way to Osmani Medical' }],
-        announcements: [{ _docId: 'ann_1', title: 'National Blood Day Drive', body: 'Join voluntary blood camp', authorUid: 'fb_uid_legacy_1' }],
-        scamReports: [{ _docId: 'scam_1', reporterUid: 'fb_uid_legacy_1', description: 'Fake fare request blocked' }],
-        gratitudeNotes: [{ _docId: 'grat_1', authorUid: 'fb_uid_legacy_1', authorName: 'Dr. Farhana', message: 'Thank you Mehedi for saving a life!' }],
-      },
-    };
-
-    await migrateFirestoreSnapshotToNeon(db, sampleFirestoreSnapshot);
-    const verifyReport = await verifyFirestoreToNeonMigration(db, sampleFirestoreSnapshot);
-    assert.equal(verifyReport.passed, true);
-    assert.equal(verifyReport.missingFirebaseUids.length, 0);
-
-    // Export full 24-table logical backup
+  it('9. Executes 28-table Neon logical backup, SHA-256 tamper block, SQL rollback, & lossless restore roundtrip', async () => {
     const backupBundle = await exportNeonLogicalBackup(db);
-    assert.equal(backupBundle.tableOrder.length, 24);
-    assert.ok(backupBundle.tableCounts.users >= 6);
-    assert.ok(backupBundle.tableCounts.audit_logs >= 8);
+    assert.equal(backupBundle.tableOrder.length, 28);
+    assert.ok(backupBundle.tableCounts.users >= 4);
+    assert.ok(backupBundle.tableCounts.audit_logs >= 6);
 
-    // Verify SHA-256 tamper detection blocks modified backups
     const tamperedBundle = structuredClone(backupBundle);
     tamperedBundle.tableCounts.users += 999;
     await assert.rejects(
@@ -588,22 +545,19 @@ describe('BloodSearch Neon PostgreSQL Architecture, Security, Migration & Backup
       /BACKUP_INTEGRITY_FAILED/
     );
 
-    // Test real SQL Rollback (`drizzle/rollback_0000_drop_all.sql`) + Schema Re-apply + Full Restore!
     const rollbackSql = fs.readFileSync(path.join(ROOT_DIR, 'drizzle', 'rollback_0000_drop_all.sql'), 'utf8');
     await pgClient.exec(rollbackSql);
 
     const afterRollback = await pgClient.query<{ cnt: number }>(
       `SELECT COUNT(*)::int AS cnt FROM information_schema.tables WHERE table_schema = 'public'`
     );
-    assert.equal(afterRollback.rows[0]?.cnt, 0, 'Rollback SQL must cleanly drop all 24 schema tables');
+    assert.equal(afterRollback.rows[0]?.cnt, 0, 'Rollback SQL must cleanly drop all 28 schema tables');
 
-    // Re-apply forward migration and restore from logical backup
     await pgClient.exec(findCoreMigrationSql().replace(/--> statement-breakpoint/g, '\n'));
     const restoreOutcome = await restoreAndVerifyNeonBackup(db, backupBundle);
-    assert.equal(restoreOutcome.restoredTables, 24);
+    assert.equal(restoreOutcome.restoredTables, 28);
     assert.equal(restoreOutcome.verifiedCountsMatch, true);
 
-    // Confirm audit logs survived restore intact
     const [{ cnt }] = await db.select({ cnt: sql<number>`count(*)::int` }).from(auditLogs);
     assert.equal(cnt, backupBundle.tableCounts.audit_logs);
   });

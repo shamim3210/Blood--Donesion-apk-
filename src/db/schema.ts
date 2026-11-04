@@ -16,57 +16,61 @@ import {
 } from 'drizzle-orm/pg-core';
 
 /**
- * BLOODSEARCH — NEON POSTGRESQL PRIMARY APPLICATION SCHEMA (Drizzle ORM)
+ * BLOODSEARCH — HARDENED NEON POSTGRESQL PRIMARY APPLICATION SCHEMA (Drizzle ORM)
  *
- * Implements all 17 mandatory core operational tables:
+ * Neon PostgreSQL is the ONLY primary application database.
+ * Zero Firebase Auth / Firestore dependencies.
+ *
+ * Includes all 28 hardened relational tables:
  *   1. users
- *   2. donor_profiles
- *   3. private_contacts
- *   4. blood_requests
- *   5. request_responses
- *   6. donations
- *   7. hospitals
- *   8. blood_banks
- *   9. blood_inventory
- *  10. notifications
- *  11. device_tokens
- *  12. admin_roles
- *  13. verification_records
- *  14. audit_logs
- *  15. emergency_alerts
- *  16. user_consents
- *  17. login_sessions
- *
- * Plus 7 lossless Firestore parity tables so all 18 legacy Firestore collections
- * migrate cleanly with zero data loss and preserved Firebase Authentication UIDs:
- *  18. live_donor_trips
- *  19. community_messages
- *  20. direct_chat_rooms
- *  21. direct_chat_messages
- *  22. announcements
- *  23. scam_reports
- *  24. gratitude_notes
+ *   2. auth_identities
+ *   3. oidc_nonces
+ *   4. login_sessions
+ *   5. rate_limit_buckets
+ *   6. donor_profiles
+ *   7. private_contacts
+ *   8. hospitals
+ *   9. blood_banks
+ *  10. blood_inventory
+ *  11. blood_requests
+ *  12. request_responses
+ *  13. donations
+ *  14. emergency_alerts
+ *  15. notifications
+ *  16. device_tokens
+ *  17. admin_roles
+ *  18. verification_records
+ *  19. user_consents
+ *  20. contact_requests
+ *  21. audit_logs
+ *  22. live_donor_trips
+ *  23. community_messages
+ *  24. direct_chat_rooms
+ *  25. direct_messages
+ *  26. reports
+ *  27. announcements
+ *  28. gratitude_notes
  */
 
 // ============================================================================
-// 1. USERS (Preserves Firebase Authentication UID as Primary Key)
+// 1. USERS (Core user identity & account status)
 // ============================================================================
 export const users = pgTable(
   'users',
   {
-    uid: varchar('uid', { length: 128 }).primaryKey(), // Exact Firebase Auth UID
+    uid: varchar('uid', { length: 128 }).primaryKey(),
     email: varchar('email', { length: 255 }),
     emailVerified: boolean('email_verified').notNull().default(false),
+    phoneHint: varchar('phone_hint', { length: 32 }),
     displayName: varchar('display_name', { length: 140 }).notNull(),
     photoUrl: text('photo_url'),
     bloodGroup: varchar('blood_group', { length: 5 }),
     district: varchar('district', { length: 80 }),
     area: varchar('area', { length: 160 }),
     accountStatus: varchar('account_status', { length: 24 }).notNull().default('ACTIVE'), // ACTIVE | SUSPENDED | DELETED
-    authProvider: varchar('auth_provider', { length: 40 }).notNull().default('firebase'),
+    authProvider: varchar('auth_provider', { length: 40 }).notNull().default('GOOGLE_OIDC'),
     preferredLanguage: varchar('preferred_language', { length: 8 }).notNull().default('bn'),
     familyCircleJson: jsonb('family_circle_json').$type<unknown[]>().default(sql`'[]'::jsonb`),
-    legacyFirestoreSyncedAt: timestamp('legacy_firestore_synced_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -82,7 +86,109 @@ export const users = pgTable(
 );
 
 // ============================================================================
-// 2. DONOR_PROFILES (Public-safe searchable donor directory — ZERO phone numbers)
+// 2. AUTH_IDENTITIES (Google OIDC, Salted Scrypt Email/Password, & Phone OTP)
+// ============================================================================
+export const authIdentities = pgTable(
+  'auth_identities',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userUid: varchar('user_uid', { length: 128 })
+      .notNull()
+      .references(() => users.uid, { onDelete: 'cascade' }),
+    provider: varchar('provider', { length: 32 }).notNull(), // GOOGLE_OIDC | EMAIL_PASSWORD | PHONE_OTP
+    providerSubject: varchar('provider_subject', { length: 255 }).notNull(), // Google `sub`, normalized email, or E.164 phone hash/number
+    email: varchar('email', { length: 255 }),
+    emailVerified: boolean('email_verified').notNull().default(false),
+    passwordHash: text('password_hash'), // Only set for EMAIL_PASSWORD (scrypt$N$r$p$salt$derivedKey)
+    failedLoginCount: integer('failed_login_count').notNull().default(0),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    passwordResetTokenHash: varchar('password_reset_token_hash', { length: 128 }),
+    passwordResetExpiresAt: timestamp('password_reset_expires_at', { withTimezone: true }),
+    lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('uq_auth_identities_provider_sub').on(table.provider, table.providerSubject),
+    index('idx_auth_identities_user_uid').on(table.userUid),
+    index('idx_auth_identities_reset_hash').on(table.passwordResetTokenHash),
+    check('chk_auth_provider_type', sql`${table.provider} IN ('GOOGLE_OIDC', 'EMAIL_PASSWORD', 'PHONE_OTP')`),
+    check('chk_auth_failed_non_negative', sql`${table.failedLoginCount} >= 0`),
+  ]
+);
+
+// ============================================================================
+// 3. OIDC_NONCES (Single-use Google OIDC Nonce & OAuth State Replay Protection)
+// ============================================================================
+export const oidcNonces = pgTable(
+  'oidc_nonces',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    nonceHash: varchar('nonce_hash', { length: 128 }).notNull(),
+    stateHash: varchar('state_hash', { length: 128 }),
+    ipHash: varchar('ip_hash', { length: 64 }).notNull(),
+    redirectOrigin: varchar('redirect_origin', { length: 255 }),
+    isConsumed: boolean('is_consumed').notNull().default(false),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('uq_oidc_nonces_hash').on(table.nonceHash),
+    index('idx_oidc_nonces_state').on(table.stateHash, table.isConsumed),
+    index('idx_oidc_nonces_expires').on(table.expiresAt),
+  ]
+);
+
+// ============================================================================
+// 4. LOGIN_SESSIONS (Opaque Session Tokens Hashed via SHA-256 + CSRF Binding)
+// ============================================================================
+export const loginSessions = pgTable(
+  'login_sessions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userUid: varchar('user_uid', { length: 128 })
+      .notNull()
+      .references(() => users.uid, { onDelete: 'cascade' }),
+    sessionTokenHash: varchar('session_token_hash', { length: 128 }).notNull(), // SHA-256 of random 256-bit opaque token
+    csrfTokenHash: varchar('csrf_token_hash', { length: 128 }).notNull(), // SHA-256 of session-bound CSRF token
+    authMethod: varchar('auth_method', { length: 32 }).notNull(), // GOOGLE_OIDC | EMAIL_PASSWORD | PHONE_OTP
+    ipHash: varchar('ip_hash', { length: 64 }).notNull(),
+    userAgentSummary: varchar('user_agent_summary', { length: 255 }),
+    isAdminConsole: boolean('is_admin_console').notNull().default(false),
+    isRevoked: boolean('is_revoked').notNull().default(false),
+    revokedReason: varchar('revoked_reason', { length: 120 }),
+    rotatedFromSessionId: uuid('rotated_from_session_id'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('uq_login_sessions_token_hash').on(table.sessionTokenHash),
+    index('idx_login_sessions_user_active').on(table.userUid, table.isRevoked, table.expiresAt),
+  ]
+);
+
+// ============================================================================
+// 5. RATE_LIMIT_BUCKETS (Distributed Multi-Instance PostgreSQL Rate Limiter)
+// ============================================================================
+export const rateLimitBuckets = pgTable(
+  'rate_limit_buckets',
+  {
+    bucketKey: varchar('bucket_key', { length: 180 }).primaryKey(),
+    hitCount: integer('hit_count').notNull().default(1),
+    windowStart: timestamp('window_start', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    blockedUntil: timestamp('blocked_until', { withTimezone: true }),
+  },
+  (table) => [
+    index('idx_rate_limit_expires').on(table.expiresAt),
+    check('chk_rate_limit_hits', sql`${table.hitCount} >= 0`),
+  ]
+);
+
+// ============================================================================
+// 6. DONOR_PROFILES (Public-safe searchable donor directory — ZERO phone numbers)
 // ============================================================================
 export const donorProfiles = pgTable(
   'donor_profiles',
@@ -91,11 +197,11 @@ export const donorProfiles = pgTable(
     userUid: varchar('user_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
-    legacyDonorDocId: varchar('legacy_donor_doc_id', { length: 128 }),
     donorSmartId: varchar('donor_smart_id', { length: 40 }).notNull(),
     publicName: varchar('public_name', { length: 140 }).notNull(),
+    avatarUrl: text('avatar_url'),
     bloodGroup: varchar('blood_group', { length: 5 }).notNull(),
-    age: integer('age'), // Strictly manual user-entered (18..65), never auto-filled
+    age: integer('age'), // Strictly manual user-entered (18..65)
     gender: varchar('gender', { length: 20 }), // MALE | FEMALE | OTHER
     weightKg: integer('weight_kg'),
     district: varchar('district', { length: 80 }).notNull(),
@@ -113,6 +219,8 @@ export const donorProfiles = pgTable(
     shareDirectContact: boolean('share_direct_contact').notNull().default(false),
     contactPreference: varchar('contact_preference', { length: 24 }).notNull().default('IN_APP_ONLY'), // CALL_ALLOWED | WHATSAPP_ONLY | IN_APP_ONLY | DND
     maskedPhoneHint: varchar('masked_phone_hint', { length: 32 }), // e.g., "+88017****89" (never raw phone)
+    hasWhatsapp: boolean('has_whatsapp').notNull().default(false),
+    hasFacebook: boolean('has_facebook').notNull().default(false),
     rating: doublePrecision('rating').notNull().default(5.0),
     responseRatePercent: integer('response_rate_percent').notNull().default(100),
     avgResponseMinutes: integer('avg_response_minutes').notNull().default(10),
@@ -153,7 +261,7 @@ export const donorProfiles = pgTable(
 );
 
 // ============================================================================
-// 3. PRIVATE_CONTACTS (Isolated donor PII vault — NEVER joined in public searches)
+// 7. PRIVATE_CONTACTS (Isolated donor PII vault — NEVER joined in public searches)
 // ============================================================================
 export const privateContacts = pgTable(
   'private_contacts',
@@ -183,7 +291,7 @@ export const privateContacts = pgTable(
 );
 
 // ============================================================================
-// 4. HOSPITALS (Verified 64-district Bangladesh hospitals & trauma centers)
+// 8. HOSPITALS (Verified 64-district Bangladesh hospitals & trauma centers)
 // ============================================================================
 export const hospitals = pgTable(
   'hospitals',
@@ -199,7 +307,7 @@ export const hospitals = pgTable(
     longitude: doublePrecision('longitude'),
     emergencyPhone: varchar('emergency_phone', { length: 32 }),
     bloodBankPhone: varchar('blood_bank_phone', { length: 32 }),
-    hospitalType: varchar('hospital_type', { length: 32 }).notNull().default('GOVERNMENT'), // GOVERNMENT | PRIVATE | MEDICAL_COLLEGE | SPECIALIZED
+    hospitalType: varchar('hospital_type', { length: 32 }).notNull().default('GOVERNMENT'), // GOVERNMENT | PRIVATE | MEDICAL_COLLEGE | SPECIALIZED | NON_PROFIT
     hasBloodBank: boolean('has_blood_bank').notNull().default(true),
     isVerified: boolean('is_verified').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -217,7 +325,7 @@ export const hospitals = pgTable(
 );
 
 // ============================================================================
-// 5. BLOOD_BANKS (Licensed blood banks & transfusion centers)
+// 9. BLOOD_BANKS (Licensed blood banks & transfusion centers)
 // ============================================================================
 export const bloodBanks = pgTable(
   'blood_banks',
@@ -244,7 +352,7 @@ export const bloodBanks = pgTable(
 );
 
 // ============================================================================
-// 6. BLOOD_INVENTORY (Per-bank, per-blood-group stock tracking)
+// 10. BLOOD_INVENTORY (Per-bank, per-blood-group stock tracking)
 // ============================================================================
 export const bloodInventory = pgTable(
   'blood_inventory',
@@ -283,21 +391,28 @@ export const bloodInventory = pgTable(
 );
 
 // ============================================================================
-// 7. BLOOD_REQUESTS (Emergency SOS & scheduled transfusion requests)
+// 11. BLOOD_REQUESTS (Emergency SOS & scheduled transfusion requests)
 // ============================================================================
 export const bloodRequests = pgTable(
   'blood_requests',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyRequestDocId: varchar('legacy_request_doc_id', { length: 128 }),
     requesterUid: varchar('requester_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'restrict' }),
+    targetDonorUid: varchar('target_donor_uid', { length: 128 }).references(() => users.uid, {
+      onDelete: 'set null',
+    }),
     patientName: varchar('patient_name', { length: 160 }).notNull(),
+    patientAge: integer('patient_age'),
+    patientGender: varchar('patient_gender', { length: 20 }),
+    hemoglobin: doublePrecision('hemoglobin'),
     bloodGroup: varchar('blood_group', { length: 5 }).notNull(),
     bagsNeeded: integer('bags_needed').notNull().default(1),
     bagsFulfilled: integer('bags_fulfilled').notNull().default(0),
+    isPlateletRequest: boolean('is_platelet_request').notNull().default(false),
     urgency: varchar('urgency', { length: 20 }).notNull().default('URGENT'), // CRITICAL | URGENT | STANDARD
+    requiredWindow: varchar('required_window', { length: 32 }).default('IMMEDIATE'),
     status: varchar('status', { length: 20 }).notNull().default('ACTIVE'), // ACTIVE | FULFILLED | CANCELLED | EXPIRED
     hospitalId: uuid('hospital_id').references(() => hospitals.id, { onDelete: 'set null' }),
     hospitalName: varchar('hospital_name', { length: 220 }).notNull(),
@@ -308,8 +423,9 @@ export const bloodRequests = pgTable(
     neededAt: timestamp('needed_at', { withTimezone: true }),
     clinicalReason: text('clinical_reason'),
     requisitionSlipVerified: boolean('requisition_slip_verified').notNull().default(false),
+    hospitalSlipDataUrl: text('hospital_slip_data_url'),
     contactName: varchar('contact_name', { length: 140 }),
-    contactPhonePrivate: varchar('contact_phone_private', { length: 28 }), // Masked in API unless shareDirectContact=true & status='ACTIVE' or owner/admin
+    contactPhonePrivate: varchar('contact_phone_private', { length: 28 }), // Masked in API unless authorized
     shareDirectContact: boolean('share_direct_contact').notNull().default(false),
     escalationLevel: integer('escalation_level').notNull().default(0),
     SearchRadiusKm: integer('search_radius_km').notNull().default(5),
@@ -324,10 +440,10 @@ export const bloodRequests = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_blood_requests_legacy_id').on(table.legacyRequestDocId),
     index('idx_requests_status_bg_district').on(table.status, table.bloodGroup, table.district),
     index('idx_requests_requester_created').on(table.requesterUid, table.createdAt),
     index('idx_requests_geo').on(table.latitude, table.longitude),
+    index('idx_requests_expires').on(table.status, table.expiresAt),
     check(
       'chk_request_blood_group',
       sql`${table.bloodGroup} IN ('A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-')`
@@ -343,13 +459,12 @@ export const bloodRequests = pgTable(
 );
 
 // ============================================================================
-// 8. REQUEST_RESPONSES (Donor commitments & en-route status per blood request)
+// 12. REQUEST_RESPONSES (Donor commitments & en-route status per blood request)
 // ============================================================================
 export const requestResponses = pgTable(
   'request_responses',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyResponseDocId: varchar('legacy_response_doc_id', { length: 128 }),
     requestId: uuid('request_id')
       .notNull()
       .references(() => bloodRequests.id, { onDelete: 'cascade' }),
@@ -377,7 +492,7 @@ export const requestResponses = pgTable(
 );
 
 // ============================================================================
-// 9. DONATIONS (Verified completed blood donation records & cooldown enforcement)
+// 13. DONATIONS (Verified completed blood donation records & cooldown enforcement)
 // ============================================================================
 export const donations = pgTable(
   'donations',
@@ -413,13 +528,12 @@ export const donations = pgTable(
 );
 
 // ============================================================================
-// 10. EMERGENCY_ALERTS (Targeted SOS dispatch lifecycle & instant stop-alert lock)
+// 14. EMERGENCY_ALERTS (Targeted SOS dispatch lifecycle, retry & instant stop-alert)
 // ============================================================================
 export const emergencyAlerts = pgTable(
   'emergency_alerts',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyAlertDocId: varchar('legacy_alert_doc_id', { length: 128 }),
     requestId: uuid('request_id')
       .notNull()
       .references(() => bloodRequests.id, { onDelete: 'cascade' }),
@@ -428,8 +542,10 @@ export const emergencyAlerts = pgTable(
     }),
     escalationLevel: integer('escalation_level').notNull().default(0),
     radiusKm: integer('radius_km').notNull().default(5),
-    channel: varchar('channel', { length: 24 }).notNull().default('IN_APP'), // IN_APP | FCM_PUSH | SMS_FALLBACK
-    alertState: varchar('alert_state', { length: 28 }).notNull().default('DISPATCHED'), // DISPATCHED | DELIVERED | ACKNOWLEDGED | STOPPED_RESOLVED | EXPIRED
+    channel: varchar('channel', { length: 24 }).notNull().default('IN_APP'), // IN_APP | WEB_PUSH | SMS_FALLBACK
+    alertState: varchar('alert_state', { length: 28 }).notNull().default('DISPATCHED'), // DISPATCHED | DELIVERED | FAILED_RETRYABLE | ACKNOWLEDGED | STOPPED_RESOLVED | EXPIRED
+    retryCount: integer('retry_count').notNull().default(0),
+    lastError: varchar('last_error', { length: 255 }),
     dispatchedAt: timestamp('dispatched_at', { withTimezone: true }).notNull().defaultNow(),
     acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
     stoppedAt: timestamp('stopped_at', { withTimezone: true }),
@@ -439,17 +555,18 @@ export const emergencyAlerts = pgTable(
     index('idx_emergency_alerts_donor_state').on(table.targetDonorUid, table.alertState),
     check(
       'chk_emergency_alert_channel',
-      sql`${table.channel} IN ('IN_APP', 'FCM_PUSH', 'SMS_FALLBACK')`
+      sql`${table.channel} IN ('IN_APP', 'WEB_PUSH', 'SMS_FALLBACK')`
     ),
     check(
       'chk_emergency_alert_state',
-      sql`${table.alertState} IN ('DISPATCHED', 'DELIVERED', 'ACKNOWLEDGED', 'STOPPED_RESOLVED', 'EXPIRED')`
+      sql`${table.alertState} IN ('DISPATCHED', 'DELIVERED', 'FAILED_RETRYABLE', 'ACKNOWLEDGED', 'STOPPED_RESOLVED', 'EXPIRED')`
     ),
+    check('chk_emergency_alert_retries', sql`${table.retryCount} >= 0`),
   ]
 );
 
 // ============================================================================
-// 11. NOTIFICATIONS (User notification inbox for SOS, consents, & verification)
+// 15. NOTIFICATIONS (User notification inbox + retryable delivery tracking)
 // ============================================================================
 export const notifications = pgTable(
   'notifications',
@@ -464,6 +581,9 @@ export const notifications = pgTable(
     relatedRequestId: uuid('related_request_id').references(() => bloodRequests.id, {
       onDelete: 'set null',
     }),
+    deliveryStatus: varchar('delivery_status', { length: 24 }).notNull().default('DELIVERED'), // DELIVERED | FAILED_RETRYABLE | RETRIED_DELIVERED
+    retryCount: integer('retry_count').notNull().default(0),
+    lastError: varchar('last_error', { length: 255 }),
     metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
     isRead: boolean('is_read').notNull().default(false),
     readAt: timestamp('read_at', { withTimezone: true }),
@@ -471,11 +591,16 @@ export const notifications = pgTable(
   },
   (table) => [
     index('idx_notifications_recipient_unread').on(table.recipientUid, table.isRead, table.createdAt),
+    index('idx_notifications_delivery_retry').on(table.deliveryStatus, table.retryCount),
+    check(
+      'chk_notifications_delivery_status',
+      sql`${table.deliveryStatus} IN ('DELIVERED', 'FAILED_RETRYABLE', 'RETRIED_DELIVERED')`
+    ),
   ]
 );
 
 // ============================================================================
-// 12. DEVICE_TOKENS (Firebase Cloud Messaging tokens per authenticated device)
+// 16. DEVICE_TOKENS (W3C Web Push & Native Push Tokens per authenticated device)
 // ============================================================================
 export const deviceTokens = pgTable(
   'device_tokens',
@@ -484,7 +609,7 @@ export const deviceTokens = pgTable(
     userUid: varchar('user_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
-    fcmToken: text('fcm_token').notNull(),
+    pushToken: text('push_token').notNull(),
     platform: varchar('platform', { length: 24 }).notNull().default('WEB_PWA'), // WEB_PWA | ANDROID_APK | IOS_WEB
     deviceLabel: varchar('device_label', { length: 140 }),
     isActive: boolean('is_active').notNull().default(true),
@@ -492,14 +617,14 @@ export const deviceTokens = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_device_tokens_fcm').on(table.fcmToken),
+    uniqueIndex('uq_device_tokens_push').on(table.pushToken),
     index('idx_device_tokens_user_active').on(table.userUid, table.isActive),
     check('chk_device_platform', sql`${table.platform} IN ('WEB_PWA', 'ANDROID_APK', 'IOS_WEB')`),
   ]
 );
 
 // ============================================================================
-// 13. ADMIN_ROLES (Strict DB-backed RBAC — Super Admin & Co-Admin registry)
+// 17. ADMIN_ROLES (Strict DB-backed RBAC — Super Admin & Co-Admin registry)
 // ============================================================================
 export const adminRoles = pgTable(
   'admin_roles',
@@ -530,7 +655,7 @@ export const adminRoles = pgTable(
 );
 
 // ============================================================================
-// 14. VERIFICATION_RECORDS (Donor KYC, Hospital Slips, & Admin Vault Invite Locks)
+// 18. VERIFICATION_RECORDS (Donor KYC, Hospital Slips, & Admin Vault Invite Locks)
 // ============================================================================
 export const verificationRecords = pgTable(
   'verification_records',
@@ -564,13 +689,12 @@ export const verificationRecords = pgTable(
 );
 
 // ============================================================================
-// 15. USER_CONSENTS (GDPR/BD Data Protection — Contact Reveal & Medical Terms)
+// 19. USER_CONSENTS (GDPR/BD Data Protection — Contact Reveal & Medical Terms)
 // ============================================================================
 export const userConsents = pgTable(
   'user_consents',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyConsentDocId: varchar('legacy_consent_doc_id', { length: 128 }),
     userUid: varchar('user_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
@@ -580,9 +704,9 @@ export const userConsents = pgTable(
     relatedRequestId: uuid('related_request_id').references(() => bloodRequests.id, {
       onDelete: 'set null',
     }),
-    consentType: varchar('consent_type', { length: 40 }).notNull(), // DIRECT_CONTACT_OPT_IN | SEEKER_CONTACT_REQUEST | MEDICAL_ELIGIBILITY | PRIVACY_POLICY | SMS_EMERGENCY_ALERT
+    consentType: varchar('consent_type', { length: 40 }).notNull(), // DIRECT_CONTACT_OPT_IN | SEEKER_CONTACT_REQUEST | MEDICAL_ELIGIBILITY | PRIVACY_POLICY
     status: varchar('status', { length: 24 }).notNull().default('GRANTED'), // PENDING | GRANTED | DENIED | REVOKED | EXPIRED
-    policyVersion: varchar('policy_version', { length: 24 }).notNull().default('2.5.0'),
+    policyVersion: varchar('policy_version', { length: 24 }).notNull().default('3.0.0'),
     reason: text('reason'),
     grantedAt: timestamp('granted_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -601,33 +725,48 @@ export const userConsents = pgTable(
 );
 
 // ============================================================================
-// 16. LOGIN_SESSIONS (Server-verified session audit & anomaly tracking)
+// 20. CONTACT_REQUESTS (Dedicated Seeker -> Donor Contact Consent Workflow)
 // ============================================================================
-export const loginSessions = pgTable(
-  'login_sessions',
+export const contactRequests = pgTable(
+  'contact_requests',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userUid: varchar('user_uid', { length: 128 })
+    requesterUid: varchar('requester_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
-    sessionTokenHash: varchar('session_token_hash', { length: 128 }).notNull(),
-    authMethod: varchar('auth_method', { length: 32 }).notNull(), // GOOGLE_OAUTH | EMAIL_PASSWORD | PHONE_OTP | ADMIN_CONSOLE
-    ipHash: varchar('ip_hash', { length: 64 }).notNull(),
-    userAgentSummary: varchar('user_agent_summary', { length: 255 }),
-    isAdminConsole: boolean('is_admin_console').notNull().default(false),
-    isRevoked: boolean('is_revoked').notNull().default(false),
-    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-    lastActiveAt: timestamp('last_active_at', { withTimezone: true }).notNull().defaultNow(),
+    requesterName: varchar('requester_name', { length: 140 }).notNull(),
+    donorUid: varchar('donor_uid', { length: 128 })
+      .notNull()
+      .references(() => users.uid, { onDelete: 'cascade' }),
+    donorName: varchar('donor_name', { length: 140 }).notNull(),
+    bloodGroup: varchar('blood_group', { length: 5 }).notNull(),
+    relatedRequestId: uuid('related_request_id').references(() => bloodRequests.id, {
+      onDelete: 'set null',
+    }),
+    channelRequested: varchar('channel_requested', { length: 24 }).notNull().default('ALL'), // CALL | SMS | WHATSAPP | FACEBOOK | ALL
+    reason: text('reason').notNull(),
+    status: varchar('status', { length: 24 }).notNull().default('PENDING'), // PENDING | APPROVED | DENIED | REVOKED | EXPIRED
+    respondedAt: timestamp('responded_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_login_sessions_token_hash').on(table.sessionTokenHash),
-    index('idx_login_sessions_user_active').on(table.userUid, table.isRevoked, table.expiresAt),
+    index('idx_contact_requests_donor_status').on(table.donorUid, table.status, table.createdAt),
+    index('idx_contact_requests_requester_donor').on(table.requesterUid, table.donorUid, table.status),
+    check(
+      'chk_contact_requests_status',
+      sql`${table.status} IN ('PENDING', 'APPROVED', 'DENIED', 'REVOKED', 'EXPIRED')`
+    ),
+    check(
+      'chk_contact_requests_channel',
+      sql`${table.channelRequested} IN ('CALL', 'SMS', 'WHATSAPP', 'FACEBOOK', 'ALL')`
+    ),
   ]
 );
 
 // ============================================================================
-// 17. AUDIT_LOGS (Immutable security & clinical action trail — zero raw secrets)
+// 21. AUDIT_LOGS (Immutable security & clinical action trail — zero raw secrets)
 // ============================================================================
 export const auditLogs = pgTable(
   'audit_logs',
@@ -635,7 +774,7 @@ export const auditLogs = pgTable(
     id: serial('id').primaryKey(),
     actorUid: varchar('actor_uid', { length: 128 }), // Nullable for unauthenticated blocked attempts
     actorRole: varchar('actor_role', { length: 28 }).notNull().default('USER'),
-    action: varchar('action', { length: 64 }).notNull(), // e.g., UNMASK_PHONE, SOS_CREATED, REQUEST_STATE_CHANGED, ADMIN_ROLE_GRANTED, INVENTORY_UPDATED, AUTH_REJECTED
+    action: varchar('action', { length: 64 }).notNull(),
     targetEntityType: varchar('target_entity_type', { length: 48 }).notNull(),
     targetEntityId: varchar('target_entity_id', { length: 128 }).notNull(),
     outcome: varchar('outcome', { length: 20 }).notNull().default('SUCCESS'), // SUCCESS | DENIED | ERROR
@@ -652,14 +791,12 @@ export const auditLogs = pgTable(
 );
 
 // ============================================================================
-// 18–24. LOSSLESS FIRESTORE PARITY TABLES (Preserve all 18 Firestore collections)
+// 22. LIVE_DONOR_TRIPS (Real-time donor GPS en-route telemetry)
 // ============================================================================
-
 export const liveDonorTrips = pgTable(
   'live_donor_trips',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyTripDocId: varchar('legacy_trip_doc_id', { length: 128 }),
     requestId: uuid('request_id')
       .notNull()
       .references(() => bloodRequests.id, { onDelete: 'cascade' }),
@@ -682,44 +819,65 @@ export const liveDonorTrips = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_live_trips_legacy_id').on(table.legacyTripDocId),
     index('idx_live_trips_request_status').on(table.requestId, table.tripStatus),
+    index('idx_live_trips_donor_status').on(table.donorUid, table.tripStatus),
+    check('chk_live_trips_status', sql`${table.tripStatus} IN ('EN_ROUTE', 'ARRIVED', 'COMPLETED', 'STOPPED')`),
   ]
 );
 
+// ============================================================================
+// 23. COMMUNITY_MESSAGES (District/national donor community chat)
+// ============================================================================
 export const communityMessages = pgTable(
   'community_messages',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyMessageDocId: varchar('legacy_message_doc_id', { length: 128 }),
     senderUid: varchar('sender_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
     senderName: varchar('sender_name', { length: 140 }).notNull(),
+    senderAvatar: text('sender_avatar'),
+    senderRole: varchar('sender_role', { length: 32 }).default('DONOR'),
+    isVerifiedDonor: boolean('is_verified_donor').notNull().default(false),
     senderBloodGroup: varchar('sender_blood_group', { length: 5 }),
     district: varchar('district', { length: 80 }),
     messageText: text('message_text').notNull(),
     attachmentType: varchar('attachment_type', { length: 24 }), // NONE | GPS_PIN | SLIP_PHOTO | SOS_CARD
     attachmentJson: jsonb('attachment_json').$type<Record<string, unknown>>(),
+    replyToId: varchar('reply_to_id', { length: 80 }),
+    replyToName: varchar('reply_to_name', { length: 140 }),
+    replyToText: text('reply_to_text'),
+    reactionsJson: jsonb('reactions_json').$type<Record<string, string[]>>().default(sql`'{}'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_community_msg_legacy_id').on(table.legacyMessageDocId),
     index('idx_community_msg_created').on(table.createdAt),
+    index('idx_community_msg_district').on(table.district, table.createdAt),
   ]
 );
 
+// ============================================================================
+// 24. DIRECT_CHAT_ROOMS (Private 1-to-1 participant-restricted chat rooms)
+// ============================================================================
 export const directChatRooms = pgTable(
   'direct_chat_rooms',
   {
-    id: varchar('id', { length: 160 }).primaryKey(), // Deterministic uidA_uidB room key
+    id: varchar('id', { length: 160 }).primaryKey(), // Deterministic sorted uidA_uidB room key
     participantOneUid: varchar('participant_one_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
     participantTwoUid: varchar('participant_two_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
+    participantNamesJson: jsonb('participant_names_json').$type<Record<string, string>>().default(sql`'{}'::jsonb`),
+    participantAvatarsJson: jsonb('participant_avatars_json').$type<Record<string, string>>().default(sql`'{}'::jsonb`),
+    participantBloodGroupsJson: jsonb('participant_blood_groups_json').$type<Record<string, string>>().default(sql`'{}'::jsonb`),
+    relatedRequestId: uuid('related_request_id').references(() => bloodRequests.id, {
+      onDelete: 'set null',
+    }),
+    hospitalName: varchar('hospital_name', { length: 200 }),
     lastMessagePreview: text('last_message_preview'),
+    lastSenderUid: varchar('last_sender_uid', { length: 128 }),
     lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -729,35 +887,82 @@ export const directChatRooms = pgTable(
   ]
 );
 
-export const directChatMessages = pgTable(
-  'direct_chat_messages',
+// ============================================================================
+// 25. DIRECT_MESSAGES (Private 1-to-1 encrypted-in-transit chat messages)
+// ============================================================================
+export const directMessages = pgTable(
+  'direct_messages',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyMessageDocId: varchar('legacy_message_doc_id', { length: 128 }),
     roomId: varchar('room_id', { length: 160 })
       .notNull()
       .references(() => directChatRooms.id, { onDelete: 'cascade' }),
     senderUid: varchar('sender_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
+    senderName: varchar('sender_name', { length: 140 }),
+    senderBloodGroup: varchar('sender_blood_group', { length: 5 }),
     messageText: text('message_text').notNull(),
+    attachmentType: varchar('attachment_type', { length: 24 }),
     metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>(),
+    isRead: boolean('is_read').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_direct_msg_legacy_id').on(table.legacyMessageDocId),
     index('idx_direct_msg_room_created').on(table.roomId, table.createdAt),
   ]
 );
 
+export const directChatMessages = directMessages;
+
+// ============================================================================
+// 26. REPORTS (Scam, illegal money demand, & abuse moderation queue)
+// ============================================================================
+export const reports = pgTable(
+  'reports',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    reporterUid: varchar('reporter_uid', { length: 128 })
+      .notNull()
+      .references(() => users.uid, { onDelete: 'cascade' }),
+    reporterName: varchar('reporter_name', { length: 140 }),
+    accusedUid: varchar('accused_uid', { length: 128 }).references(() => users.uid, {
+      onDelete: 'set null',
+    }),
+    accusedName: varchar('accused_name', { length: 140 }),
+    accusedPhoneHash: varchar('accused_phone_hash', { length: 64 }),
+    category: varchar('category', { length: 48 }).notNull().default('ILLEGAL_MONEY_DEMAND'),
+    description: text('description').notNull(),
+    status: varchar('status', { length: 24 }).notNull().default('OPEN'), // OPEN | UNDER_REVIEW | ACTION_TAKEN | DISMISSED
+    resolutionNote: text('resolution_note'),
+    reviewedByUid: varchar('reviewed_by_uid', { length: 128 }).references(() => users.uid, {
+      onDelete: 'set null',
+    }),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_reports_status_created').on(table.status, table.createdAt),
+    check('chk_reports_status', sql`${table.status} IN ('OPEN', 'UNDER_REVIEW', 'ACTION_TAKEN', 'DISMISSED')`),
+  ]
+);
+
+export const scamReports = reports;
+
+// ============================================================================
+// 27. ANNOUNCEMENTS (Admin broadcasts & OTA APK release notifications)
+// ============================================================================
 export const announcements = pgTable(
   'announcements',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyAnnouncementDocId: varchar('legacy_announcement_doc_id', { length: 128 }),
+    announcementType: varchar('announcement_type', { length: 24 }).notNull().default('BROADCAST'), // BROADCAST | OTA_APP_UPDATE
     title: varchar('title', { length: 220 }).notNull(),
     body: text('body').notNull(),
     priority: varchar('priority', { length: 20 }).notNull().default('INFO'), // INFO | WARNING | CRITICAL
+    targetVersion: varchar('target_version', { length: 32 }),
+    apkDownloadUrl: text('apk_download_url'),
+    forceUpdate: boolean('force_update').notNull().default(false),
     isActive: boolean('is_active').notNull().default(true),
     authorUid: varchar('author_uid', { length: 128 }).references(() => users.uid, {
       onDelete: 'set null',
@@ -765,42 +970,19 @@ export const announcements = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_announcements_legacy_id').on(table.legacyAnnouncementDocId),
-    index('idx_announcements_active_created').on(table.isActive, table.createdAt),
+    index('idx_announcements_active_type_created').on(table.isActive, table.announcementType, table.createdAt),
+    check('chk_announcements_priority', sql`${table.priority} IN ('INFO', 'WARNING', 'CRITICAL')`),
+    check('chk_announcements_type', sql`${table.announcementType} IN ('BROADCAST', 'OTA_APP_UPDATE')`),
   ]
 );
 
-export const scamReports = pgTable(
-  'scam_reports',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    legacyReportDocId: varchar('legacy_report_doc_id', { length: 128 }),
-    reporterUid: varchar('reporter_uid', { length: 128 })
-      .notNull()
-      .references(() => users.uid, { onDelete: 'cascade' }),
-    accusedUid: varchar('accused_uid', { length: 128 }).references(() => users.uid, {
-      onDelete: 'set null',
-    }),
-    accusedPhoneHash: varchar('accused_phone_hash', { length: 64 }),
-    category: varchar('category', { length: 48 }).notNull().default('ILLEGAL_MONEY_DEMAND'),
-    description: text('description').notNull(),
-    status: varchar('status', { length: 24 }).notNull().default('OPEN'), // OPEN | UNDER_REVIEW | ACTION_TAKEN | DISMISSED
-    reviewedByUid: varchar('reviewed_by_uid', { length: 128 }).references(() => users.uid, {
-      onDelete: 'set null',
-    }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    uniqueIndex('uq_scam_reports_legacy_id').on(table.legacyReportDocId),
-    index('idx_scam_reports_status').on(table.status, table.createdAt),
-  ]
-);
-
+// ============================================================================
+// 28. GRATITUDE_NOTES (Patient-to-donor public wall of gratitude)
+// ============================================================================
 export const gratitudeNotes = pgTable(
   'gratitude_notes',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    legacyNoteDocId: varchar('legacy_note_doc_id', { length: 128 }),
     authorUid: varchar('author_uid', { length: 128 })
       .notNull()
       .references(() => users.uid, { onDelete: 'cascade' }),
@@ -808,12 +990,13 @@ export const gratitudeNotes = pgTable(
     honoredDonorUid: varchar('honored_donor_uid', { length: 128 }).references(() => users.uid, {
       onDelete: 'set null',
     }),
+    honoredDonorName: varchar('honored_donor_name', { length: 140 }),
+    bloodGroup: varchar('blood_group', { length: 5 }),
     district: varchar('district', { length: 80 }),
     message: text('message').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('uq_gratitude_notes_legacy_id').on(table.legacyNoteDocId),
     index('idx_gratitude_notes_created').on(table.createdAt),
   ]
 );
@@ -822,6 +1005,7 @@ export const gratitudeNotes = pgTable(
 // DRIZZLE ORM EXPLICIT RELATIONAL GRAPH
 // ============================================================================
 export const usersRelations = relations(users, ({ one, many }) => ({
+  authIdentities: many(authIdentities),
   donorProfile: one(donorProfiles, {
     fields: [users.uid],
     references: [donorProfiles.userUid],
@@ -841,6 +1025,13 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   deviceTokens: many(deviceTokens),
   consents: many(userConsents),
   loginSessions: many(loginSessions),
+}));
+
+export const authIdentitiesRelations = relations(authIdentities, ({ one }) => ({
+  user: one(users, {
+    fields: [authIdentities.userUid],
+    references: [users.uid],
+  }),
 }));
 
 export const donorProfilesRelations = relations(donorProfiles, ({ one }) => ({
@@ -920,6 +1111,10 @@ export const donationsRelations = relations(donations, ({ one }) => ({
 
 export const CORE_REQUIRED_TABLES = [
   'users',
+  'auth_identities',
+  'oidc_nonces',
+  'login_sessions',
+  'rate_limit_buckets',
   'donor_profiles',
   'private_contacts',
   'blood_requests',
@@ -935,17 +1130,19 @@ export const CORE_REQUIRED_TABLES = [
   'audit_logs',
   'emergency_alerts',
   'user_consents',
-  'login_sessions',
+  'contact_requests',
 ] as const;
 
-export const PARITY_TABLES = [
+export const COLLABORATION_TABLES = [
   'live_donor_trips',
   'community_messages',
   'direct_chat_rooms',
-  'direct_chat_messages',
+  'direct_messages',
+  'reports',
   'announcements',
-  'scam_reports',
   'gratitude_notes',
 ] as const;
 
-export const ALL_BLOODSEARCH_TABLES = [...CORE_REQUIRED_TABLES, ...PARITY_TABLES] as const;
+export const PARITY_TABLES = COLLABORATION_TABLES;
+
+export const ALL_BLOODSEARCH_TABLES = [...CORE_REQUIRED_TABLES, ...COLLABORATION_TABLES] as const;

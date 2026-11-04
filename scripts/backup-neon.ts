@@ -18,7 +18,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`→ Exporting logical backup of all 24 Neon PostgreSQL tables from ${info.redactedUrl}...`);
+  console.log(`→ Exporting logical backup of all Neon PostgreSQL tables from ${info.redactedUrl}...`);
   const bundle = await exportNeonLogicalBackup(db);
 
   const outDir = path.join(ROOT_DIR, 'backups');

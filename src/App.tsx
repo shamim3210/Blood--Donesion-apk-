@@ -70,7 +70,6 @@ import {
   isBootstrappedAdminUser,
   ownerPurgeFakeCloudRecordsOnlyInFirestore,
   ownerWipeEntireDatabaseZeroSlateV6InFirestore,
-  wipeAllMyDirectChatsInFirestore,
   upsertLiveDonorTripInFirestore,
   updateLiveDonorTripStatusInFirestore,
   subscribeLiveTripsForSeeker,
@@ -83,7 +82,8 @@ import {
   clearDevOtpSandboxSession,
   DevOtpSandboxClientSession,
   User as FirebaseUser,
-} from './firebase';
+} from './services/bloodSearchService';
+import { registerAndroidHardwareBackButton } from './services/capacitorBridge';
 import {
   resolveBangladeshCoordinates,
   watchRealDeviceGPS,
@@ -95,7 +95,6 @@ import {
 } from './utils/geolocation';
 import { useBrandConfig } from './config/brandConfig';
 import {
-  fetchDonorsFromMainDb,
   syncBloodRequestToMainDb,
   syncDonorProfileToMainDb,
 } from './utils/secureMainDbClient';
@@ -624,17 +623,6 @@ export default function App() {
       }
       if (u) {
         try {
-          // NOTE: Automatic Zero-Slate database wipe on login is intentionally disabled
-          // so signing in as Super Owner on any new browser/domain never deletes real registered users.
-
-          // One-time v7 Chat Zero-Slate Purge: wipe all legacy 1-to-1 direct chats & saved chat history
-          const chatZeroKey = `bloodsearch_cloud_chat_zero_v7_${u.uid}`;
-          if (localStorage.getItem(chatZeroKey) !== 'done') {
-            await wipeAllMyDirectChatsInFirestore(u).catch(() => 0);
-            localStorage.setItem(chatZeroKey, 'done');
-            setUnreadChatCount(0);
-          }
-
           const syncedProfile = await ensureUserAutoSyncedInFirestore(u);
           if (syncedProfile) {
             const isSyncedAdmin = await checkIsVerifiedAdminInFirestore(u);
@@ -642,25 +630,6 @@ export default function App() {
             if (isSyncedAdmin) syncedProfile.role = 'ADMIN';
             localStorage.setItem('bloodsearch_current_user', JSON.stringify(syncedProfile));
             window.dispatchEvent(new Event('bloodsearch_user_changed'));
-
-            if (syncedProfile.phone && !isPhoneMaskedOrInvalid(syncedProfile.phone)) {
-              void syncDonorProfileToMainDb({
-                displayName: syncedProfile.name,
-                bloodGroup: syncedProfile.bloodGroup,
-                age: Number(syncedProfile.age) || null,
-                gender: syncedProfile.gender || null,
-                weightKg: Number(syncedProfile.weightKg) || null,
-                district: syncedProfile.district || 'dhaka',
-                upazila: syncedProfile.upazila || null,
-                area: syncedProfile.upazila || syncedProfile.district || 'Dhaka',
-                phone: syncedProfile.phone,
-                whatsappNumber: syncedProfile.whatsappPhone || syncedProfile.phone,
-                facebookProfileUrl: syncedProfile.facebookUrl || null,
-                isAvailable: syncedProfile.availableToDonate !== false,
-                shareDirectContact: syncedProfile.shareDirectContact !== false,
-                contactVisibility: syncedProfile.contactVisibility,
-              }).catch(() => false);
-            }
 
             setDonors((prev) => {
               const existing = prev.find((d) => d.id === syncedProfile.id);
@@ -801,20 +770,6 @@ export default function App() {
     let unsubRequests: (() => void) | null = null;
     let unsubAnnouncements: (() => void) | null = null;
     try {
-      fetchDonorsFromMainDb()
-        .then((mainDbDonors) => {
-          if (mainDbDonors.length > 0) {
-            setDonors((prev) => {
-              const existingIds = new Set(prev.map((d) => d.id));
-              const freshFromMain = mainDbDonors.filter((d) => !existingIds.has(d.id));
-              return freshFromMain.length > 0
-                ? evictSeedsProgressively([...prev, ...freshFromMain], INITIAL_DONORS)
-                : prev;
-            });
-          }
-        })
-        .catch(() => {});
-
       unsubDonors = subscribePublicDonors((cloudDonors) => {
         const nextCloudIds = new Set(cloudDonors.map((d) => d.id));
         const prevCloudIds = cloudDonorIdsRef.current;
@@ -896,6 +851,46 @@ export default function App() {
       if (unsubChatBadge) unsubChatBadge();
     };
   }, []);
+
+  // Native Capacitor Android APK Hardware Back-Button Navigation
+  useEffect(() => {
+    const cleanupBack = registerAndroidHardwareBackButton(() => {
+      if (isSOSWizardOpen) {
+        setIsSOSWizardOpen(false);
+        return true;
+      }
+      if (isRegisterModalOpen) {
+        setIsRegisterModalOpen(false);
+        return true;
+      }
+      if (isAuthModalOpen) {
+        setIsAuthModalOpen(false);
+        return true;
+      }
+      if (selectedDonorForPhone) {
+        setSelectedDonorForPhone(null);
+        return true;
+      }
+      if (careSuiteTab) {
+        setCareSuiteTab(null);
+        return true;
+      }
+      if (activeTabRef.current !== 'home') {
+        setActiveTab('home');
+        return true;
+      }
+      return false;
+    });
+    return () => {
+      cleanupBack();
+    };
+  }, [
+    isSOSWizardOpen,
+    isRegisterModalOpen,
+    isAuthModalOpen,
+    selectedDonorForPhone,
+    careSuiteTab,
+  ]);
 
   // PWA / APK Home-Screen Shortcut & Shared Deep-Link Handler (?action=sos|search|chat|care&group=O-)
   useEffect(() => {

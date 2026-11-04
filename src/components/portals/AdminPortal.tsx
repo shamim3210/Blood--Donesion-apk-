@@ -54,7 +54,7 @@ import {
   runSmartDatabaseHealthAndSecurityAudit,
   normalizeFacebookProfileUrl,
   User,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 import { verifyAdminWithMainServer } from '../../utils/secureMainDbClient';
 import { getSecurityDiagnostics, markRuntimeVerifiedAdminUid } from '../../utils/securityShield';
 import { CURRENT_APP_VERSION } from '../../utils/appUpdateManager';

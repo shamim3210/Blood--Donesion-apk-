@@ -24,7 +24,7 @@ import {
  * - One-time consumption prevents OTP reuse and replay attacks.
  * - DEV-ONLY Sandbox is strictly disabled when `isProduction === true` (`NODE_ENV === 'production'`).
  * - DEV-ONLY Sandbox sessions explicitly force `role: 'USER'` and `adminEligible: false`.
- * - Supports server-side RS256 Firebase Custom Token signing when `FIREBASE_SERVICE_ACCOUNT_JSON` is configured.
+ * - Mints random 256-bit opaque SHA-256 session tokens in Neon PostgreSQL (`login_sessions`).
  */
 
 export const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
@@ -55,11 +55,6 @@ interface StoredOtpChallenge {
   clientIpHash: string;
 }
 
-interface ServiceAccountCredentials {
-  client_email: string;
-  private_key: string;
-}
-
 export interface SendOtpResponsePayload {
   ok: boolean;
   code: string;
@@ -88,20 +83,14 @@ export interface VerifyOtpResponsePayload {
   code: string;
   messageEn: string;
   messageBn: string;
+  uid?: string;
   phoneE164?: string;
   operator?: BangladeshMobileOperator;
   deliveryMode?: OtpDeliveryMode;
   isDevelopmentMode?: boolean;
   remainingAttempts?: number;
-  /**
-   * Present when `FIREBASE_SERVICE_ACCOUNT_JSON` is configured on the server (Phase 5),
-   * allowing `signInWithCustomToken(auth, firebaseCustomToken)` on the client.
-   */
-  firebaseCustomToken?: string;
-  /**
-   * Present ONLY in non-production DEV_SANDBOX mode when no Firebase service account is configured.
-   * Strictly locked to `role: 'USER'` and `adminEligible: false`.
-   */
+  sessionToken?: string;
+  csrfToken?: string;
   devSandboxSession?: {
     sessionToken: string;
     uid: string;
@@ -119,7 +108,6 @@ export interface OtpServiceOptions {
   enableDevSandbox?: boolean;
   hmacSecret?: string;
   smsGateway?: SmsGatewayProvider;
-  serviceAccountJson?: string;
   nowFn?: () => number;
 }
 
@@ -132,64 +120,11 @@ function base64UrlEncode(input: Buffer | string): string {
     .replace(/=+$/g, '');
 }
 
-function parseServiceAccountJson(raw?: string): ServiceAccountCredentials | null {
-  if (!raw || !raw.trim()) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<ServiceAccountCredentials>;
-    if (
-      typeof parsed.client_email === 'string' &&
-      parsed.client_email.includes('@') &&
-      typeof parsed.private_key === 'string' &&
-      parsed.private_key.includes('BEGIN PRIVATE KEY')
-    ) {
-      return {
-        client_email: parsed.client_email.trim(),
-        private_key: parsed.private_key.replace(/\\n/g, '\n'),
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Mints a standards-compliant RS256 Firebase Auth Custom Token (identical to `firebase-admin` createCustomToken)
- * using Node's built-in `crypto` module so zero extra dependencies are required.
- */
-export function mintFirebaseCustomTokenRs256(params: {
-  serviceAccount: ServiceAccountCredentials;
-  uid: string;
-  claims: Record<string, unknown>;
-  nowSec: number;
-}): string {
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const payload = {
-    iss: params.serviceAccount.client_email,
-    sub: params.serviceAccount.client_email,
-    aud: 'https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit',
-    iat: params.nowSec,
-    exp: params.nowSec + 3600,
-    uid: params.uid,
-    claims: params.claims,
-  };
-
-  const signingInput = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(
-    JSON.stringify(payload)
-  )}`;
-  const signer = crypto.createSign('RSA-SHA256');
-  signer.update(signingInput);
-  signer.end();
-  const signature = signer.sign(params.serviceAccount.private_key);
-  return `${signingInput}.${base64UrlEncode(signature)}`;
-}
-
 export class BloodSearchOtpService {
   private readonly isProduction: boolean;
   private readonly enableDevSandbox: boolean;
   private readonly hmacSecret: Buffer;
   private readonly smsGateway: SmsGatewayProvider;
-  private readonly serviceAccount: ServiceAccountCredentials | null;
   private readonly nowFn: () => number;
 
   private readonly challengesById = new Map<string, StoredOtpChallenge>();
@@ -224,9 +159,6 @@ export class BloodSearchOtpService {
     this.hmacSecret = Buffer.from(secretRaw, 'utf8');
 
     this.smsGateway = options?.smsGateway || createSmsGatewayFromEnv(process.env);
-    this.serviceAccount = parseServiceAccountJson(
-      options?.serviceAccountJson ?? process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-    );
     this.nowFn = options?.nowFn || (() => Date.now());
   }
 
@@ -235,7 +167,7 @@ export class BloodSearchOtpService {
     devSandboxAvailable: boolean;
     smsGatewayProvider: SmsGatewayProviderId;
     smsGatewayConfigured: boolean;
-    customTokenConfigured: boolean;
+    neonSessionConfigured: boolean;
     otpExpirySeconds: number;
     resendCooldownSeconds: number;
     maxVerifyAttempts: number;
@@ -245,7 +177,7 @@ export class BloodSearchOtpService {
       devSandboxAvailable: !this.isProduction && this.enableDevSandbox,
       smsGatewayProvider: this.smsGateway.providerId,
       smsGatewayConfigured: this.smsGateway.isConfigured(),
-      customTokenConfigured: Boolean(this.serviceAccount),
+      neonSessionConfigured: true,
       otpExpirySeconds: Math.floor(OTP_EXPIRY_MS / 1000),
       resendCooldownSeconds: Math.floor(OTP_RESEND_COOLDOWN_MS / 1000),
       maxVerifyAttempts: OTP_MAX_VERIFY_ATTEMPTS,
@@ -353,9 +285,9 @@ export class BloodSearchOtpService {
           ok: false,
           code: 'DEV_OTP_DISABLED_IN_PRODUCTION',
           messageEn:
-            'Development OTP Sandbox is strictly disabled in production. Enable Firebase Phone Authentication or configure a BTRC-compliant SMS gateway.',
+            'Development OTP Sandbox is strictly disabled in production. Configure a BTRC-compliant SMS gateway or sign in with Google.',
           messageBn:
-            'প্রোডাকশন মোডে ডেভেলপমেন্ট ওটিপি সম্পূর্ণ বন্ধ। অনুগ্রহ করে Firebase Phone Auth অথবা অনুমোদিত SMS Gateway চালু করুন।',
+            'প্রোডাকশন মোডে ডেভেলপমেন্ট ওটিপি সম্পূর্ণ বন্ধ। অনুগ্রহ করে অনুমোদিত SMS Gateway চালু করুন অথবা Google Sign-In ব্যবহার করুন।',
         },
       };
     }
@@ -686,31 +618,19 @@ export class BloodSearchOtpService {
       .digest('hex')
       .slice(0, 20)}`;
 
-    // Phase 5: If Firebase Admin Service Account is configured AND using real SMS gateway, mint real Firebase Custom Token!
-    if (this.serviceAccount && challenge.deliveryMode === 'GATEWAY_SMS') {
-      const firebaseCustomToken = mintFirebaseCustomTokenRs256({
-        serviceAccount: this.serviceAccount,
-        uid: deterministicPhoneUid,
-        claims: {
-          phone_number: challenge.phoneE164,
-          bd_operator: challenge.operator,
-          otp_gateway_verified: true,
-        },
-        nowSec: Math.floor(nowMs / 1000),
-      });
-
+    if (challenge.deliveryMode === 'GATEWAY_SMS') {
       return {
         httpStatus: 200,
         body: {
           ok: true,
-          code: 'OTP_VERIFIED_CUSTOM_TOKEN',
+          code: 'OTP_VERIFIED_GATEWAY',
           messageEn: `Verified ${challenge.phoneE164} successfully.`,
           messageBn: `${challenge.phoneE164} সফলভাবে যাচাই সম্পন্ন হয়েছে।`,
+          uid: deterministicPhoneUid,
           phoneE164: challenge.phoneE164,
           operator: challenge.operator,
           deliveryMode: challenge.deliveryMode,
           isDevelopmentMode: false,
-          firebaseCustomToken,
         },
       };
     }

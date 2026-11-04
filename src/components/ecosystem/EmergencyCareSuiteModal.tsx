@@ -16,7 +16,7 @@ import {
   subscribePublicGratitudeNotes,
   createGratitudeNoteInFirestore,
   GratitudeNoteItem,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 import {
   X,
   Heart,

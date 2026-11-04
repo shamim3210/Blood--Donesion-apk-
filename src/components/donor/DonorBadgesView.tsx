@@ -3,7 +3,7 @@ import { BadgeItem, Language, UserAccount } from '../../types';
 import { ENTERPRISE_BADGES } from '../../data/mockEnterpriseData';
 import { isFakePersonName } from '../../data/mockDonors';
 import { getStoredDonationLogs, DonationLogRecord } from '../../utils/sosAlertEngine';
-import { auth, onAuthStateChanged } from '../../firebase';
+import { auth, onAuthStateChanged } from '../../services/bloodSearchService';
 import {
   Award,
   CheckCircle2,

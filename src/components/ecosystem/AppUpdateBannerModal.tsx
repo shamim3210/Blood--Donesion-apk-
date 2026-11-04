@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Language } from '../../types';
-import { subscribeRemoteAppUpdate, RemoteAppUpdateRelease } from '../../firebase';
+import { subscribeRemoteAppUpdate, RemoteAppUpdateRelease } from '../../services/bloodSearchService';
 import {
   CURRENT_APP_VERSION,
   DetectedBuildUpdate,

@@ -30,7 +30,7 @@ import {
   onAuthStateChanged,
   recordCompletedDonationInFirestore,
   User as FirebaseUser,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 import {
   Megaphone,
   ChevronRight,

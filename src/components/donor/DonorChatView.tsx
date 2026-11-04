@@ -34,7 +34,7 @@ import {
   DirectChatRoomItem,
   DirectMessageItem,
   User as FirebaseUser,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 import {
   Send,
   Phone,

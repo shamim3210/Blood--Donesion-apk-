@@ -8,7 +8,7 @@ import {
   LiveDonorTrip,
   LiveDonorTripStatus,
 } from '../../types';
-import { auth } from '../../firebase';
+import { auth } from '../../services/bloodSearchService';
 import {
   isSeedDonorId,
   isSeedRequestId,

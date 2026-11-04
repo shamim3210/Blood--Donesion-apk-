@@ -1,27 +1,62 @@
-# BloodSearch — Neon PostgreSQL Security & Privacy Audit Report
+# BLOODSEARCH v2.5.0 — PRODUCTION SECURITY AUDIT & ARCHITECTURE HARDENING
 
-## 1. Threat Model & Implemented Controls Matrix
+## 1. Executive Security Summary
 
-| Control Area | Threat / Attack Vector | Implemented Security Control | Verification Location |
-| :--- | :--- | :--- | :--- |
-| **Credential & Source Isolation** | `DATABASE_URL`, source maps, `.md` docs, or server files leaked in APK/browser | `src/db/neonConfig.ts` & `src/db/index.ts` throw if `window` exists; `vite.config.ts` disables production source maps (`sourcemap: false`); `server.ts` blocks `/.env`, `/.data`, `/drizzle`, `/backups`, `/scripts`, `/tests`, `/src/db`, `/src/server`, `*.sql`, `*.map`, and `*.md` with `404`. | `tests/neonDatabaseSystem.test.ts` (Tests 2 & 10) + `dist/` bundle scan |
-| **Always-On Server PostgreSQL Engine** | Client bypassing API or missing server DB fallback | `ensureMainPostgresReady()` connects exclusively on the backend to Neon PostgreSQL when `DATABASE_URL` is configured and automatically provisions an isolated server-only persistent PostgreSQL 16 engine (`.data/bloodsearch-main-pg`) when unset. | `src/db/index.ts`, `src/server/neonRoutes.ts` |
-| **Transport Encryption (TLS)** | Cleartext SQL sniffing or MITM certificate spoofing to Neon | `validateAndNormalizeNeonUrl` rejects `sslmode=disable` and `sslmode=allow`, upgrades missing `sslmode` on remote hosts to `sslmode=verify-full`, and sets `pg.Pool` `ssl: { rejectUnauthorized: true, minVersion: 'TLSv1.2' }`. | `src/db/neonConfig.ts`, Test 2 |
-| **Zero-Leak Owner & Admin Identity** | Attackers scraping Super Owner email, phone numbers, GCP project IDs, or auto-creating `/admin` accounts | Zero plaintext owner email, phone numbers, or cloud console URLs exist in the frontend bundle (`dist/`). `/admin` uses strict sign-in only (never auto-creates accounts), blank inputs, salted SHA-256 verification, and `/api/v1/auth/admin-verify` with 5-attempt / 15-minute brute-force lockout (`429 ADMIN_BRUTE_FORCE_LOCKED`). | `AdminPortal.tsx`, `src/firebase.ts`, `neonRoutes.ts`, Test 10 |
-| **Scanner, CSRF & Injection Firewall** | Automated vulnerability scanners (`sqlmap`, `nikto`, `nmap`, `nuclei`), cross-site CSRF mutations, or `$where`/`__proto__` payloads | `server.ts` blocks scanner User-Agents (`403 FORBIDDEN_SCANNER`), enforces same-origin `Origin` / `Sec-Fetch-Site` checks on mutating `/api/*` requests (`403`), strips/blocks `__proto__`/`constructor`/`$*` keys (`400 MALICIOUS_PAYLOAD_BLOCKED`), and uses 100% parameterized Drizzle SQL queries. | `server.ts`, `bloodSearchRepo.ts`, Tests 5 & 10 |
-| **Role-Based Authorization (RBAC)** | Frontend sending `{ "role": "SUPER_ADMIN" }` or Co-Admin attempting privilege escalation | `resolveActorRole` ignores all request-body role claims and resolves roles strictly from server-verified Super Owner identity + PostgreSQL `admin_roles`. `manageAdminRoleTx` blocks `CO_ADMIN` from granting/revoking roles (`403 SUPER_ADMIN_REQUIRED`). | `src/db/repositories/bloodSearchRepo.ts`, Tests 4 & 7 |
-| **Anti-IDOR Protection** | User A modifying User B's donor profile, approving User B's consent, or cancelling User B's SOS request | Every mutating transaction checks `actor.uid === resourceOwnerUid || isAdminRole(actor.role)` inside PostgreSQL and writes `DENIED` entries (`IDOR_*_BLOCKED`) to `audit_logs`. | `src/db/repositories/bloodSearchRepo.ts`, Tests 5, 6, 8 |
-| **Consent-Preserving Donor Contacts** | Bulk scraping of donor numbers vs. legitimate blood seekers needing Call, WhatsApp, SMS & Facebook | Public `donor_profiles` stores zero raw phones in bulk list responses. Single-donor Call, WhatsApp, SMS, and Facebook remain seamlessly accessible for opted-in donors via rate-limited `/api/v1/donors/:uid/opted-in-contact` (20/min/IP) while `REQUEST_ONLY` and `DND` donors stay strictly locked (`403`). | `src/db/schema.ts`, `bloodSearchRepo.ts`, `DonorSearch.tsx`, Tests 4, 6, 10 |
-| **Emergency Request State Integrity** | Re-opening, double-fulfilling, or escalating an already resolved SOS request | `transitionBloodRequestStateTx` locks terminal states (`FULFILLED`, `CANCELLED`, `EXPIRED`) with `409 INVALID_TERMINAL_TRANSITION` and atomically transitions all open `emergency_alerts` to `STOPPED_RESOLVED`. | `src/db/repositories/bloodSearchRepo.ts`, Test 8 |
-| **Immutable Audit Logging** | Post-compromise erasure of security logs | Sensitive actions (`UNMASK_PHONE_*`, `SOS_*`, `ADMIN_ROLE_*`, `ADMIN_VERIFY_DENIED`, `IDOR_*`) write to `audit_logs`, and `drizzle/least_privilege_roles.sql` revokes `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_logs` from `bloodsearch_app`. | `drizzle/least_privilege_roles.sql`, `bloodSearchRepo.ts` |
+BloodSearch v2.5.0 enforces a **Zero-Trust Server-Authoritative Security Architecture** backed exclusively by **Neon Serverless PostgreSQL + Drizzle ORM**, **Google Identity Services (OIDC RS256)**, and **SHA-256 Opaque Session Tokens**.
+
+All legacy Firebase SDKs (`firebase`, `firebase-admin`, `@firebase/*`), Firestore rules/blueprints, and client-trusted identity mechanisms have been completely removed.
 
 ---
 
-## 2. Documented Neon Free Plan Network Limitation & Compensating Controls
+## 2. Authentication, OIDC & Session Hardening
 
-- **Verified Plan Limitation**: Official Neon documentation confirms **IP Allowlisting** and **AWS PrivateLink** are restricted to the **Neon Scale** plan and are **unavailable on the Neon Free Plan**.
-- **Compensating Controls Enforced in BloodSearch**:
-  1. **Zero Public Client Connectivity**: Neither React Web nor the Android TWA APK ever connects to Neon; only the backend Express server (`server.ts`) holds `DATABASE_URL`.
-  2. **Strict Mutual/Server TLS Verification**: `sslmode=verify-full` + `TLSv1.2+` (`rejectUnauthorized: true`).
-  3. **Database Role Separation**: Express runtime connects as `bloodsearch_app` (`NOSUPERUSER NOCREATEDB NOCREATEROLE`, no `DROP`/`ALTER` privileges, no `DELETE` on `audit_logs`).
-  4. **Production Recommendation**: Upgrade production Neon project to **Neon Scale** to add Cloud Run static outbound NAT IP Allowlisting on top of the application-layer controls above.
+| Control | Implementation | Verification |
+|---|---|---|
+| **Google OIDC Verification** | Backend RS256 signature verification against Google JWKS (`https://www.googleapis.com/oauth2/v3/certs`) checking `iss`, `aud`, `exp`, `iat`, and `email_verified === true`. | Automated RSA-2048 JWKS test (`tests/productionHardeningAndOidc.test.ts`) |
+| **Nonce & Replay Protection** | Single-use cryptographic `nonce` + `state` issued into Neon `oidc_nonces` (10-min TTL) and atomically marked consumed (`consumed_at`) on token exchange. | Replay attempt rejected with `401` |
+| **Opaque Session Tokens** | 256-bit CSPRNG session tokens (`bs_sess_<64_hex>`). Only `SHA-256(token)` is persisted in `login_sessions` — raw session tokens are never stored in PostgreSQL. | Verified zero plaintext tokens in `login_sessions` |
+| **Cookie & CSRF Hardening** | `HttpOnly` cookie (`SameSite=None; Secure` on HTTPS, `SameSite=Lax` on local HTTP) paired with session-bound `X-CSRF-Token` validation (`timingSafeEqual`) on every cookie-authenticated state-changing request (`POST`, `PUT`, `PATCH`, `DELETE`). | Missing/mismatched `X-CSRF-Token` returns `403` |
+| **Capacitor Android Support** | Explicit `Authorization: Bearer bs_sess_...` header support for native Capacitor WebView (`https://localhost` / `capacitor://localhost`). | Verified in integration suite |
+| **Password Cryptography** | Salted `scrypt` (`N=16384, r=8, p=1`, 64-byte derived key), NFKC normalization, `crypto.timingSafeEqual`, and dummy-salt verification on unknown emails to block timing enumeration. | Verified `scrypt$` storage & anti-enumeration |
+| **Brute-Force & Lockout** | 5 consecutive failed password attempts trigger a 15-minute account lockout (`locked_until` in `auth_identities`). | Verified 5-attempt lockout (`423`/`429`) |
+| **Session Rotation & Revocation** | Sessions rotate on login and privilege changes (`CO_ADMIN` claim), immediately revoke on logout (`is_revoked = true`) or password reset, and reject `SUSPENDED` / `BANNED` accounts in real time. | Verified immediate session rejection on `SUSPENDED` & reset |
+
+---
+
+## 3. Neon PostgreSQL & Data Layer Security
+
+- **28 Hardened Tables**: `users`, `auth_identities`, `login_sessions`, `oidc_nonces`, `password_reset_tokens`, `rate_limit_buckets`, `admin_roles`, `donor_profiles`, `private_contacts`, `user_consents`, `contact_requests`, `blood_requests`, `request_responses`, `emergency_alerts`, `live_donor_trips`, `donations`, `hospitals`, `blood_banks`, `blood_inventory`, `notifications`, `device_tokens`, `verification_records`, `community_messages`, `direct_chat_rooms`, `direct_messages`, `announcements`, `reports`, `gratitude_notes`, `audit_logs`.
+- **Zero Frontend DB Exposure**: Build-time and runtime browser guard in `src/db/index.ts` throws `FATAL_SECURITY_VIOLATION` if ever imported into client code; ESLint `no-restricted-imports` blocks `src/db/*`, `pg`, `drizzle-orm`, and `@neondatabase/serverless` across frontend components.
+- **TLS & Connection Security**: `validateAndNormalizeNeonUrl` enforces `sslmode=verify-full` in production and redacts credentials from all pool error logs.
+- **Parameterized SQL Only**: 100% Drizzle ORM parameterized queries + strict server-side input validators (`assertCleanText`, `assertBloodGroup`, `normalizeBangladeshPhone`, `assertOptionalCoordinates`, `validateSafeImageDataUrl`).
+- **Least-Privilege Roles**: `drizzle/least_privilege_roles.sql` isolates DDL migration credentials (`bloodsearch_migrator`) from runtime DML credentials (`bloodsearch_app_runtime`), revoking `DROP`, `ALTER`, `TRUNCATE`, and `DELETE ON audit_logs`.
+
+---
+
+## 4. Donor Privacy, Anti-Scraping & Contact Protection
+
+1. **Zero Raw PII in Public Search**: `GET /api/v1/donors/search` queries **only** `donor_profiles` (never joining `private_contacts`), rounds GPS coordinates to 3 decimals (~110m neighborhood precision), and returns masked phone hints (`+88017******78`).
+2. **4-Tier Contact Vault (`private_contacts`)**:
+   - `PUBLIC_OPT_IN`: Donor explicitly opts in to urgent Call / SMS / WhatsApp / Facebook contact (`GET /api/v1/donors/:uid/opted-in-contact`, rate-limited & audit-logged).
+   - `REQUEST_ONLY` / `EMERGENCY_VERIFIED_ONLY`: Requires authenticated `contact_requests` approval (`24h` time-boxed grant) or active SOS response acceptance before unmasking.
+   - `DND_PRIVATE`: Blocks all public and seeker unmasking (`403 DONOR_DND_PRIVATE`).
+3. **Bulk Export Disabled**: Admin `.CSV` and `.JSON` bulk donor export controls are removed from the Admin Portal to prevent mass data exfiltration if an operator screen is left unattended.
+
+---
+
+## 5. Backend API & Transport Defenses
+
+- **Distributed Rate Limiting**: Backed by Neon PostgreSQL `rate_limit_buckets` (`consumeDistributedRateLimit`) so rate limits hold across horizontally scaled Cloud Run / serverless instances, returning `429 Too Many Requests` + `Retry-After`.
+- **Strict CORS & Origin Validation**: Explicit allowlist (`APP_URL`, `ALLOWED_ORIGINS`, `capacitor://localhost`, `https://localhost`); untrusted origins are rejected with `403`.
+- **Security Headers**: Strict Content-Security-Policy (CSP), `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, and `Strict-Transport-Security` (HSTS in production).
+- **WAF / Scanner & Secret File Blocking**: Immediate `403` for automated scanners (`sqlmap`, `nikto`, `nuclei`, `acunetix`), prototype/operator injection (`$where`, `__proto__`, `constructor.prototype`), and direct HTTP probes to `/server.ts`, `/.env`, `/drizzle/*`, `/src/*`, or `/*.md`.
+- **Immutable Audit Ledger**: Every login, admin verification, role grant, donor contact unmasking, IDOR block, and SOS lifecycle transition writes an entry to `audit_logs` with HMAC-salted IP hash.
+
+---
+
+## 6. Android APK Hardening
+
+- `android:usesCleartextTraffic="false"` and `network_security_config.xml` (`cleartextTrafficPermitted="false"`, system CA trust anchors only).
+- `android:allowBackup="false"` and `android:fullBackupContent="false"` to prevent ADB backup extraction of WebView storage.
+- Minimal permissions (`INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`) and explicit Android 11+ `<queries>` for `tel:`, `smsto:`, `https:`, WhatsApp, and Facebook.
+- Release signing keys read strictly from CI/local environment variables (`ANDROID_KEYSTORE_*`) — never hardcoded in Gradle or committed to Git.

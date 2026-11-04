@@ -7,7 +7,7 @@ import {
   normalizeFacebookProfileUrl,
   sendContactConsentRequestInFirestore,
   submitScamReportInFirestore,
-} from '../firebase';
+} from '../services/bloodSearchService';
 import {
   buildDirectCallHref,
   buildWhatsAppHref,

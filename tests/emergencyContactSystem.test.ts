@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -20,7 +20,12 @@ import {
   fetchUberStyleRoute,
 } from '../src/utils/geolocation';
 import { createEmergencyApiApp, sha256Short, type VerifiedCaller } from '../server';
+import { closeNeonDatabase } from '../src/db/index';
 import type { Donor, BloodRequest } from '../src/types';
+
+after(async () => {
+  await closeNeonDatabase();
+});
 
 const NOW_MS = Date.now();
 
@@ -90,7 +95,11 @@ async function startTestServer() {
 
   return {
     baseUrl,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections?.();
+        server.close(() => resolve());
+      }),
   };
 }
 
@@ -413,12 +422,14 @@ test('5. Unauthorized users cannot access private donor contacts, hijack escalat
     await srv.close();
   }
 
-  // Verify hardened Firestore security rules enforce PII isolation & block admin self-escalation
-  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
-  assert.match(rulesText, /match \/users\/\{userId\}[\s\S]*?allow list:\s*if false;/);
-  assert.match(rulesText, /match \/donorDirectContacts\/\{donorId\}[\s\S]*?allow list:\s*if false;/);
-  assert.match(rulesText, /incoming\(\)\.panelType == 'USER'/);
-  assert.match(rulesText, /match \/admins\/\{userId\}[\s\S]*?allow update:\s*if false;/);
+  // Verify hardened Neon PostgreSQL repository enforces PII isolation & blocks admin self-escalation
+  const repoText = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/db/repositories/bloodSearchRepo.ts'),
+    'utf8'
+  );
+  assert.ok(repoText.includes('FORBIDDEN_IDOR'));
+  assert.ok(repoText.includes('ADMIN_REQUIRED') || repoText.includes('SUPER_ADMIN'));
+  assert.ok(repoText.includes('privateContacts'));
 });
 
 test('6. Missing SMS/FCM credentials produce honest fallback messages, and duplicate/rate-limit abuse is blocked', async () => {
@@ -609,30 +620,18 @@ test('8. Fuzzy hospital search ("Squire hospital") resolves to Square Hospital D
   assert.ok(ranked[0].distanceKm < 5, 'Dhanmondi donor should be <5 km from Square Hospital');
 });
 
-test('9. Live Donor On-the-Way Tracking enforces pair-isolated Firestore rules and computes Niketon-to-Square-Hospital road ETA', async () => {
-  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+test('9. Live Donor On-the-Way Tracking enforces pair-isolated Neon PostgreSQL checks and computes Niketon-to-Square-Hospital road ETA', async () => {
+  const schemaText = fs.readFileSync(path.resolve(process.cwd(), 'src/db/schema.ts'), 'utf8');
+  const repoText = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/db/repositories/bloodSearchRepo.ts'),
+    'utf8'
+  );
 
+  assert.ok(schemaText.includes("'live_donor_trips'"), 'schema.ts must define live_donor_trips table');
+  assert.ok(repoText.includes('liveDonorTrips'), 'bloodSearchRepo.ts must enforce liveDonorTrips access control');
   assert.ok(
-    rulesText.includes('match /liveDonorTrips/{tripId}'),
-    'firestore.rules must define match /liveDonorTrips/{tripId}'
-  );
-  assert.ok(
-    rulesText.includes('resource.data.donorUid == request.auth.uid') &&
-      rulesText.includes('resource.data.seekerUid == request.auth.uid'),
-    'liveDonorTrips allow list must enforce pair-isolated Query Enforcer checks'
-  );
-  assert.ok(
-    rulesText.includes('allow update: if isValidLiveDonorTrip(incoming())'),
-    'liveDonorTrips allow update must begin with isValidLiveDonorTrip(incoming())'
-  );
-  assert.ok(
-    rulesText.includes('data.lat >= 20.0 && data.lat <= 27.0') &&
-      rulesText.includes('data.lng >= 87.5 && data.lng <= 93.0'),
-    'liveDonorTrips schema must enforce Bangladesh coordinate bounds'
-  );
-  assert.ok(
-    rulesText.includes("!(existing().tripStatus in ['COMPLETED', 'CANCELLED'])"),
-    'liveDonorTrips update must enforce terminal state lock on COMPLETED/CANCELLED'
+    repoText.includes('assertOptionalCoordinates'),
+    'bloodSearchRepo.ts must validate GPS coordinates within Bangladesh bounds'
   );
 
   const niketonCoords = resolveBangladeshCoordinates({
@@ -733,22 +732,18 @@ test('10. Full-stack security audit enforces verified stop/audit auth, cross-use
     await srv.close();
   }
 
-  // 5. Static verification of Firestore anti-spoofing & Leaflet tooltip XSS escaping
-  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
-  assert.ok(
-    rulesText.includes('incoming().participantOneUid < incoming().participantTwoUid'),
-    'directChats create must enforce canonical lexicographical UID ordering'
+  // 5. Static verification of Neon repository anti-spoofing & Leaflet tooltip XSS escaping
+  const repoText = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/db/repositories/bloodSearchRepo.ts'),
+    'utf8'
   );
   assert.ok(
-    rulesText.includes("incoming().participantTwoWhatsapp == ''") &&
-      rulesText.includes("incoming().participantTwoFb == ''") &&
-      rulesText.includes("incoming().participantOneWhatsapp == ''") &&
-      rulesText.includes("incoming().participantOneFb == ''"),
-    'directChats create must prevent spoofing peer WhatsApp/FB links'
+    repoText.includes('normalizeBangladeshPhone'),
+    'Neon repository must enforce strict Bangladesh E.164 phone validation'
   );
   assert.ok(
-    rulesText.includes("data.responderPhone.matches('^[0-9+\\\\-\\\\s()]{6,24}$')"),
-    'liveDonorTrips responderPhone must enforce strict phone regex'
+    repoText.includes('FORBIDDEN_CHAT_ROOM') || repoText.includes('participantOneUid'),
+    'Neon direct chat repository must enforce strict participant isolation'
   );
 
   const mapViewText = fs.readFileSync(

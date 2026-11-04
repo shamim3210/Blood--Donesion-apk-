@@ -13,7 +13,7 @@ import {
   getStoredDevOtpSandboxSession,
   fetchUnmaskedDonorContactIfAuthorized,
   normalizeFacebookProfileUrl,
-} from '../firebase';
+} from '../services/bloodSearchService';
 import {
   requestFreshHighAccuracyGPS,
   clearCachedDeviceGps,

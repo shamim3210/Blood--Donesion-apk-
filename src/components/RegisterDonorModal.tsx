@@ -26,7 +26,7 @@ import {
   compressAvatarIfNeeded,
   DEFAULT_AVATAR_DATA_URI,
   User,
-} from '../firebase';
+} from '../services/bloodSearchService';
 import {
   isValidBangladeshMobilePhone,
   normalizeValidBangladeshMobileE164,

@@ -118,6 +118,7 @@ export default defineConfig(() => {
       bloodsearchVersionManifestPlugin(appVersion, appBuildId),
       VitePWA({
         registerType: 'autoUpdate',
+        includeAssets: [],
         includeManifestIcons: false,
         devOptions: {
           enabled: false,
@@ -187,26 +188,31 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          cacheId: 'bloodsearch-pwa-v4',
+          cacheId: 'bloodsearch-pwa-v5',
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           skipWaiting: true,
           clientsClaim: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          globPatterns: ['**/*.{js,css,html,ico,svg,woff2}', 'pwa-*.png', 'favicon-*.png', 'apple-touch-icon.png'],
           dontCacheBustURLsMatching: /^assets\/.*-[a-zA-Z0-9_-]{8}\./,
           globIgnores: [
             '**/version.json',
-            '**/firebase-applet-config.json',
             '**/.env*',
             '**/assetlinks.json',
             '**/drizzle/**',
             '**/backups/**',
+            '**/downloads/**',
             '**/*.sql',
+            '**/*.apk',
+            '**/*.zip',
             '**/assets/aistudio/**',
+            '**/assets/bloodsearch-*.png',
           ],
           cleanupOutdatedCaches: true,
-          // Never intercept API routes, live version manifest, PWA manifest, static assets, Firebase Auth handler, or Android TWA assetlinks
+          // Never intercept API routes, OAuth callback, downloads, live version manifest, PWA manifest, static assets, or Android TWA assetlinks
           navigateFallbackDenylist: [
             /^\/api\//,
+            /^\/auth\//,
+            /^\/downloads\//,
             /^\/version\.json/,
             /^\/manifest\.webmanifest/,
             /^\/favicon\.ico/,

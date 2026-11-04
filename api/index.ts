@@ -81,7 +81,7 @@ function sendSafeJsonFallback(req: IncomingMessage, res: ServerResponse) {
         ok: false,
         status: 'UNCONFIGURED',
         configured: false,
-        cutoverMode: 'FIRESTORE_PRIMARY',
+        cutoverMode: 'NEON_PRIMARY',
       })
     );
     return;

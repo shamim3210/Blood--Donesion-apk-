@@ -1,315 +1,159 @@
 import React, { useState } from 'react';
-import { 
-  FolderTree, 
-  Database, 
-  ShieldCheck, 
-  CloudLightning, 
-  Smartphone, 
-  GitBranch, 
-  Copy, 
-  Check, 
+import {
+  FolderTree,
+  Database,
+  ShieldCheck,
+  CloudLightning,
+  Smartphone,
+  GitBranch,
+  Copy,
+  Check,
   Terminal,
-  FileCode,
-  Layers,
-  Sparkles
 } from 'lucide-react';
 
 export const ArchitectureDocModal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
-    'folder' | 'schema' | 'rules' | 'functions' | 'flutter' | 'devops'
+    'folder' | 'schema' | 'security' | 'realtime' | 'android' | 'devops'
   >('folder');
   const [copied, setCopied] = useState(false);
 
   const copyCode = (code: string) => {
-    navigator.clipboard.writeText(code);
+    navigator.clipboard.writeText(code).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const folderStructureCode = `// BloodSearch Enterprise Clean Architecture (Feature-First + Riverpod)
-lib/
-├── core/
-│   ├── constants/
-│   │   ├── app_constants.dart
-│   │   └── blood_constants.dart
-│   ├── network/
-│   │   ├── network_info.dart
-│   │   └── api_client.dart
-│   ├── theme/
-│   │   ├── app_colors.dart
-│   │   ├── app_theme.dart
-│   │   └── glass_styles.dart
-│   ├── utils/
-│   │   ├── blood_group_utils.dart
-│   │   └── geo_hash_utils.dart
-│   └── errors/
-│       ├── exceptions.dart
-│       └── failures.dart
-├── features/
-│   ├── auth/
-│   │   ├── data/
-│   │   │   ├── datasources/auth_remote_data_source.dart
-│   │   │   ├── models/user_model.dart
-│   │   │   └── repositories/auth_repository_impl.dart
-│   │   ├── domain/
-│   │   │   ├── entities/user_entity.dart
-│   │   │   ├── repositories/auth_repository.dart
-│   │   │   └── usecases/login_with_phone_otp.dart
-│   │   └── presentation/
-│   │       ├── controllers/auth_controller.dart
-│   │       └── screens/phone_login_screen.dart
-│   ├── blood_request/
-│   │   ├── data/...
-│   │   ├── domain/...
-│   │   └── presentation/screens/sos_broadcast_wizard.dart
-│   ├── donor_search/
-│   │   ├── data/...
-│   │   ├── domain/...
-│   │   └── presentation/screens/donor_radar_screen.dart
-│   ├── chat/
-│   ├── badges/
-│   └── hospital_portal/
-└── routing/
-    └── app_router.dart (GoRouter)`;
+  const folderStructureCode = `// BloodSearch Production Architecture (React + Express + Drizzle ORM + Neon PostgreSQL + Capacitor Android)
+bloodsearch/
+├── server.ts                         # Hardened Express API + WebSocket (/ws) + Google OIDC Callback
+├── capacitor.config.ts               # Native Android APK configuration (bd.bloodsearch.app)
+├── drizzle/
+│   ├── 0000_bloodsearch_neon_core.sql # 28-Table Neon PostgreSQL DDL, FKs, CHECKs & Indexes
+│   ├── least_privilege_roles.sql      # Separation of bloodsearch_migrator vs bloodsearch_runtime
+│   └── rollback_0000_drop_all.sql     # Safe transactional rollback script
+├── src/
+│   ├── db/
+│   │   ├── schema.ts                 # Drizzle ORM schema (users, donor_profiles, private_contacts, ...)
+│   │   ├── neonConfig.ts             # TLS sslmode=verify-full pooled & direct Neon configuration
+│   │   └── repositories/
+│   │       └── bloodSearchRepo.ts    # Transactional RBAC, IDOR guards & parameterized SQL queries
+│   ├── server/
+│   │   ├── authAndSessionService.ts  # Google OIDC RS256 JWKS, scrypt passwords, SHA-256 opaque sessions
+│   │   ├── distributedRateLimiter.ts # Multi-instance PostgreSQL atomic sliding-window rate limiter
+│   │   ├── neonRoutes.ts             # Complete /api/v1/* REST + SSE backend router
+│   │   └── realtimeHub.ts            # RFC-6455 WebSocket + Server-Sent Events push broker
+│   ├── services/
+│   │   ├── bloodSearchService.ts     # Frontend API client with CSRF, GET coalescing & fingerprint dedup
+│   │   └── capacitorBridge.ts        # Android WebView origin resolver & hardware back-button handler
+│   └── components/                   # Bilingual (BN/EN) User Portal & Isolated /admin Console
+└── android/                          # Native Capacitor Android Gradle project (Debug & Release APKs)`;
 
-  const firestoreSchemaCode = `// Enterprise Firestore Database Schema (12 Scalable Collections)
-// 1. users/{uid}
-{
-  "uid": "string (Auth UID)",
-  "name": "string",
-  "phone": "string (E.164)",
-  "phoneMasked": "string",
-  "bloodGroup": "O- | O+ | A- | A+ | B- | B+ | AB- | AB+",
-  "division": "dhaka",
-  "district": "dhaka",
-  "upazila": "dhanmondi",
-  "geoHash": "wh0r7",
-  "latitude": 23.7461,
-  "longitude": 90.3742,
-  "isAvailable": true,
-  "lastDonationDate": "timestamp",
-  "totalDonations": 8,
-  "verifiedBadge": true,
-  "reliabilityScore": 98.5,
-  "healthConditions": {
-    "nonAlcoholic": true,
-    "hivNegative": true,
-    "normalBloodPressure": true
-  },
-  "fcmTokens": ["token_1", "token_2"],
-  "createdAt": "timestamp",
-  "updatedAt": "timestamp"
-}
+  const neonSchemaCode = `-- Neon PostgreSQL Core Schema Highlights (28 Hardened Tables)
+-- 1. Strict Public vs Private PII Split Isolation
+CREATE TABLE users (
+  uid VARCHAR(128) PRIMARY KEY,
+  email VARCHAR(255) UNIQUE,
+  email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  display_name VARCHAR(120) NOT NULL,
+  account_status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE'
+    CHECK (account_status IN ('ACTIVE', 'SUSPENDED', 'PENDING_REVIEW')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-// 2. blood_requests/{requestId}
-{
-  "id": "string",
-  "patientName": "string",
-  "bloodGroup": "O-",
-  "unitsNeeded": 2,
-  "unitsCollected": 1,
-  "hospitalName": "Dhaka Medical College Hospital",
-  "district": "dhaka",
-  "urgency": "CRITICAL | URGENT | STANDARD",
-  "status": "PENDING | ACTIVE | ACCEPTED | FULFILLED | CANCELLED | EXPIRED",
-  "geoHash": "wh0r2",
-  "responders": [
-    { "uid": "string", "name": "string", "timestamp": "timestamp" }
-  ],
-  "prescriptionUrl": "gs://bloodsearch.appspot.com/prescriptions/req_01.jpg",
-  "createdAt": "timestamp"
-}
+CREATE TABLE donor_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_uid VARCHAR(128) NOT NULL UNIQUE REFERENCES users(uid) ON DELETE CASCADE,
+  public_name VARCHAR(120) NOT NULL,
+  blood_group VARCHAR(5) NOT NULL CHECK (blood_group IN ('A+','A-','B+','B-','AB+','AB-','O+','O-')),
+  district VARCHAR(64) NOT NULL,
+  masked_phone_hint VARCHAR(24) NOT NULL,
+  is_available BOOLEAN NOT NULL DEFAULT TRUE,
+  availability_status VARCHAR(32) NOT NULL DEFAULT 'AVAILABLE',
+  share_direct_contact BOOLEAN NOT NULL DEFAULT TRUE
+);
 
-// 3. chat_rooms/{roomId}/messages/{messageId}
-// 4. blood_banks/{bankId}/inventory/{groupId}
-// 5. donation_verifications/{verificationId}
-// 6. audit_logs/{logId} (Immutable write-only security trail)`;
+-- Raw phone, WhatsApp & Facebook URL NEVER appear in donor_profiles!
+CREATE TABLE private_contacts (
+  user_uid VARCHAR(128) PRIMARY KEY REFERENCES users(uid) ON DELETE CASCADE,
+  phone_e164 VARCHAR(20) NOT NULL,
+  whatsapp_number VARCHAR(20),
+  facebook_profile_url VARCHAR(255),
+  contact_visibility VARCHAR(32) NOT NULL DEFAULT 'PUBLIC_OPT_IN'
+);
 
-  const securityRulesCode = `rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-    
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
-    
-    function isVerifiedHospital() {
-      return isAuthenticated() && request.auth.token.role == 'hospital';
-    }
+-- SHA-256 hashed opaque session tokens (raw token never stored in DB)
+CREATE TABLE login_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_uid VARCHAR(128) NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+  token_sha256 VARCHAR(64) NOT NULL UNIQUE,
+  csrf_secret_sha256 VARCHAR(64) NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ
+);`;
 
-    // Users Collection: Sensitive phone number is masked unless requested with consent
-    match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isOwner(userId) && request.resource.data.totalDonations == 0;
-      allow update: if isOwner(userId) && 
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verifiedBadge', 'totalDonations', 'reliabilityScore']);
-    }
+  const backendSecurityCode = `// Multi-Layer Zero-Trust Backend Security Controls
+// 1. Google OIDC RS256 Verification + Single-Use Nonce Replay Protection
+const claims = await verifyGoogleOidcIdToken({ idToken, expectedClientId });
+await consumeGoogleOidcNonceTx(db, claims.nonce, expectedState);
 
-    // Emergency Blood Requests
-    match /blood_requests/{requestId} {
-      allow read: if true; // Public safety broadcast
-      allow create: if isAuthenticated() && request.resource.data.unitsCollected == 0;
-      allow update: if isAuthenticated() && (
-        isOwner(resource.data.requesterUid) ||
-        // Donors can append themselves to responders
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['responders', 'unitsCollected'])
-      );
-    }
+// 2. Opaque 256-bit Session Cookie + Session-Bound CSRF Token
+// Cookie: bs_session=bs_sess_<random>; HttpOnly; Secure; SameSite=None; Path=/
+// Header: X-CSRF-Token validated in constant time on all POST/PUT/PATCH/DELETE mutations
 
-    // Immutable Audit Logs: Append-only for cybersecurity tracking
-    match /audit_logs/{logId} {
-      allow read: if isAuthenticated() && request.auth.token.role == 'admin';
-      allow create: if isAuthenticated();
-      allow update, delete: if false; // Strict immutability
-    }
-  }
-}`;
+// 3. Distributed PostgreSQL Rate Limiting (Multi-Instance Safe)
+await enforceDistributedRateLimit(res, db, \`donorsearch:\${ipHash}\`, 60, 60_000);
 
-  const cloudFunctionsCode = `// Firebase Cloud Functions (TypeScript v2)
-import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import * as admin from "firebase-admin";
+// 4. Object-Level Authorization (IDOR Prevention)
+// - Public donor search queries ONLY donor_profiles (zero raw phone leakage)
+// - Unmasking private_contacts checks DND, consent visibility, contact_requests, and logs audit_logs
+// - Direct chat rooms & live GPS trips verify participant membership on the server`;
 
-admin.initializeApp();
-
-// 1. Dispatch Push Notifications to nearby compatible donors when SOS is created
-export const onEmergencySOSCreated = onDocumentCreated("blood_requests/{requestId}", async (event) => {
-  const reqData = event.data?.data();
-  if (!reqData) return;
-
-  const targetGroup = reqData.bloodGroup;
-  const targetDistrict = reqData.district;
-
-  // Query compatible donors in the district
-  const snapshot = await admin.firestore().collection("users")
-    .where("district", "==", targetDistrict)
-    .where("isAvailable", "==", true)
-    .limit(200)
-    .get();
-
-  const tokens: string[] = [];
-  snapshot.forEach(doc => {
-    const fcm = doc.data().fcmTokens || [];
-    tokens.push(...fcm);
-  });
-
-  if (tokens.length === 0) return;
-
-  // Send High Priority FCM Alert
-  await admin.messaging().sendEachForMulticast({
-    tokens,
-    notification: {
-      title: \`🚨 EMERGENCY \${targetGroup} Blood Needed!\`,
-      body: \`\${reqData.hospitalName} urgently requires \${reqData.unitsNeeded} units. Tap to respond.\`,
-    },
-    data: {
-      requestId: event.params.requestId,
-      urgency: reqData.urgency,
-      click_action: "FLUTTER_NOTIFICATION_CLICK"
-    },
-    android: { priority: "high" },
-    apns: { payload: { aps: { sound: "emergency_alarm.caf", critical: true } } }
-  });
+  const realtimeCode = `// Real-Time SOS Broadcast & Notification Engine (WebSocket + SSE + Optional SMS)
+// 1. Authenticated SOS creation persists atomically in Neon PostgreSQL
+// 2. Compatible nearby donors (respecting DND & 90-day recovery) receive emergency_alerts + notifications
+// 3. Server pushes instant frame over /ws (RFC-6455 WebSocket) and /api/v1/events/stream (SSE)
+realtimeHub.emitEvent('requests:created', 'public:requests', { requestId: created.id });
+realtimeHub.emitToUser(targetDonorUid, 'alerts:sos', {
+  requestId: created.id,
+  bloodGroup: created.bloodGroup,
+  hospitalName: created.hospitalName,
+  district: created.district,
 });`;
 
-  const flutterCode = `// Production Flutter Riverpod Implementation for BloodSearch
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+  const androidCapacitorCode = `// Native Android APK Configuration (capacitor.config.ts)
+import type { CapacitorConfig } from '@capacitor/cli';
 
-// 1. State Provider for Blood Donor Search
-final donorSearchProvider = StateNotifierProvider<DonorSearchNotifier, DonorSearchState>((ref) {
-  return DonorSearchNotifier(ref.watch(donorRepositoryProvider));
-});
+const config: CapacitorConfig = {
+  appId: 'bd.bloodsearch.app',
+  appName: 'BloodSearch',
+  webDir: 'dist',
+  server: {
+    androidScheme: 'https',
+  },
+};
 
-class DonorSearchNotifier extends StateNotifier<DonorSearchState> {
-  final DonorRepository _repository;
-  DonorSearchNotifier(this._repository) : super(const DonorSearchState.initial());
+export default config;
 
-  Future<void> searchDonors({required String bloodGroup, required String district}) async {
-    state = const DonorSearchState.loading();
-    try {
-      final donors = await _repository.getCompatibleDonors(bloodGroup, district);
-      state = DonorSearchState.success(donors);
-    } catch (e) {
-      state = DonorSearchState.error(e.toString());
-    }
-  }
-}
+// Build Debug & Unsigned Release APKs:
+// npm run build
+// npx cap sync android
+// cd android && ./gradlew assembleDebug assembleRelease`;
 
-// 2. Glassmorphic Donor Card Widget
-class GlassDonorCard extends StatelessWidget {
-  final DonorEntity donor;
-  final VoidCallback onCall;
+  const devopsCode = `# Production Deployment & Neon Migration Workflow
+# 1. Apply Neon PostgreSQL schema migrations using direct connection URL
+DATABASE_URL="$DIRECT_DATABASE_URL" npx drizzle-kit migrate
 
-  const GlassDonorCard({super.key, required this.donor, required this.onCall});
+# 2. Verify cryptographic 28-table backup & restore integrity
+npm run db:backup
+npm run db:restore:verify
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.12)),
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          CircleAvatar(
-            backgroundColor: const Color(0xFFE11D48),
-            child: Text(donor.bloodGroup, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(donor.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text('\${donor.upazila}, \${donor.district}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ],
-            ),
-          ),
-          ElevatedButton(onPressed: onCall, child: const Text('Contact')),
-        ],
-      ),
-    );
-  }
-}`;
-
-  const devopsCode = `# GitHub Actions CI/CD Pipeline (.github/workflows/deploy.yml)
-name: BloodSearch Enterprise CI/CD
-
-on:
-  push:
-    branches: [ main, staging ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  flutter_test_and_build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.x'
-          channel: 'stable'
-      - run: flutter pub get
-      - run: flutter test --coverage
-      - name: Build Web Application
-        run: flutter build web --release
-      - name: Deploy to Firebase Hosting
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken: '\${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '\${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
-          projectId: bloodsearch-bd`;
+# 3. Run security & integration test suite + build production bundle
+npm test
+npm run build
+NODE_ENV=production npm start`;
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="glass-card-adaptive rounded-2xl p-5 sm:p-6 transition-all">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200/60 dark:border-slate-800/60">
           <div>
@@ -318,24 +162,23 @@ jobs:
                 <Terminal className="w-5 h-5 text-rose-500" />
               </div>
               <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-                Enterprise Ecosystem Architecture (সম্পূর্ণ আর্কিটেকচার ব্লুপ্রিন্ট)
+                Neon PostgreSQL & Security Architecture (সম্পূর্ণ আর্কিটেকচার ব্লুপ্রিন্ট)
               </h1>
             </div>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
-              Production-ready Clean Architecture, Firestore Schema, Security Rules, Riverpod & CI/CD Pipelines
+              Neon PostgreSQL 28-Table Schema, Google OIDC, Opaque SHA-256 Sessions, Express API & Capacitor Android APK
             </p>
           </div>
         </div>
 
-        {/* Tab Strip */}
         <div className="pt-4 flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
           {[
-            { id: 'folder' as const, label: 'Folder Structure', icon: FolderTree },
-            { id: 'schema' as const, label: 'Firestore Schema', icon: Database },
-            { id: 'rules' as const, label: 'Security Rules', icon: ShieldCheck },
-            { id: 'functions' as const, label: 'Cloud Functions', icon: CloudLightning },
-            { id: 'flutter' as const, label: 'Flutter Code', icon: Smartphone },
-            { id: 'devops' as const, label: 'CI/CD & DevOps', icon: GitBranch },
+            { id: 'folder' as const, label: 'Project Structure', icon: FolderTree },
+            { id: 'schema' as const, label: 'Neon SQL Schema', icon: Database },
+            { id: 'security' as const, label: 'API & Session Shield', icon: ShieldCheck },
+            { id: 'realtime' as const, label: 'WebSocket & SOS', icon: CloudLightning },
+            { id: 'android' as const, label: 'Capacitor Android APK', icon: Smartphone },
+            { id: 'devops' as const, label: 'Migrations & Deploy', icon: GitBranch },
           ].map((tab) => {
             const Icon = tab.icon;
             const isSelected = activeTab === tab.id;
@@ -357,7 +200,6 @@ jobs:
         </div>
       </div>
 
-      {/* Code Viewer Box */}
       <div className="glass-card-adaptive rounded-2xl overflow-hidden shadow-2xl border border-slate-200/80 dark:border-slate-800/80">
         <div className="p-3 px-5 bg-slate-900 text-slate-300 text-xs font-mono flex items-center justify-between border-b border-slate-800">
           <div className="flex items-center gap-2">
@@ -365,12 +207,12 @@ jobs:
             <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
             <span className="ml-2 font-bold text-slate-100">
-              {activeTab === 'folder' && 'lib/ - Clean Architecture Directory'}
-              {activeTab === 'schema' && 'firestore.schema.json'}
-              {activeTab === 'rules' && 'firestore.rules (Hardened)'}
-              {activeTab === 'functions' && 'functions/src/emergency.ts'}
-              {activeTab === 'flutter' && 'lib/features/donor_search/presentation/riverpod.dart'}
-              {activeTab === 'devops' && '.github/workflows/deploy.yml'}
+              {activeTab === 'folder' && 'bloodsearch/ - Full-Stack Directory'}
+              {activeTab === 'schema' && 'drizzle/0000_bloodsearch_neon_core.sql'}
+              {activeTab === 'security' && 'src/server/authAndSessionService.ts'}
+              {activeTab === 'realtime' && 'src/server/realtimeHub.ts'}
+              {activeTab === 'android' && 'capacitor.config.ts'}
+              {activeTab === 'devops' && 'DEPLOYMENT_GUIDE.md'}
             </span>
           </div>
 
@@ -378,10 +220,10 @@ jobs:
             onClick={() => {
               const codeMap = {
                 folder: folderStructureCode,
-                schema: firestoreSchemaCode,
-                rules: securityRulesCode,
-                functions: cloudFunctionsCode,
-                flutter: flutterCode,
+                schema: neonSchemaCode,
+                security: backendSecurityCode,
+                realtime: realtimeCode,
+                android: androidCapacitorCode,
                 devops: devopsCode,
               };
               copyCode(codeMap[activeTab]);
@@ -396,10 +238,10 @@ jobs:
         <div className="p-5 bg-slate-950 text-slate-200 font-mono text-xs overflow-x-auto leading-relaxed">
           <pre>
             {activeTab === 'folder' && folderStructureCode}
-            {activeTab === 'schema' && firestoreSchemaCode}
-            {activeTab === 'rules' && securityRulesCode}
-            {activeTab === 'functions' && cloudFunctionsCode}
-            {activeTab === 'flutter' && flutterCode}
+            {activeTab === 'schema' && neonSchemaCode}
+            {activeTab === 'security' && backendSecurityCode}
+            {activeTab === 'realtime' && realtimeCode}
+            {activeTab === 'android' && androidCapacitorCode}
             {activeTab === 'devops' && devopsCode}
           </pre>
         </div>

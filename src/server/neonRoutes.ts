@@ -2,117 +2,169 @@ import { Router, type Request, type Response } from 'express';
 import { ensureMainPostgresReady, type BloodSearchDatabase } from '../db/index';
 import { evaluateNeonHealthAndLimits } from '../db/neonMonitor';
 import {
+  claimCoAdminInviteCodeTx,
   createBloodRequestWithAlertsTx,
+  createCoAdminInviteCodeTx,
+  createCustomOwnerInviteLockTx,
+  createScamReportTx,
+  deleteAnnouncementAdminTx,
+  deleteBloodRequestAdminOrOwnerTx,
+  deleteCommunityMessageTx,
+  deleteDirectChatRoomTx,
+  deleteDirectMessageTx,
+  deleteDonorProfileAdminOrSelfTx,
+  deleteOwnerInviteLockTx,
+  deleteOwnUserAndDonorAccountTx,
+  deleteScamReportAdminTx,
   DomainSecurityError,
   escalateBloodRequestTx,
+  expireStaleBloodRequestsTx,
   getAuthorizedDonorPrivateContactTx,
+  getOrCreateDirectChatRoomTx,
   getPublicOptedInDonorContactTx,
+  getUserFullAccount,
   isAdminRole,
+  listActiveAnnouncements,
+  listActiveLiveDonorTrips,
+  listAdminsAdmin,
   listBloodInventory,
   listBloodRequestsPaginated,
+  listCommunityMessages,
+  listContactRequestsForActor,
+  listDirectChatRoomsForActor,
+  listDirectMessagesForRoom,
+  listEmergencyAlertsForActor,
+  listGratitudeNotes,
   listHospitalsByDistrict,
+  listNotificationsForActor,
+  listOwnerInviteLocksTx,
+  listScamReportsAdmin,
+  listUsersAdmin,
   manageAdminRoleTx,
+  markNotificationsReadTx,
+  postCommunityMessageTx,
+  postDirectMessageTx,
+  postGratitudeNoteTx,
+  publishAnnouncementAdminTx,
   queryAuditLogsPaginated,
   recordLoginSessionTx,
+  recordManualDonationTx,
   requestDonorContactConsentTx,
-  resolveActorRole,
+  resolveScamReportAdminTx,
   respondDonorContactConsentTx,
   respondToBloodRequestTx,
+  retryFailedNotificationsAndAlertsTx,
   searchPublicDonorsPaginated,
+  seedBaselineHospitalsAndInventoryIfEmptyTx,
+  toggleCommunityMessageReactionTx,
+  toggleOwnerInviteLockTx,
   transitionBloodRequestStateTx,
   updateBloodInventoryTx,
+  updateDonorVerificationAdminTx,
+  updateLiveDonorTripStatusTx,
+  updateUserAccountStatusAdminTx,
+  updateUserAccountTx,
   upsertDeviceTokenTx,
+  upsertLiveDonorTripTx,
   upsertUserAndDonorProfileTx,
+  verifyOrClaimOwnerVaultInviteCodeTx,
   writeAuditLog,
+  zeroSlateOperationalResetAdminTx,
   type AuthenticatedActor,
   type ResolvedActor,
 } from '../db/repositories/bloodSearchRepo';
-import { extractHashedClientIp, verifyServerFirebaseIdentity } from './firebaseAuthVerifier';
+import {
+  ADMIN_SESSION_TTL_MS,
+  authenticateGoogleClaimsInNeonTx,
+  authenticateVerifiedPhoneInNeonTx,
+  clearOpaqueSessionCookie,
+  confirmPasswordResetTokenTx,
+  consumeGoogleOidcNonceTx,
+  createOpaqueSessionTx,
+  extractHashedClientIp,
+  issueCsrfTokenForExistingSessionTx,
+  issueGoogleOidcNonceTx,
+  loginEmailPasswordUserTx,
+  logoutOpaqueSessionTx,
+  registerEmailPasswordUserTx,
+  requestPasswordResetTokenTx,
+  SESSION_TTL_MS,
+  setOpaqueSessionCookie,
+  verifyGoogleOidcIdToken,
+  verifyRawSessionFromHeaders,
+  verifyRequestSession,
+} from './authAndSessionService';
+import { enforceDistributedRateLimit } from './distributedRateLimiter';
+import { BloodSearchOtpService, type OtpServiceOptions } from './otpService';
+import { realtimeHub } from './realtimeHub';
 
 export interface NeonApiRouterOptions {
   verifyActorOverride?: (token: string) => Promise<AuthenticatedActor | null>;
+  otpService?: BloodSearchOtpService;
+  otpServiceOptions?: OtpServiceOptions;
+}
+
+export function resolveGoogleOauthClientId(): string {
+  return (
+    process.env.GOOGLE_CLIENT_ID ||
+    process.env.VITE_GOOGLE_CLIENT_ID ||
+    process.env.OAUTH_CLIENT_ID ||
+    ''
+  ).trim();
+}
+
+export function resolveGoogleOauthClientSecret(): string {
+  return (process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '').trim();
+}
+
+export function resolveAppCallbackRedirectUri(req: Request): string {
+  const explicitOrigin = String(req.query.redirectOrigin || '').trim();
+  if (explicitOrigin) {
+    try {
+      const parsed = new URL(explicitOrigin);
+      if (parsed.protocol === 'https:' || parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        return `${parsed.origin}/auth/callback`;
+      }
+    } catch {
+      // Ignore invalid query hint and fall back to server APP_URL / request host
+    }
+  }
+
+  const appUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
+  if (appUrl) {
+    return `${appUrl}/auth/callback`;
+  }
+
+  const proto =
+    String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim() ||
+    (req.secure ? 'https' : 'http');
+  const host =
+    String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000')
+      .split(',')[0]
+      ?.trim() || 'localhost:3000';
+  return `${proto}://${host}/auth/callback`;
 }
 
 /**
- * Dedicated Express `/api/v1` router backed by Neon PostgreSQL (or server-isolated PG16 fallback) + Drizzle ORM.
+ * Dedicated Express `/api/v1` router backed exclusively by Neon PostgreSQL + Drizzle ORM.
  * Enforces:
- *  - Per-IP & per-UID sliding-window rate limiting + Admin brute-force lockout
- *  - Server-side Firebase ID Token authentication & DB-backed RBAC
+ *  - Google OIDC RS256 verification + single-use nonce replay protection
+ *  - Scrypt Email/Password & Bangladesh Phone OTP with Neon SHA-256 opaque sessions
+ *  - Session-bound CSRF tokens on cookie-authenticated mutations
+ *  - Distributed PostgreSQL rate limiting (`rate_limit_buckets`)
  *  - Strict separation of public donor profiles vs `private_contacts`
- *  - Parameterized SQL queries & ACID database transactions
+ *  - Server-authoritative RBAC & IDOR protection + immutable `audit_logs`
  */
 export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   const router = Router();
-  const MAX_ROUTER_BUCKETS = 5000;
-  const rateBuckets = new Map<string, number[]>();
-  const adminFailureBuckets = new Map<string, number[]>();
+  const otpService = options?.otpService || new BloodSearchOtpService(options?.otpServiceOptions);
+  let seededHospitalsOnce = false;
 
-  const pruneRouterMap = <K, V>(map: Map<K, V>) => {
-    while (map.size >= MAX_ROUTER_BUCKETS) {
-      const oldest = map.keys().next().value;
-      if (oldest === undefined) break;
-      map.delete(oldest);
-    }
-  };
-
-  const enforceRateLimit = (
-    res: Response,
-    bucketKey: string,
-    maxRequests: number,
-    windowMs: number
-  ): boolean => {
-    const now = Date.now();
-    const history = (rateBuckets.get(bucketKey) || []).filter((ts) => now - ts < windowMs);
-    if (history.length >= maxRequests) {
-      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - (history[0] || now))) / 1000));
-      rateBuckets.set(bucketKey, history);
-      res.setHeader('Retry-After', String(retryAfterSec));
-      res.status(429).json({
-        ok: false,
-        code: 'RATE_LIMITED',
-        message: 'Too many requests. Please wait before retrying.',
-        retryAfterSec,
-      });
-      return false;
-    }
-    if (!rateBuckets.has(bucketKey)) pruneRouterMap(rateBuckets);
-    history.push(now);
-    rateBuckets.set(bucketKey, history);
-    return true;
-  };
-
-  const checkAdminLockout = (res: Response, key: string): boolean => {
-    const windowMs = 15 * 60_000;
-    const now = Date.now();
-    const raw = adminFailureBuckets.get(key);
-    if (!raw) return true;
-    const failures = raw.filter((ts) => now - ts < windowMs);
-    if (failures.length === 0) {
-      adminFailureBuckets.delete(key);
-      return true;
-    }
-    adminFailureBuckets.set(key, failures);
-    if (failures.length >= 5) {
-      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - (failures[0] || now))) / 1000));
-      res.setHeader('Retry-After', String(retryAfterSec));
-      res.status(429).json({
-        ok: false,
-        code: 'ADMIN_BRUTE_FORCE_LOCKED',
-        message: 'Too many unauthorized admin attempts. Access temporarily locked.',
-        retryAfterSec,
-      });
-      return false;
-    }
-    return true;
-  };
-
-  const recordAdminFailure = (key: string) => {
-    const windowMs = 15 * 60_000;
-    const now = Date.now();
-    const failures = (adminFailureBuckets.get(key) || []).filter((ts) => now - ts < windowMs);
-    if (!adminFailureBuckets.has(key)) pruneRouterMap(adminFailureBuckets);
-    failures.push(now);
-    adminFailureBuckets.set(key, failures);
+  const extractRawClientIp = (req: Request): string => {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0]!.trim();
+    if (Array.isArray(xff) && xff.length > 0) return String(xff[0]).trim();
+    return req.socket?.remoteAddress || req.ip || '127.0.0.1';
   };
 
   const requireDatabase = async (res: Response): Promise<BloodSearchDatabase | null> => {
@@ -121,7 +173,7 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
       res.status(503).json({
         ok: false,
         code: 'NEON_DATABASE_UNCONFIGURED',
-        message: 'Primary PostgreSQL database is temporarily unavailable.',
+        message: 'Primary Neon PostgreSQL database is temporarily unavailable.',
       });
       return null;
     }
@@ -131,18 +183,22 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   const requireAuthenticatedActor = async (
     req: Request,
     res: Response,
-    db: BloodSearchDatabase
+    db: BloodSearchDatabase,
+    enforceCsrf = true
   ): Promise<ResolvedActor | null> => {
-    const verified = await verifyServerFirebaseIdentity(req, options?.verifyActorOverride);
+    const verified = await verifyRequestSession(req, db, {
+      verifyActorOverride: options?.verifyActorOverride,
+      enforceCsrfOnCookieMutation: enforceCsrf,
+    });
     if (!verified) {
       res.status(401).json({
         ok: false,
         code: 'UNAUTHENTICATED',
-        message: 'Valid Firebase Authentication Bearer token is required.',
+        message: 'Valid authenticated session is required.',
       });
       return null;
     }
-    return resolveActorRole(db, verified);
+    return verified.actor;
   };
 
   const handleRouteError = (res: Response, err: unknown) => {
@@ -154,7 +210,6 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
       });
       return;
     }
-    // Never leak internal SQL details, table names, or connection strings to clients
     console.error(
       '[NeonApiRouter] Unhandled database/API error:',
       err instanceof Error ? err.name : 'UnknownError'
@@ -168,28 +223,494 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
 
   router.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     next();
   });
 
-  // --------------------------------------------------------------------------
-  // 1. NEON / MAIN POSTGRES HEALTH & RESOURCE MONITOR
-  //    Public gets sanitized status; full storage/plan telemetry requires Admin
-  // --------------------------------------------------------------------------
-  router.get('/db/health', async (req: Request, res: Response) => {
+  // ==========================================================================
+  // 0. REAL-TIME SERVER-SENT EVENTS (SSE) STREAM
+  // ==========================================================================
+  router.get('/events/stream', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
     const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `dbhealth:${ipHash}`, 30, 60_000)) return;
+    if (!(await enforceDistributedRateLimit(res, db, `sse:${ipHash}`, 30, 60_000))) return;
+
+    const identity = await verifyRawSessionFromHeaders(req, db);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const unregister = realtimeHub.registerSseClient(res, identity);
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        clearInterval(keepAlive);
+        unregister();
+      }
+    }, 25_000);
+    keepAlive.unref?.();
+
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      unregister();
+    });
+  });
+
+  // ==========================================================================
+  // 1. AUTHENTICATION, GOOGLE OIDC, EMAIL/PASSWORD, PHONE OTP & SESSION LIFECYCLE
+  // ==========================================================================
+  router.get('/auth/config', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `authcfg:${ipHash}`, 60, 60_000))) return;
+
+    const googleClientId = resolveGoogleOauthClientId();
+    const googleClientSecret = resolveGoogleOauthClientSecret();
+
+    res.json({
+      ok: true,
+      googleClientId: googleClientId || null,
+      googleClientIdConfigured: Boolean(googleClientId),
+      googleOauthPopupConfigured: Boolean(googleClientId && googleClientSecret),
+      emailPasswordEnabled: true,
+      otpCapabilities: otpService.getPublicCapabilities(),
+      csrfRequired: true,
+    });
+  });
+
+  router.post('/auth/google/nonce', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `gnonce:${ipHash}`, 20, 60_000))) return;
 
     try {
-      const { db, info } = await ensureMainPostgresReady();
-      const report = await evaluateNeonHealthAndLimits(db, info);
+      const issued = await issueGoogleOidcNonceTx(
+        db,
+        ipHash,
+        req.body?.redirectOrigin ? String(req.body.redirectOrigin) : undefined
+      );
+      res.json({ ok: true, ...issued });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
 
+  router.get('/auth/google/url', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `gurl:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const clientId = resolveGoogleOauthClientId();
+      const clientSecret = resolveGoogleOauthClientSecret();
+      if (!clientId || !clientSecret) {
+        res.status(503).json({
+          ok: false,
+          code: 'GOOGLE_OAUTH_NOT_CONFIGURED',
+          message:
+            'Google Sign-In requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to be configured on the server.',
+        });
+        return;
+      }
+
+      const redirectUri = resolveAppCallbackRedirectUri(req);
+      const { nonce, state } = await issueGoogleOidcNonceTx(db, ipHash, redirectUri);
+
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid email profile',
+        prompt: 'select_account',
+        nonce,
+        state,
+      });
+
+      res.json({
+        ok: true,
+        url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+        redirectUri,
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/auth/google', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (
+      !(await enforceDistributedRateLimit(res, db, `glogin:${ipHash}`, 12, 60_000, {
+        blockDurationMs: 5 * 60_000,
+      }))
+    ) {
+      return;
+    }
+
+    try {
+      const idToken = String(req.body?.idToken || req.body?.credential || '').trim();
+      const nonce = String(req.body?.nonce || '').trim();
+      const expectedClientId = resolveGoogleOauthClientId();
+
+      // 1. Verify RS256 JWKS signature, issuer, audience, expiration, email_verified, and nonce
+      const claims = await verifyGoogleOidcIdToken({
+        idToken,
+        expectedClientId,
+        expectedNonce: nonce,
+      });
+
+      // 2. Atomically consume single-use nonce in Neon to block replay attacks
+      await consumeGoogleOidcNonceTx(db, nonce);
+
+      // 3. Link/create user in Neon & mint rotated SHA-256 opaque session
+      const session = await authenticateGoogleClaimsInNeonTx(
+        db,
+        claims,
+        ipHash,
+        String(req.headers['user-agent'] || '')
+      );
+
+      const ttlMs = isAdminRole(session.actor.role) ? ADMIN_SESSION_TTL_MS : SESSION_TTL_MS;
+      setOpaqueSessionCookie(req, res, session.sessionToken, ttlMs);
+
+      const account = await getUserFullAccount(db, session.actor);
+
+      res.json({
+        ok: true,
+        user: session.userProfile,
+        donorProfile: account.donorProfile,
+        privateContact: account.privateContact,
+        donations: account.donations,
+        role: session.actor.role,
+        csrfToken: session.csrfToken,
+        sessionToken: session.sessionToken,
+        expiresAt: session.expiresAt.toISOString(),
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/auth/register', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (
+      !(await enforceDistributedRateLimit(res, db, `authreg:${ipHash}`, 8, 10 * 60_000, {
+        blockDurationMs: 10 * 60_000,
+      }))
+    ) {
+      return;
+    }
+
+    try {
+      const session = await registerEmailPasswordUserTx(db, {
+        email: String(req.body?.email || ''),
+        password: String(req.body?.password || ''),
+        displayName: String(req.body?.displayName || req.body?.name || ''),
+        ipHash,
+        userAgent: String(req.headers['user-agent'] || ''),
+      });
+
+      setOpaqueSessionCookie(req, res, session.sessionToken, SESSION_TTL_MS);
+      const account = await getUserFullAccount(db, session.actor);
+
+      res.status(201).json({
+        ok: true,
+        user: session.userProfile,
+        donorProfile: account.donorProfile,
+        privateContact: account.privateContact,
+        donations: account.donations,
+        role: session.actor.role,
+        csrfToken: session.csrfToken,
+        sessionToken: session.sessionToken,
+        expiresAt: session.expiresAt.toISOString(),
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/auth/login', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (
+      !(await enforceDistributedRateLimit(res, db, `authlogin:${ipHash}`, 10, 5 * 60_000, {
+        blockDurationMs: 10 * 60_000,
+      }))
+    ) {
+      return;
+    }
+
+    try {
+      const session = await loginEmailPasswordUserTx(db, {
+        email: String(req.body?.email || ''),
+        password: String(req.body?.password || ''),
+        ipHash,
+        userAgent: String(req.headers['user-agent'] || ''),
+      });
+
+      const ttlMs = isAdminRole(session.actor.role) ? ADMIN_SESSION_TTL_MS : SESSION_TTL_MS;
+      setOpaqueSessionCookie(req, res, session.sessionToken, ttlMs);
+      const account = await getUserFullAccount(db, session.actor);
+
+      res.json({
+        ok: true,
+        user: session.userProfile,
+        donorProfile: account.donorProfile,
+        privateContact: account.privateContact,
+        donations: account.donations,
+        role: session.actor.role,
+        csrfToken: session.csrfToken,
+        sessionToken: session.sessionToken,
+        expiresAt: session.expiresAt.toISOString(),
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/auth/password-reset/request', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `pwresetreq:${ipHash}`, 5, 15 * 60_000))) return;
+
+    try {
+      const outcome = await requestPasswordResetTokenTx(db, String(req.body?.email || ''), ipHash);
+      res.json({
+        ok: true,
+        ...outcome,
+        message: 'If an account matches that email, password recovery instructions have been issued.',
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/auth/password-reset/confirm', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `pwresetcfm:${ipHash}`, 8, 15 * 60_000))) return;
+
+    try {
+      await confirmPasswordResetTokenTx(
+        db,
+        String(req.body?.token || ''),
+        String(req.body?.newPassword || req.body?.password || ''),
+        ipHash
+      );
+      clearOpaqueSessionCookie(req, res);
+      res.json({
+        ok: true,
+        message: 'Password updated and all prior sessions revoked. Please sign in with your new password.',
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/auth/otp/config', (_req: Request, res: Response) => {
+    res.json({
+      ok: true,
+      ...otpService.getPublicCapabilities(),
+    });
+  });
+
+  router.post('/auth/otp/send', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `otpsend:${ipHash}`, 8, 10 * 60_000))) return;
+
+    const outcome = await otpService.requestOtp({
+      rawPhone: String(req.body?.phone || '').slice(0, 32),
+      clientIp: extractRawClientIp(req),
+      preferDevSandbox: req.body?.preferDevSandbox === true,
+    });
+    res.status(outcome.httpStatus).json(outcome.body);
+  });
+
+  router.post('/auth/otp/verify', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `otpverify:${ipHash}`, 12, 10 * 60_000))) return;
+
+    try {
+      const outcome = otpService.verifyOtp({
+        challengeId: String(req.body?.challengeId || '').slice(0, 80),
+        rawPhone: String(req.body?.phone || '').slice(0, 32),
+        otpCode: String(req.body?.otp || '').slice(0, 12),
+        clientIp: extractRawClientIp(req),
+      });
+
+      if (!outcome.body.ok || !outcome.body.phoneE164) {
+        res.status(outcome.httpStatus).json(outcome.body);
+        return;
+      }
+
+      const session = await authenticateVerifiedPhoneInNeonTx(db, {
+        phoneE164: outcome.body.phoneE164,
+        isDevSandbox: outcome.body.deliveryMode === 'DEV_SANDBOX',
+        ipHash,
+        userAgent: String(req.headers['user-agent'] || ''),
+      });
+
+      setOpaqueSessionCookie(req, res, session.sessionToken, SESSION_TTL_MS);
+      const account = await getUserFullAccount(db, session.actor);
+
+      res.status(200).json({
+        ...outcome.body,
+        user: session.userProfile,
+        donorProfile: account.donorProfile,
+        privateContact: account.privateContact,
+        donations: account.donations,
+        role: session.actor.role,
+        csrfToken: session.csrfToken,
+        sessionToken: session.sessionToken,
+        expiresAt: session.expiresAt.toISOString(),
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/auth/me', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `authme:${ipHash}`, 90, 60_000))) return;
+
+    if (!db) {
+      res.json({ ok: true, authenticated: false, user: null, role: 'GUEST' });
+      return;
+    }
+
+    try {
+      const verified = await verifyRequestSession(req, db, {
+        verifyActorOverride: options?.verifyActorOverride,
+        enforceCsrfOnCookieMutation: false,
+      });
+
+      if (!verified) {
+        res.json({ ok: true, authenticated: false, user: null, role: 'GUEST' });
+        return;
+      }
+
+      const account = await getUserFullAccount(db, verified.actor);
+      const rotateCsrf = req.query.refreshCsrf === '1' && verified.sessionId;
+      const csrfToken =
+        rotateCsrf && verified.sessionId
+          ? await issueCsrfTokenForExistingSessionTx(db, verified.sessionId)
+          : undefined;
+
+      res.json({
+        ok: true,
+        authenticated: true,
+        user: account.user
+          ? {
+              uid: account.user.uid,
+              email: account.user.email,
+              emailVerified: account.user.emailVerified,
+              phoneHint: account.user.phoneHint,
+              displayName: account.user.displayName,
+              photoUrl: account.user.photoUrl,
+              bloodGroup: account.user.bloodGroup,
+              district: account.user.district,
+              area: account.user.area,
+              preferredLanguage: account.user.preferredLanguage,
+              familyCircleJson: account.user.familyCircleJson,
+              authProvider: account.user.authProvider,
+              accountStatus: account.user.accountStatus,
+              role: verified.actor.role,
+            }
+          : {
+              uid: verified.actor.uid,
+              email: verified.actor.email,
+              emailVerified: verified.actor.emailVerified,
+              displayName: verified.actor.displayName || 'Member',
+              photoUrl: verified.actor.photoUrl || null,
+              role: verified.actor.role,
+            },
+        donorProfile: account.donorProfile,
+        privateContact: account.privateContact,
+        donations: account.donations,
+        role: verified.actor.role,
+        isAdmin: isAdminRole(verified.actor.role),
+        isSuperAdmin: verified.actor.role === 'SUPER_ADMIN',
+        ...(csrfToken ? { csrfToken } : {}),
+      });
+    } catch (err) {
+      if (err instanceof DomainSecurityError && err.code === 'ACCOUNT_SUSPENDED') {
+        clearOpaqueSessionCookie(req, res);
+      }
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/auth/logout', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `authlogout:${ipHash}`, 30, 60_000))) return;
+
+    try {
+      if (db) {
+        // Verify CSRF if an active cookie session exists before revoking
+        const verified = await verifyRequestSession(req, db, {
+          verifyActorOverride: options?.verifyActorOverride,
+          enforceCsrfOnCookieMutation: true,
+        });
+        if (verified) {
+          await logoutOpaqueSessionTx(db, req);
+          await writeAuditLog(db, {
+            actorUid: verified.actor.uid,
+            actorRole: verified.actor.role,
+            action: 'SESSION_LOGOUT',
+            targetEntityType: 'login_sessions',
+            targetEntityId: verified.sessionId || verified.actor.uid,
+            outcome: 'SUCCESS',
+            ipHash,
+          });
+        }
+      }
+      clearOpaqueSessionCookie(req, res);
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // ==========================================================================
+  // 2. NEON DATABASE HEALTH & ADMIN CONSOLE VERIFICATION
+  // ==========================================================================
+  router.get('/db/health', async (req: Request, res: Response) => {
+    const { db, info } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `dbhealth:${ipHash}`, 30, 60_000))) return;
+
+    try {
+      const report = await evaluateNeonHealthAndLimits(db, info);
       let isAdmin = false;
       if (db) {
-        const verified = await verifyServerFirebaseIdentity(req, options?.verifyActorOverride);
+        const verified = await verifyRequestSession(req, db, {
+          verifyActorOverride: options?.verifyActorOverride,
+          enforceCsrfOnCookieMutation: false,
+        });
         if (verified) {
-          const actor = await resolveActorRole(db, verified);
-          isAdmin = isAdminRole(actor.role);
+          isAdmin = isAdminRole(verified.actor.role);
         }
       }
 
@@ -211,39 +732,55 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 1B. SERVER-AUTHORITATIVE ADMIN VERIFICATION & BRUTE-FORCE SHIELD
-  //     Never leaks owner email or internal admin identifiers in responses
-  // --------------------------------------------------------------------------
   router.get('/auth/admin-verify', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `adminverify:${ipHash}`, 15, 60_000)) return;
-    if (!checkAdminLockout(res, `adminlock:ip:${ipHash}`)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
 
+    const ipHash = extractHashedClientIp(req);
+    if (
+      !(await enforceDistributedRateLimit(res, db, `adminverify:${ipHash}`, 12, 5 * 60_000, {
+        blockDurationMs: 15 * 60_000,
+        code: 'ADMIN_BRUTE_FORCE_LOCKED',
+      }))
+    ) {
+      return;
+    }
+
     try {
-      const verified = await verifyServerFirebaseIdentity(req, options?.verifyActorOverride);
+      const verified = await verifyRequestSession(req, db, {
+        verifyActorOverride: options?.verifyActorOverride,
+        enforceCsrfOnCookieMutation: false,
+      });
+
       if (!verified) {
-        recordAdminFailure(`adminlock:ip:${ipHash}`);
         res.status(401).json({
           ok: false,
           isAdmin: false,
           code: 'UNAUTHENTICATED',
-          message: 'Valid authentication token is required.',
+          message: 'Valid authenticated session is required.',
         });
         return;
       }
 
-      if (!checkAdminLockout(res, `adminlock:uid:${verified.uid}`)) return;
-
-      const actor = await resolveActorRole(db, verified);
+      const actor = verified.actor;
       const granted = isAdminRole(actor.role);
 
       if (!granted) {
-        recordAdminFailure(`adminlock:ip:${ipHash}`);
-        recordAdminFailure(`adminlock:uid:${actor.uid}`);
+        if (
+          !(await enforceDistributedRateLimit(
+            res,
+            db,
+            `adminverify_fail:${actor.uid}:${ipHash}`,
+            5,
+            15 * 60_000,
+            {
+              blockDurationMs: 15 * 60_000,
+              code: 'ADMIN_BRUTE_FORCE_LOCKED',
+            }
+          ))
+        ) {
+          return;
+        }
         await writeAuditLog(db, {
           actorUid: actor.uid,
           actorRole: actor.role,
@@ -285,15 +822,106 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 2. PUBLIC PAGINATED & GEOSPATIAL DONOR SEARCH (ZERO RAW PHONE NUMBERS)
-  // --------------------------------------------------------------------------
-  router.get('/donors/search', async (req: Request, res: Response) => {
+  // ==========================================================================
+  // 3. USER PROFILE, FAMILY CIRCLE & MANUAL DONATION LOGGING
+  // ==========================================================================
+  router.get('/users/me', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
     const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `donorsearch:${ipHash}`, 60, 60_000)) return;
+    if (!(await enforceDistributedRateLimit(res, db, `userme:${ipHash}`, 60, 60_000))) return;
 
     try {
-      const { db } = await ensureMainPostgresReady();
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const account = await getUserFullAccount(db, actor);
+      res.json({ ok: true, ...account });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.patch('/users/me', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `userpatch:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const updated = await updateUserAccountTx(db, actor, {
+        displayName: req.body?.displayName,
+        photoUrl: req.body?.photoUrl,
+        bloodGroup: req.body?.bloodGroup,
+        district: req.body?.district,
+        area: req.body?.area,
+        preferredLanguage: req.body?.preferredLanguage,
+        familyCircleJson: req.body?.familyCircleJson,
+      });
+      res.json({ ok: true, user: updated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/users/me/donations', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `userdon:${ipHash}`, 10, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const created = await recordManualDonationTx(db, actor, {
+        hospitalName: String(req.body?.hospitalName || ''),
+        bloodGroup: String(req.body?.bloodGroup || ''),
+        unitsDonated: req.body?.unitsDonated !== undefined ? Number(req.body.unitsDonated) : 1,
+        donatedAt: req.body?.donatedAt,
+        notes: req.body?.notes ? String(req.body.notes) : undefined,
+      });
+
+      realtimeHub.emitEvent('donors:updated', 'public:donors', { uid: actor.uid });
+      res.status(201).json({ ok: true, donation: created });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/users/me', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `userdel:${ipHash}`, 5, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await deleteOwnUserAndDonorAccountTx(db, actor);
+      realtimeHub.emitEvent('donors:deleted', 'public:donors', { donorId: actor.uid });
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // ==========================================================================
+  // 4. PUBLIC PAGINATED DONOR SEARCH, DONOR CRUD & PROTECTED PRIVATE CONTACTS
+  // ==========================================================================
+  router.get('/donors/search', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `donorsearch:${ipHash}`, 60, 60_000))) return;
+
+    try {
       if (!db) {
         const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
         const limit = Math.min(50, Math.max(1, Math.floor(Number(req.query.limit) || 20)));
@@ -353,16 +981,12 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 3. DONOR PROFILE + PRIVATE CONTACT REGISTRATION / UPDATE (AUTHENTICATED)
-  //    Explicitly ignores any client-sent `role` or `isAdmin` fields
-  // --------------------------------------------------------------------------
   router.post('/donors/profile', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `donorupsert:${ipHash}`, 15, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `donorupsert:${ipHash}`, 15, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
@@ -388,6 +1012,10 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         facebookProfileUrl: body.facebookProfileUrl ?? body.facebookUrl ?? null,
         exactStreetAddress: body.exactStreetAddress ?? null,
         isAvailable: body.isAvailable,
+        availabilityStatus: body.availabilityStatus,
+        dndUntil: body.dndUntil ?? null,
+        lastDonationDate: body.lastDonationDate ?? null,
+        avatarUrl: body.avatarUrl ?? null,
         shareDirectContact: body.shareDirectContact,
         contactPreference: body.contactPreference,
         contactVisibility: body.contactVisibility,
@@ -395,24 +1023,64 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         bio: body.bio ?? null,
       });
 
+      realtimeHub.emitEvent('donors:updated', 'public:donors', { donorId: profile.id });
       res.status(201).json({ ok: true, profile });
     } catch (err) {
       handleRouteError(res, err);
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 4. PROTECTED DONOR PRIVATE CONTACT UNMASK & OPTED-IN SINGLE-DONOR LOOKUP
-  // --------------------------------------------------------------------------
-  router.get('/donors/:donorUid/opted-in-contact', async (req: Request, res: Response) => {
+  router.delete('/donors/:donorUid', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
     const ipHash = extractHashedClientIp(req);
-    // Strict anti-scraping cap: single-donor lookup only (max 20/min per IP)
-    if (!enforceRateLimit(res, `optincontact:${ipHash}`, 20, 60_000)) return;
+    if (!(await enforceDistributedRateLimit(res, db, `donordel:${ipHash}`, 15, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await deleteDonorProfileAdminOrSelfTx(db, actor, String(req.params.donorUid || ''));
+      realtimeHub.emitEvent('donors:deleted', 'public:donors', { donorId: req.params.donorUid });
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/donors/:donorUid/verify', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `donorver:${ipHash}`, 25, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const updated = await updateDonorVerificationAdminTx(
+        db,
+        actor,
+        String(req.params.donorUid || ''),
+        Boolean(req.body?.isVerified)
+      );
+      realtimeHub.emitEvent('donors:updated', 'public:donors', { donorId: updated.id });
+      res.json({ ok: true, profile: updated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/donors/:donorUid/opted-in-contact', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `optincontact:${ipHash}`, 20, 60_000))) return;
 
     const silentFrontendProbe = req.query.silent === '1';
 
     try {
-      const { db } = await ensureMainPostgresReady();
       if (!db) {
         res.json({ ok: false, dbConfigured: false, found: false, contact: null });
         return;
@@ -452,13 +1120,13 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.get('/donors/:donorUid/contact', async (req: Request, res: Response) => {
+    const { db } = await ensureMainPostgresReady();
     const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `contactunmask:${ipHash}`, 12, 60_000)) return;
+    if (!(await enforceDistributedRateLimit(res, db, `contactunmask:${ipHash}`, 12, 60_000))) return;
 
     const silentFrontendProbe = req.query.silent === '1';
 
     try {
-      const { db } = await ensureMainPostgresReady();
       if (!db) {
         if (silentFrontendProbe) {
           res.json({ ok: false, dbConfigured: false, found: false, contact: null });
@@ -472,9 +1140,9 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         return;
       }
 
-      const actor = await requireAuthenticatedActor(req, res, db);
+      const actor = await requireAuthenticatedActor(req, res, db, false);
       if (!actor) return;
-      if (!enforceRateLimit(res, `contactunmask:uid:${actor.uid}`, 10, 60_000)) return;
+      if (!(await enforceDistributedRateLimit(res, db, `contactunmask:uid:${actor.uid}`, 10, 60_000))) return;
 
       const contact = await getAuthorizedDonorPrivateContactTx(
         db,
@@ -502,43 +1170,65 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   router.post(
     ['/donors/:donorUid/contact-request', '/donors/:donorUid/contact-requests'],
     async (req: Request, res: Response) => {
-      const ipHash = extractHashedClientIp(req);
-      if (!enforceRateLimit(res, `contactreq:${ipHash}`, 10, 60_000)) return;
+      const db = await requireDatabase(res);
+      if (!db) return;
 
+      const ipHash = extractHashedClientIp(req);
+      if (!(await enforceDistributedRateLimit(res, db, `contactreq:${ipHash}`, 10, 60_000))) return;
+
+      try {
+        const actor = await requireAuthenticatedActor(req, res, db);
+        if (!actor) return;
+        if (!(await enforceDistributedRateLimit(res, db, `contactreq:uid:${actor.uid}`, 8, 60_000))) return;
+
+        const consent = await requestDonorContactConsentTx(
+          db,
+          actor,
+          String(req.params.donorUid || ''),
+          String(req.body?.reason || ''),
+          req.body?.requestId ? String(req.body.requestId) : undefined
+        );
+
+        realtimeHub.emitEvent('notifications:new', `user:${consent.userUid}`, {
+          consentId: consent.id,
+        });
+        res.status(201).json({ ok: true, consent });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    }
+  );
+
+  router.get('/consents', async (req: Request, res: Response) => {
     const db = await requireDatabase(res);
     if (!db) return;
 
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `consentslist:${ipHash}`, 30, 60_000))) return;
+
     try {
-      const actor = await requireAuthenticatedActor(req, res, db);
+      const actor = await requireAuthenticatedActor(req, res, db, false);
       if (!actor) return;
-      if (!enforceRateLimit(res, `contactreq:uid:${actor.uid}`, 8, 60_000)) return;
-
-      const consent = await requestDonorContactConsentTx(
-        db,
-        actor,
-        String(req.params.donorUid || ''),
-        String(req.body?.reason || ''),
-        req.body?.requestId ? String(req.body.requestId) : undefined
-      );
-
-      res.status(201).json({ ok: true, consent });
+      const items = await listContactRequestsForActor(db, actor);
+      res.json({ ok: true, items });
     } catch (err) {
       handleRouteError(res, err);
     }
   });
 
   router.post('/consents/:consentId/respond', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `consentresp:${ipHash}`, 15, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `consentresp:${ipHash}`, 15, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
       if (!actor) return;
 
-      const decision = req.body?.decision === 'GRANTED' ? 'GRANTED' : 'REVOKED';
+      const decision =
+        req.body?.decision === 'GRANTED' || req.body?.decision === 'APPROVED' ? 'GRANTED' : 'REVOKED';
       const updated = await respondDonorContactConsentTx(
         db,
         actor,
@@ -546,25 +1236,34 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         decision
       );
 
+      if (updated.counterpartyUid) {
+        realtimeHub.emitEvent('notifications:new', `user:${updated.counterpartyUid}`, {
+          consentId: updated.id,
+          status: updated.status,
+        });
+      }
       res.json({ ok: true, consent: updated });
     } catch (err) {
       handleRouteError(res, err);
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 5. BLOOD REQUESTS: CREATE, LIST, RESPOND, ESCALATE, STATE TRANSITION
-  // --------------------------------------------------------------------------
+  // ==========================================================================
+  // 5. BLOOD REQUESTS, SOS ALERTS, NOTIFICATIONS & LIVE DONOR GPS TRIPS
+  // ==========================================================================
   router.get('/requests', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `reqlist:${ipHash}`, 60, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
 
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqlist:${ipHash}`, 60, 60_000))) return;
+
     try {
-      const verified = await verifyServerFirebaseIdentity(req, options?.verifyActorOverride);
-      const optionalActor = verified ? await resolveActorRole(db, verified) : null;
+      const verified = await verifyRequestSession(req, db, {
+        verifyActorOverride: options?.verifyActorOverride,
+        enforceCsrfOnCookieMutation: false,
+      });
+      const optionalActor = verified ? verified.actor : null;
 
       const data = await listBloodRequestsPaginated(db, optionalActor, {
         bloodGroup: req.query.bloodGroup ? String(req.query.bloodGroup) : undefined,
@@ -581,16 +1280,16 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.post('/requests', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `reqcreate:${ipHash}`, 8, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqcreate:${ipHash}`, 8, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
       if (!actor) return;
-      if (!enforceRateLimit(res, `reqcreate:uid:${actor.uid}`, 5, 60_000)) return;
+      if (!(await enforceDistributedRateLimit(res, db, `reqcreate:uid:${actor.uid}`, 5, 60_000))) return;
 
       const body = req.body || {};
       const outcome = await createBloodRequestWithAlertsTx(db, actor, {
@@ -610,6 +1309,18 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         shareDirectContact: body.shareDirectContact !== false,
       });
 
+      realtimeHub.emitEvent('requests:created', 'public:requests', {
+        requestId: outcome.request.id,
+        bloodGroup: outcome.request.bloodGroup,
+        district: outcome.request.district,
+      });
+      for (const donorUid of outcome.notifiedDonorUids || []) {
+        realtimeHub.emitEvent('alerts:sos', `user:${donorUid}`, {
+          requestId: outcome.request.id,
+          bloodGroup: outcome.request.bloodGroup,
+        });
+      }
+
       res.status(201).json({ ok: true, ...outcome });
     } catch (err) {
       handleRouteError(res, err);
@@ -617,11 +1328,11 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.post('/requests/:requestId/respond', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `reqresp:${ipHash}`, 20, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqresp:${ipHash}`, 20, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
@@ -639,6 +1350,9 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         }
       );
 
+      realtimeHub.emitEvent('requests:updated', 'public:requests', {
+        requestId: req.params.requestId,
+      });
       res.json({ ok: true, response });
     } catch (err) {
       handleRouteError(res, err);
@@ -646,11 +1360,11 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.post('/requests/:requestId/escalate', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `reqesc:${ipHash}`, 10, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqesc:${ipHash}`, 10, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
@@ -661,6 +1375,10 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         actor,
         String(req.params.requestId || '')
       );
+      realtimeHub.emitEvent('requests:updated', 'public:requests', {
+        requestId: updatedRequest.id,
+        escalationLevel: updatedRequest.escalationLevel,
+      });
       res.json({ ok: true, request: updatedRequest });
     } catch (err) {
       handleRouteError(res, err);
@@ -668,11 +1386,11 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.post('/requests/:requestId/transition', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `reqtrans:${ipHash}`, 12, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqtrans:${ipHash}`, 12, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
@@ -691,23 +1409,428 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         }
       );
 
+      realtimeHub.emitEvent('requests:updated', 'public:requests', {
+        requestId: req.params.requestId,
+        status: body.nextStatus,
+      });
+      if (body.fulfilledByDonorUid) {
+        realtimeHub.emitEvent('donors:updated', 'public:donors', {
+          uid: body.fulfilledByDonorUid,
+        });
+      }
       res.json({ ok: true, ...outcome });
     } catch (err) {
       handleRouteError(res, err);
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 6. HOSPITALS, BLOOD BANKS & INVENTORY
-  // --------------------------------------------------------------------------
-  router.get('/hospitals', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `hospitals:${ipHash}`, 60, 60_000)) return;
-
+  router.delete('/requests/:requestId', async (req: Request, res: Response) => {
     const db = await requireDatabase(res);
     if (!db) return;
 
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqdel:${ipHash}`, 15, 60_000))) return;
+
     try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const deleted = await deleteBloodRequestAdminOrOwnerTx(
+        db,
+        actor,
+        String(req.params.requestId || '')
+      );
+      if (deleted) {
+        realtimeHub.emitEvent('requests:updated', 'public:requests', {
+          requestId: req.params.requestId,
+          deleted: true,
+        });
+      }
+      res.json({ ok: true, deleted });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/alerts', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `alertslist:${ipHash}`, 40, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listEmergencyAlertsForActor(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/notifications', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `notifslist:${ipHash}`, 40, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listNotificationsForActor(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/notifications/read', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `notifsread:${ipHash}`, 40, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+      await markNotificationsReadTx(
+        db,
+        actor,
+        req.body?.notificationId ? String(req.body.notificationId) : undefined
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/trips', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `tripslist:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listActiveLiveDonorTrips(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/trips', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `tripsupsert:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const trip = await upsertLiveDonorTripTx(db, actor, {
+        requestId: String(req.body?.requestId || ''),
+        currentLat: Number(req.body?.currentLat ?? req.body?.lat),
+        currentLng: Number(req.body?.currentLng ?? req.body?.lng),
+        hospitalLat: req.body?.hospitalLat !== undefined ? Number(req.body.hospitalLat) : undefined,
+        hospitalLng: req.body?.hospitalLng !== undefined ? Number(req.body.hospitalLng) : undefined,
+        etaMinutes: req.body?.etaMinutes !== undefined ? Number(req.body.etaMinutes) : undefined,
+        distanceKm: req.body?.distanceKm !== undefined ? Number(req.body.distanceKm) : undefined,
+        tripStatus: req.body?.tripStatus,
+      });
+
+      realtimeHub.emitEvent('trips:updated', 'public:trips', { tripId: trip.id });
+      res.json({ ok: true, trip });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.patch('/trips/:tripId/status', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `tripstat:${ipHash}`, 40, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const rawStatus = String(req.body?.tripStatus || 'EN_ROUTE').toUpperCase();
+      const nextStatus: 'EN_ROUTE' | 'ARRIVED' | 'COMPLETED' | 'STOPPED' =
+        rawStatus === 'ARRIVED'
+          ? 'ARRIVED'
+          : rawStatus === 'COMPLETED'
+            ? 'COMPLETED'
+            : rawStatus === 'CANCELLED' || rawStatus === 'STOPPED'
+              ? 'STOPPED'
+              : 'EN_ROUTE';
+
+      const trip = await updateLiveDonorTripStatusTx(
+        db,
+        actor,
+        String(req.params.tripId || ''),
+        nextStatus
+      );
+      realtimeHub.emitEvent('trips:updated', 'public:trips', { tripId: trip.id });
+      res.json({ ok: true, trip });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // ==========================================================================
+  // 6. COMMUNITY CHAT & DIRECT 1-TO-1 CHAT
+  // ==========================================================================
+  router.get('/chat/community', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `commget:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      const items = await listCommunityMessages(
+        db,
+        req.query.district ? String(req.query.district) : undefined,
+        req.query.limit ? Number(req.query.limit) : 60
+      );
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/chat/community', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `commpost:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+      if (!(await enforceDistributedRateLimit(res, db, `commpost:uid:${actor.uid}`, 15, 60_000))) return;
+
+      const message = await postCommunityMessageTx(db, actor, {
+        messageText: String(req.body?.messageText || req.body?.text || ''),
+        district: req.body?.district ? String(req.body.district) : null,
+        attachmentType: req.body?.attachmentType,
+        attachmentJson: req.body?.attachmentJson || null,
+        replyToId: req.body?.replyToId ? String(req.body.replyToId) : null,
+        replyToName: req.body?.replyToName ? String(req.body.replyToName) : null,
+        replyToText: req.body?.replyToText ? String(req.body.replyToText) : null,
+      });
+
+      realtimeHub.emitEvent('community:message', 'public:community', { message });
+      res.status(201).json({ ok: true, message });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/chat/community/:messageId/react', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `commreact:${ipHash}`, 40, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const updated = await toggleCommunityMessageReactionTx(
+        db,
+        actor,
+        String(req.params.messageId || ''),
+        String(req.body?.emoji || '')
+      );
+      realtimeHub.emitEvent('community:updated', 'public:community', { messageId: updated.id });
+      res.json({ ok: true, message: updated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/chat/community/:messageId', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `commdel:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await deleteCommunityMessageTx(db, actor, String(req.params.messageId || ''));
+      realtimeHub.emitEvent('community:deleted', 'public:community', { messageId: req.params.messageId });
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/chat/rooms', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `roomsget:${ipHash}`, 50, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listDirectChatRoomsForActor(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/chat/rooms', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `roomscreate:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const room = await getOrCreateDirectChatRoomTx(db, actor, String(req.body?.peerUid || ''), {
+        peerName: req.body?.peerName ? String(req.body.peerName) : undefined,
+        relatedRequestId: req.body?.relatedRequestId ? String(req.body.relatedRequestId) : undefined,
+        hospitalName: req.body?.hospitalName ? String(req.body.hospitalName) : undefined,
+      });
+
+      res.status(201).json({ ok: true, room });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/chat/rooms/:roomId/messages', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `roommsgs:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+
+      const items = await listDirectMessagesForRoom(db, actor, String(req.params.roomId || ''));
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/chat/rooms/:roomId/messages', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `roomsend:${ipHash}`, 25, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+      if (!(await enforceDistributedRateLimit(res, db, `roomsend:uid:${actor.uid}`, 20, 60_000))) return;
+
+      const { message, room } = await postDirectMessageTx(db, actor, String(req.params.roomId || ''), {
+        messageText: String(req.body?.messageText || req.body?.text || ''),
+        attachmentType: req.body?.attachmentType ? String(req.body.attachmentType) : null,
+        metadataJson: req.body?.metadataJson || null,
+      });
+
+      const participants = [room.participantOneUid, room.participantTwoUid];
+      realtimeHub.emitEvent(
+        'direct:message',
+        `room:${room.id}`,
+        { roomId: room.id, message },
+        participants
+      );
+      const recipientUid = room.participantOneUid === actor.uid ? room.participantTwoUid : room.participantOneUid;
+      realtimeHub.emitEvent('notifications:new', `user:${recipientUid}`, {
+        roomId: room.id,
+      });
+
+      res.status(201).json({ ok: true, message });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/chat/rooms/:roomId/messages/:messageId', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `roommsgdel:${ipHash}`, 30, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const deleted = await deleteDirectMessageTx(
+        db,
+        actor,
+        String(req.params.roomId || ''),
+        String(req.params.messageId || '')
+      );
+      res.json({ ok: true, deleted });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/chat/rooms/:roomId', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `roomdel:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const deleted = await deleteDirectChatRoomTx(db, actor, String(req.params.roomId || ''));
+      res.json({ ok: true, deleted });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // ==========================================================================
+  // 7. HOSPITALS, BLOOD BANKS, INVENTORY, ANNOUNCEMENTS, REPORTS & GRATITUDE
+  // ==========================================================================
+  router.get('/hospitals', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `hospitals:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      if (!seededHospitalsOnce) {
+        seededHospitalsOnce = true;
+        await seedBaselineHospitalsAndInventoryIfEmptyTx(db).catch(() => {});
+      }
       const items = await listHospitalsByDistrict(
         db,
         req.query.district ? String(req.query.district) : undefined
@@ -719,13 +1842,17 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.get(['/inventory', '/blood-inventory'], async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `invlist:${ipHash}`, 60, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
 
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `invlist:${ipHash}`, 60, 60_000))) return;
+
     try {
+      if (!seededHospitalsOnce) {
+        seededHospitalsOnce = true;
+        await seedBaselineHospitalsAndInventoryIfEmptyTx(db).catch(() => {});
+      }
       const items = await listBloodInventory(
         db,
         req.query.district ? String(req.query.district) : undefined
@@ -736,23 +1863,218 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     }
   });
 
-  // --------------------------------------------------------------------------
-  // 7. ADMIN, SUPER ADMIN, AUDIT LOGS, DEVICE TOKENS & SESSIONS
-  // --------------------------------------------------------------------------
-  const handleAdminInventoryWrite = async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `admininv:${ipHash}`, 25, 60_000)) return;
-
+  router.get('/announcements', async (req: Request, res: Response) => {
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `annlist:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      const rawType = req.query.type ? String(req.query.type).toUpperCase() : undefined;
+      const announcementType =
+        rawType === 'BROADCAST' || rawType === 'OTA_APP_UPDATE' ? rawType : undefined;
+      const items = await listActiveAnnouncements(db, announcementType);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/announcements', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `annpub:${ipHash}`, 15, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const created = await publishAnnouncementAdminTx(db, actor, {
+        announcementType: req.body?.announcementType,
+        title: String(req.body?.title || ''),
+        body: String(req.body?.body || ''),
+        priority: req.body?.priority,
+        targetVersion: req.body?.targetVersion ?? null,
+        apkDownloadUrl: req.body?.apkDownloadUrl ?? null,
+        forceUpdate: Boolean(req.body?.forceUpdate),
+      });
+
+      realtimeHub.emitEvent('announcements:updated', 'public:announcements', { id: created.id });
+      res.status(201).json({ ok: true, announcement: created });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/admin/announcements/:id', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `anndel:${ipHash}`, 15, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await deleteAnnouncementAdminTx(db, actor, String(req.params.id || ''));
+      realtimeHub.emitEvent('announcements:updated', 'public:announcements', { id: req.params.id });
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/reports', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reportpost:${ipHash}`, 8, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const report = await createScamReportTx(db, actor, {
+        accusedUid: req.body?.accusedUid ?? null,
+        accusedName: req.body?.accusedName ?? null,
+        accusedPhone: req.body?.accusedPhone ?? null,
+        category: req.body?.category,
+        description: String(req.body?.description || ''),
+      });
+      realtimeHub.emitEvent('reports:new', 'admin:ops', { reportId: report.id });
+      res.status(201).json({ ok: true, report });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/admin/reports', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reportget:${ipHash}`, 30, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listScamReportsAdmin(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/reports/:reportId/resolve', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reportres:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const rawStatus = String(req.body?.status || 'ACTION_TAKEN').toUpperCase();
+      const status: 'UNDER_REVIEW' | 'ACTION_TAKEN' | 'DISMISSED' =
+        rawStatus === 'UNDER_REVIEW' || rawStatus === 'DISMISSED' ? rawStatus : 'ACTION_TAKEN';
+
+      const updated = await resolveScamReportAdminTx(
+        db,
+        actor,
+        String(req.params.reportId || ''),
+        status,
+        req.body?.resolutionNote ? String(req.body.resolutionNote) : undefined
+      );
+      realtimeHub.emitEvent('reports:updated', 'admin:ops', { reportId: updated.id });
+      res.json({ ok: true, report: updated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/admin/reports/:reportId', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reportdel:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await deleteScamReportAdminTx(db, actor, String(req.params.reportId || ''));
+      realtimeHub.emitEvent('reports:updated', 'admin:ops', { reportId: req.params.reportId });
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/gratitude', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `gratget:${ipHash}`, 60, 60_000))) return;
+
+    try {
+      const items = await listGratitudeNotes(db, req.query.limit ? Number(req.query.limit) : 30);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/gratitude', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `gratpost:${ipHash}`, 10, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const created = await postGratitudeNoteTx(db, actor, {
+        honoredDonorUid: req.body?.honoredDonorUid ?? null,
+        honoredDonorName: req.body?.honoredDonorName ?? null,
+        bloodGroup: req.body?.bloodGroup ?? null,
+        district: req.body?.district ?? null,
+        message: String(req.body?.message || ''),
+      });
+      realtimeHub.emitEvent('gratitude:new', 'public:gratitude', { id: created.id });
+      res.status(201).json({ ok: true, note: created });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // ==========================================================================
+  // 8. ADMIN GOVERNANCE, CO-ADMIN INVITES, AUDIT LOGS & MAINTENANCE JOBS
+  // ==========================================================================
+  const handleAdminInventoryWrite = async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininv:${ipHash}`, 25, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
       if (!actor) return;
 
       const updated = await updateBloodInventoryTx(db, actor, {
-        bloodBankCode: String(req.body?.bloodBankCode || req.body?.bloodBankId || 'DEFAULT-BANK'),
-        bloodBankName: String(req.body?.bloodBankName || 'Central Blood Bank'),
+        bloodBankCode: String(req.body?.bloodBankCode || req.body?.bloodBankId || 'BD-CENTRAL-RESERVE'),
+        bloodBankName: String(req.body?.bloodBankName || 'BloodSearch Central Transfusion Reserve'),
         district: String(req.body?.district || 'Dhaka'),
         address: String(req.body?.address || 'Bangladesh'),
         contactPhone: String(req.body?.contactPhone || '16263'),
@@ -763,6 +2085,9 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
           req.body?.criticalThreshold !== undefined ? Number(req.body.criticalThreshold) : undefined,
       });
 
+      realtimeHub.emitEvent('stock:updated', 'public:stock', {
+        bloodGroup: updated.inventory.bloodGroup,
+      });
       res.json({ ok: true, bank: updated.bank, inventory: updated.inventory });
     } catch (err) {
       handleRouteError(res, err);
@@ -772,12 +2097,29 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   router.put('/admin/inventory', handleAdminInventoryWrite);
   router.post('/admin/blood-inventory', handleAdminInventoryWrite);
 
-  router.post('/admin/roles', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `adminroles:${ipHash}`, 10, 60_000)) return;
-
+  router.get('/admin/admins', async (req: Request, res: Response) => {
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `adminlist:${ipHash}`, 25, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listAdminsAdmin(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/roles', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `adminroles:${ipHash}`, 10, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
@@ -797,15 +2139,294 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     }
   });
 
-  router.get('/admin/audit-logs', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `auditlogs:${ipHash}`, 20, 60_000)) return;
-
+  router.get('/admin/users', async (req: Request, res: Response) => {
     const db = await requireDatabase(res);
     if (!db) return;
 
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `adminusers:${ipHash}`, 25, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listUsersAdmin(db, actor, req.query.limit ? Number(req.query.limit) : 100);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/users/:uid/status', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `adminustatus:${ipHash}`, 15, 60_000))) return;
+
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const nextStatus = req.body?.accountStatus === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE';
+      const updated = await updateUserAccountStatusAdminTx(
+        db,
+        actor,
+        String(req.params.uid || ''),
+        nextStatus
+      );
+      res.json({ ok: true, user: updated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/admin/invites', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininvlist:${ipHash}`, 25, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
+      if (!actor) return;
+      const items = await listOwnerInviteLocksTx(db, actor);
+      res.json({ ok: true, items });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/invites', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininvcreate:${ipHash}`, 8, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      if (req.body?.rawCode) {
+        const lock = await createCustomOwnerInviteLockTx(
+          db,
+          actor,
+          String(req.body.rawCode),
+          String(req.body?.label || 'Admin Invite Code')
+        );
+        res.status(201).json({ ok: true, ...lock });
+        return;
+      }
+
+      const invite = await createCoAdminInviteCodeTx(db, actor, String(req.body?.targetEmail || ''));
+      res.status(201).json({ ok: true, ...invite });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.patch('/admin/invites/:proofHash', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininvtoggle:${ipHash}`, 15, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await toggleOwnerInviteLockTx(
+        db,
+        actor,
+        String(req.params.proofHash || ''),
+        Boolean(req.body?.active),
+        req.body?.label ? String(req.body.label) : undefined
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/admin/invites/:proofHash', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininvdel:${ipHash}`, 15, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await deleteOwnerInviteLockTx(db, actor, String(req.params.proofHash || ''));
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/invites/verify', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininvver:${ipHash}`, 10, 5 * 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      if (actor.role === 'SUPER_ADMIN') {
+        res.json({ ok: true, valid: true, proofHash: `SUPER_OWNER_${actor.uid.slice(0, 12)}` });
+        return;
+      }
+
+      const checked = await verifyOrClaimOwnerVaultInviteCodeTx(
+        db,
+        actor,
+        String(req.body?.inviteCode || ''),
+        false
+      );
+      res.json({ ok: true, ...checked });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/invites/claim', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admininvclaim:${ipHash}`, 8, 5 * 60_000))) return;
+
+    try {
+      const verified = await verifyRequestSession(req, db, {
+        verifyActorOverride: options?.verifyActorOverride,
+        enforceCsrfOnCookieMutation: true,
+      });
+      if (!verified) {
+        res.status(401).json({ ok: false, code: 'UNAUTHENTICATED', message: 'Sign in first.' });
+        return;
+      }
+
+      const codeStr = String(req.body?.inviteCode || '');
+      let granted: unknown = null;
+
+      // Support both Email-Bound BSADM codes and Super Owner Vault codes
+      try {
+        granted = await claimCoAdminInviteCodeTx(db, verified.actor, codeStr);
+      } catch (err) {
+        const vaultResult = await verifyOrClaimOwnerVaultInviteCodeTx(
+          db,
+          verified.actor,
+          codeStr,
+          true
+        );
+        if (!vaultResult.valid) {
+          throw err;
+        }
+        granted = vaultResult;
+      }
+
+      // Immediately rotate session after privilege elevation!
+      let rotated: { csrfToken?: string; sessionToken?: string } = {};
+      if (verified.authTransport !== 'TEST_OVERRIDE') {
+        const freshSession = await createOpaqueSessionTx(db, {
+          userUid: verified.actor.uid,
+          authMethod: 'GOOGLE_OIDC',
+          ipHash,
+          userAgent: String(req.headers['user-agent'] || ''),
+          rotateExistingSessions: true,
+          rotatedFromSessionId: verified.sessionId || undefined,
+        });
+        setOpaqueSessionCookie(req, res, freshSession.sessionToken, ADMIN_SESSION_TTL_MS);
+        rotated = {
+          csrfToken: freshSession.csrfToken,
+          sessionToken: freshSession.sessionToken,
+        };
+      }
+
+      res.json({ ok: true, adminRole: granted, ...rotated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/zero-slate-reset', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `zeroslate:${ipHash}`, 3, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      await zeroSlateOperationalResetAdminTx(db, actor);
+      realtimeHub.emitEvent('requests:updated', 'public:requests', { reset: true });
+      realtimeHub.emitEvent('community:updated', 'public:community', { reset: true });
+      res.json({ ok: true });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/notifications/retry', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `notifretry:${ipHash}`, 10, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+      if (!isAdminRole(actor.role)) {
+        throw new DomainSecurityError(403, 'ADMIN_REQUIRED', 'Admin role required.');
+      }
+
+      const result = await retryFailedNotificationsAndAlertsTx(db, actor);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.post('/admin/requests/expire-stale', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `reqexp:${ipHash}`, 10, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+      if (!isAdminRole(actor.role)) {
+        throw new DomainSecurityError(403, 'ADMIN_REQUIRED', 'Admin role required.');
+      }
+
+      const expiredCount = await expireStaleBloodRequestsTx(db);
+      res.json({ ok: true, expiredCount });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/admin/audit-logs', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `auditlogs:${ipHash}`, 20, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db, false);
       if (!actor) return;
 
       const logs = await queryAuditLogsPaginated(
@@ -821,18 +2442,18 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.post('/devices/token', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `devtok:${ipHash}`, 15, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `devtok:${ipHash}`, 15, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
       if (!actor) return;
 
       const saved = await upsertDeviceTokenTx(db, actor, {
-        fcmToken: String(req.body?.fcmToken || ''),
+        pushToken: String(req.body?.pushToken || req.body?.deviceToken || ''),
         platform: String(req.body?.platform || 'WEB_PWA').toUpperCase() as
           | 'WEB_PWA'
           | 'ANDROID_APK'
@@ -850,11 +2471,11 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   });
 
   router.post('/auth/session', async (req: Request, res: Response) => {
-    const ipHash = extractHashedClientIp(req);
-    if (!enforceRateLimit(res, `authsess:${ipHash}`, 20, 60_000)) return;
-
     const db = await requireDatabase(res);
     if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `authsess:${ipHash}`, 20, 60_000))) return;
 
     try {
       const actor = await requireAuthenticatedActor(req, res, db);
@@ -863,7 +2484,8 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
       const authHeader = String(req.headers.authorization || '').slice(7, 47);
       const session = await recordLoginSessionTx(db, actor, {
         rawTokenFragment: authHeader || actor.uid,
-        authMethod: (req.body?.authMethod || 'GOOGLE_OAUTH') as
+        authMethod: (req.body?.authMethod || 'GOOGLE_OIDC') as
+          | 'GOOGLE_OIDC'
           | 'GOOGLE_OAUTH'
           | 'EMAIL_PASSWORD'
           | 'PHONE_OTP'

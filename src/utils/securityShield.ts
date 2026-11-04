@@ -2,7 +2,7 @@ import {
   auth,
   isBootstrappedAdminUser,
   onAuthStateChanged,
-} from '../firebase';
+} from '../services/bloodSearchService';
 
 export interface SecurityDiagnostics {
   origin: string;

@@ -16,7 +16,7 @@ import {
   checkActionCooldownGuard,
   dispatchEmergencyBroadcastClient,
   EmergencyBroadcastDispatchResult,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 import {
   computeEscalationTargets,
   rankDonorsForSeeker,

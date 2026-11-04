@@ -24,7 +24,7 @@ import {
   subscribeAlertsForAuthorRequests,
   escalateBloodRequestInFirestore,
   updateBloodRequestTrackingInFirestore,
-} from '../firebase';
+} from '../services/bloodSearchService';
 import {
   computeEscalationTargets,
   deriveRequestLifecycleState,

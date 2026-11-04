@@ -1,4 +1,9 @@
-import { auth } from '../firebase';
+import {
+  apiFetch,
+  auth,
+  getActiveBearerSessionToken,
+  getActiveCsrfToken,
+} from '../services/bloodSearchService';
 import type { BloodGroup, BloodRequest, Donor } from '../types';
 
 export interface ServerAdminVerificationResult {
@@ -10,6 +15,20 @@ export interface ServerAdminVerificationResult {
 }
 
 let mainServerApiMissing = false;
+const optedInContactCache = new Map<
+  string,
+  {
+    expiresAtMs: number;
+    value: {
+      phone?: string;
+      whatsappPhone?: string;
+      facebookUrl?: string;
+      allowCall?: boolean;
+      allowWhatsApp?: boolean;
+      allowSms?: boolean;
+    } | null;
+  }
+>();
 
 function isServerBackedOff(): boolean {
   return Date.now() < Number((globalThis as Record<string, unknown>).__bsServerBackoffUntilMs || 0);
@@ -19,40 +38,32 @@ function triggerServerBackoff(ms = 60_000): void {
   (globalThis as Record<string, unknown>).__bsServerBackoffUntilMs = Date.now() + ms;
 }
 
-async function getBearerHeaders(): Promise<Record<string, string>> {
+function buildSessionHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
-  const currentUser = auth.currentUser;
-  if (currentUser) {
-    try {
-      const token = await currentUser.getIdToken();
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-    } catch {
-      // Proceed unauthenticated if token fetch fails
-    }
+  const bearer = getActiveBearerSessionToken();
+  if (bearer) {
+    headers.Authorization = `Bearer ${bearer}`;
+  }
+  const csrf = getActiveCsrfToken();
+  if (csrf) {
+    headers['X-CSRF-Token'] = csrf;
   }
   return headers;
 }
 
 /**
- * Verifies Admin / Super-Owner role strictly against the server-side PostgreSQL RBAC & lockout shield.
+ * Verifies Admin / Super-Owner role strictly against the server-side Neon PostgreSQL RBAC & lockout shield.
  */
 export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificationResult> {
-  if (mainServerApiMissing || isServerBackedOff()) {
+  if (mainServerApiMissing || isServerBackedOff() || !auth.currentUser) {
     return { ok: false, isAdmin: false, role: 'USER' };
   }
   try {
-    const headers = await getBearerHeaders();
-    if (!headers.Authorization) {
-      return { ok: false, isAdmin: false, role: 'USER' };
-    }
-    const resp = await fetch('/api/v1/auth/admin-verify', {
+    const resp = await apiFetch('/api/v1/auth/admin-verify', {
       method: 'GET',
-      headers,
-      credentials: 'same-origin',
+      headers: buildSessionHeaders(),
     });
     if (resp.status === 404) {
       mainServerApiMissing = true;
@@ -83,7 +94,7 @@ export async function verifyAdminWithMainServer(): Promise<ServerAdminVerificati
 }
 
 /**
- * Syncs a registered/updated donor profile + private contact vault to the server-side PostgreSQL main DB.
+ * Syncs a registered/updated donor profile + private contact vault to Neon PostgreSQL.
  */
 export async function syncDonorProfileToMainDb(payload: {
   displayName: string;
@@ -109,20 +120,16 @@ export async function syncDonorProfileToMainDb(payload: {
     | 'DND_PRIVATE';
   bio?: string | null;
 }): Promise<boolean> {
-  if (mainServerApiMissing || isServerBackedOff()) return false;
+  if (mainServerApiMissing || isServerBackedOff() || !auth.currentUser) return false;
   try {
-    const headers = await getBearerHeaders();
-    if (!headers.Authorization) return false;
-
     const shareDirect = payload.shareDirectContact !== false;
     const normalizedVisibility =
       payload.contactVisibility === 'VERIFIED_SEEKERS'
         ? 'EMERGENCY_VERIFIED_ONLY'
         : payload.contactVisibility || (shareDirect ? 'PUBLIC_OPT_IN' : 'REQUEST_ONLY');
-    const resp = await fetch('/api/v1/donors/profile', {
+    const resp = await apiFetch('/api/v1/donors/profile', {
       method: 'POST',
-      headers,
-      credentials: 'same-origin',
+      headers: buildSessionHeaders(),
       body: JSON.stringify({
         displayName: payload.displayName,
         bloodGroup: payload.bloodGroup,
@@ -145,6 +152,9 @@ export async function syncDonorProfileToMainDb(payload: {
         bio: payload.bio || null,
       }),
     });
+    if (resp.ok && auth.currentUser?.uid) {
+      optedInContactCache.delete(auth.currentUser.uid);
+    }
     return resp.ok;
   } catch {
     return false;
@@ -152,18 +162,18 @@ export async function syncDonorProfileToMainDb(payload: {
 }
 
 /**
- * Syncs a new emergency blood request into the server-side PostgreSQL main DB.
+ * Syncs a new emergency blood request into Neon PostgreSQL when not already persisted.
  */
 export async function syncBloodRequestToMainDb(req: BloodRequest): Promise<boolean> {
-  if (mainServerApiMissing) return false;
+  if (mainServerApiMissing || !auth.currentUser) return false;
+  // Skip duplicate POST if request already has a server UUID
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(req.id)) {
+    return true;
+  }
   try {
-    const headers = await getBearerHeaders();
-    if (!headers.Authorization) return false;
-
-    const resp = await fetch('/api/v1/requests', {
+    const resp = await apiFetch('/api/v1/requests', {
       method: 'POST',
-      headers,
-      credentials: 'same-origin',
+      headers: buildSessionHeaders(),
       body: JSON.stringify({
         patientName: req.patientName,
         bloodGroup: req.bloodGroup,
@@ -188,15 +198,13 @@ export async function syncBloodRequestToMainDb(req: BloodRequest): Promise<boole
 }
 
 /**
- * Fetches public donors from the server-side PostgreSQL main DB (`/api/v1/donors/search`)
- * so server-persisted donors are available alongside real-time updates without raw bulk PII dumps.
+ * Fetches public donors from Neon PostgreSQL (`/api/v1/donors/search`) without raw PII dumps.
  */
 export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
   if (mainServerApiMissing || isServerBackedOff()) return [];
   try {
-    const resp = await fetch('/api/v1/donors/search?availableOnly=false&limit=50', {
+    const resp = await apiFetch('/api/v1/donors/search?availableOnly=false&limit=50', {
       method: 'GET',
-      credentials: 'same-origin',
     });
     if (resp.status === 404) {
       mainServerApiMissing = true;
@@ -216,7 +224,7 @@ export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
     if (!data?.ok || !Array.isArray(data.items)) return [];
 
     return data.items.map(
-      (row: any): Donor => ({
+      (row: Record<string, unknown>): Donor => ({
         id: String(row.userUid || row.id),
         name: String(row.publicName || 'Donor'),
         bloodGroup: (row.bloodGroup as BloodGroup) || 'O+',
@@ -232,7 +240,7 @@ export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
               ? 'TEMPORARILY_UNAVAILABLE'
               : 'AVAILABLE',
         availabilityConfirmedAtMs: row.lastAvailabilityConfirmedAt
-          ? new Date(row.lastAvailabilityConfirmedAt).getTime()
+          ? new Date(String(row.lastAvailabilityConfirmedAt)).getTime()
           : undefined,
         shareDirectContact: row.shareDirectContact !== false,
         contactVisibility: row.shareDirectContact === false ? 'REQUEST_ONLY' : 'PUBLIC_OPT_IN',
@@ -257,8 +265,8 @@ export async function fetchDonorsFromMainDb(): Promise<Donor[]> {
 }
 
 /**
- * Resolves single-donor opted-in Call, WhatsApp, SMS, and Facebook details from the server-side
- * PostgreSQL vault (rate-limited per IP to stop automated scraping while keeping legitimate UX instant).
+ * Resolves single-donor opted-in Call, WhatsApp, SMS, and Facebook details from Neon PostgreSQL
+ * with a 60-second client cache to avoid redundant network hits when clicking contact buttons.
  */
 export async function resolveOptedInDonorContactFromMainDb(donorUid: string): Promise<{
   phone?: string;
@@ -269,27 +277,37 @@ export async function resolveOptedInDonorContactFromMainDb(donorUid: string): Pr
   allowSms?: boolean;
 } | null> {
   if (!donorUid || mainServerApiMissing || isServerBackedOff()) return null;
+
+  const cacheKey = `${auth.currentUser?.uid || 'guest'}:${donorUid}`;
+  const cached = optedInContactCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > Date.now()) {
+    return cached.value;
+  }
+
   try {
-    const headers = await getBearerHeaders();
-    // Try authenticated endpoint first if signed in, otherwise opted-in single-donor endpoint
-    const url = headers.Authorization
+    const url = auth.currentUser
       ? `/api/v1/donors/${encodeURIComponent(donorUid)}/contact?silent=1`
       : `/api/v1/donors/${encodeURIComponent(donorUid)}/opted-in-contact?silent=1`;
 
-    const resp = await fetch(url, {
+    const resp = await apiFetch(url, {
       method: 'GET',
-      headers,
-      credentials: 'same-origin',
+      headers: buildSessionHeaders(),
     });
     if (resp.status >= 500) {
       triggerServerBackoff();
       return null;
     }
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      optedInContactCache.set(cacheKey, { expiresAtMs: Date.now() + 30_000, value: null });
+      return null;
+    }
     const data = await resp.json();
     const c = data?.contact;
-    if (!c) return null;
-    return {
+    if (!c) {
+      optedInContactCache.set(cacheKey, { expiresAtMs: Date.now() + 30_000, value: null });
+      return null;
+    }
+    const resolved = {
       phone: c.phoneE164 || undefined,
       whatsappPhone: c.whatsappNumber || c.phoneE164 || undefined,
       facebookUrl: c.facebookProfileUrl || undefined,
@@ -297,6 +315,8 @@ export async function resolveOptedInDonorContactFromMainDb(donorUid: string): Pr
       allowWhatsApp: c.allowWhatsApp !== false,
       allowSms: c.allowSms !== false,
     };
+    optedInContactCache.set(cacheKey, { expiresAtMs: Date.now() + 60_000, value: resolved });
+    return resolved;
   } catch {
     return null;
   }

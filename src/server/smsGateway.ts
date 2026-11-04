@@ -2,7 +2,7 @@
  * Provider-Independent Bangladesh SMS Gateway Interface (Phase 6)
  *
  * Designed for future BTRC-compliant Bangladesh SMS gateway integration without
- * rebuilding the BloodSearch OTP or Firebase Authentication architecture.
+ * rebuilding the BloodSearch OTP or Neon PostgreSQL session authentication architecture.
  *
  * Supported pluggable providers (server-side only via environment variables):
  * - NONE (Default zero-cost development mode — makes zero external paid API calls)

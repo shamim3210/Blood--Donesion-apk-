@@ -37,7 +37,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`→ Verifying SHA-256 manifest & restoring 24 tables into ${info.redactedUrl}...`);
+  console.log(`→ Verifying SHA-256 manifest & restoring all tables into ${info.redactedUrl}...`);
   const result = await restoreAndVerifyNeonBackup(db, bundle);
   console.log(`✓ Restored ${result.restoredTables} tables (${result.totalRowsRestored} rows).`);
   console.log(`  Row count parity verified: ${result.verifiedCountsMatch}`);

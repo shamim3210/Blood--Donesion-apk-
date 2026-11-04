@@ -6,7 +6,7 @@ import {
   IS_APP_CHECK_CONFIGURED,
   SmartDatabaseHealthReport,
   runSmartDatabaseHealthAndSecurityAudit,
-} from '../firebase';
+} from '../services/bloodSearchService';
 import {
   ShieldCheck,
   Lock,

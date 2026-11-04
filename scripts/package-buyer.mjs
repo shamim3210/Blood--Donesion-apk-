@@ -24,16 +24,15 @@ const EXCLUDED_NAMES = new Set([
   'buyer-release',
   '.git',
   '.aistudio',
-  '.firebase',
   '.vercel',
+  '.data',
   '.env',
   '.env.local',
   '.env.development',
   '.env.test',
   '.env.production',
   'backups',
-  'firebase-applet-config.json',
-  '.firebaserc',
+  'downloads',
 ]);
 
 function copyRecursive(src, dest) {
@@ -61,37 +60,6 @@ for (const entry of fs.readdirSync(ROOT_DIR)) {
   copyRecursive(path.join(ROOT_DIR, entry), path.join(OUTPUT_DIR, entry));
 }
 
-// 1. Write clean placeholder firebase-applet-config.json for the buyer
-const exampleConfigPath = path.join(ROOT_DIR, 'firebase-applet-config.example.json');
-if (fs.existsSync(exampleConfigPath)) {
-  fs.copyFileSync(
-    exampleConfigPath,
-    path.join(OUTPUT_DIR, 'firebase-applet-config.json')
-  );
-}
-
-// 2. Write clean .firebaserc placeholder
-fs.writeFileSync(
-  path.join(OUTPUT_DIR, '.firebaserc'),
-  JSON.stringify({ projects: { default: 'YOUR_FIREBASE_PROJECT_ID' } }, null, 2) + '\n',
-  'utf8'
-);
-
-// 3. Substitute seller's email in buyer-release/firestore.rules & src/firebase.ts
-const rulesOutPath = path.join(OUTPUT_DIR, 'firestore.rules');
-if (fs.existsSync(rulesOutPath)) {
-  const rawRules = fs.readFileSync(rulesOutPath, 'utf8');
-  const updatedRules = rawRules.replace(/shamimrakib015@gmail\.com/g, buyerAdminEmail);
-  fs.writeFileSync(rulesOutPath, updatedRules, 'utf8');
-}
-
-const firebaseTsOutPath = path.join(OUTPUT_DIR, 'src', 'firebase.ts');
-if (fs.existsSync(firebaseTsOutPath)) {
-  const rawFb = fs.readFileSync(firebaseTsOutPath, 'utf8');
-  const updatedFb = rawFb.replace(/shamimrakib015@gmail\.com/g, buyerAdminEmail);
-  fs.writeFileSync(firebaseTsOutPath, updatedFb, 'utf8');
-}
-
 const brandCfgOutPath = path.join(OUTPUT_DIR, 'src', 'config', 'brandConfig.ts');
 if (fs.existsSync(brandCfgOutPath)) {
   const rawBrand = fs.readFileSync(brandCfgOutPath, 'utf8');
@@ -99,7 +67,6 @@ if (fs.existsSync(brandCfgOutPath)) {
   fs.writeFileSync(brandCfgOutPath, updatedBrand, 'utf8');
 }
 
-// 4. Pre-fill .env.example with buyer's white-label details
 const envOutPath = path.join(OUTPUT_DIR, '.env.example');
 const buyerEnvTemplate = `# White-Label Brand & Ownership Configuration
 VITE_BRAND_NAME="${buyerBrandName}"
@@ -109,6 +76,8 @@ VITE_SUPPORT_PHONE="16263"
 VITE_SUPPORT_EMAIL="support@yourdomain.com"
 VITE_SUPER_ADMIN_EMAIL="${buyerAdminEmail}"
 VITE_DEFAULT_REAL_ONLY_MODE="true"
+VITE_API_BASE_URL=""
+VITE_GOOGLE_CLIENT_ID=""
 
 # Primary Application Database — Neon PostgreSQL (Server-Side Only — NEVER prefix with VITE_)
 DATABASE_URL=""
@@ -117,11 +86,16 @@ DB_CUTOVER_MODE="NEON_PRIMARY"
 NEON_PLAN_TIER="FREE"
 DB_POOL_MAX="10"
 
-# Optional Production Gateways (Server-Side Secrets)
+# Google OIDC & Session Security (Server-Side Only)
 APP_URL="https://yourdomain.com"
-VITE_RECAPTCHA_V3_SITE_KEY=""
-VITE_FIREBASE_VAPID_KEY=""
-FCM_SERVER_KEY=""
+CORS_ALLOWED_ORIGINS="https://yourdomain.com,capacitor://localhost,https://localhost"
+SUPER_ADMIN_EMAIL="${buyerAdminEmail}"
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+SESSION_COOKIE_SECRET=""
+OTP_SIGNING_SECRET=""
+
+# Optional SMS Gateway (Server-Side Only)
 SMS_PROVIDER="NONE"
 TWILIO_ACCOUNT_SID=""
 TWILIO_AUTH_TOKEN=""
@@ -134,4 +108,4 @@ fs.writeFileSync(envOutPath, buyerEnvTemplate, 'utf8');
 console.log('✓ Clean commercial buyer package created at: ./buyer-release');
 console.log(`  • Brand Name        : ${buyerBrandName}`);
 console.log(`  • Super Admin Email : ${buyerAdminEmail}`);
-console.log('  • Seller secrets, .env, .git, node_modules, and live Firebase keys excluded.');
+console.log('  • Seller secrets, .env, .git, .data, and node_modules excluded.');

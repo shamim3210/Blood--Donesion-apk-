@@ -18,7 +18,7 @@ if (typeof window !== 'undefined' || typeof document !== 'undefined') {
   );
 }
 
-export type DbCutoverMode = 'FIRESTORE_PRIMARY' | 'MIGRATION_READ_VERIFY' | 'NEON_PRIMARY';
+export type DbCutoverMode = 'NEON_PRIMARY' | 'MAINTENANCE_READ_ONLY';
 
 export interface ValidatedNeonConnectionInfo {
   configured: boolean;
@@ -65,12 +65,8 @@ export function redactDatabaseUrl(rawUrl: string | undefined | null): string {
 
 export function resolveDbCutoverMode(env: NodeJS.ProcessEnv = process.env): DbCutoverMode {
   const raw = (env.DB_CUTOVER_MODE || '').trim().toUpperCase();
-  if (raw === 'NEON_PRIMARY') return 'NEON_PRIMARY';
-  if (raw === 'MIGRATION_READ_VERIFY') return 'MIGRATION_READ_VERIFY';
-  if (raw === 'FIRESTORE_PRIMARY') return 'FIRESTORE_PRIMARY';
-  // Default safely: if DATABASE_URL is configured and verified, allow NEON_PRIMARY when explicitly enabled;
-  // otherwise keep FIRESTORE_PRIMARY until migration verification completes (no uncontrolled dual writes).
-  return env.DATABASE_URL?.trim() ? 'NEON_PRIMARY' : 'FIRESTORE_PRIMARY';
+  if (raw === 'MAINTENANCE_READ_ONLY') return 'MAINTENANCE_READ_ONLY';
+  return 'NEON_PRIMARY';
 }
 
 /**
@@ -133,7 +129,11 @@ export function validateAndNormalizeNeonUrl(
 
   const host = parsed.hostname.toLowerCase();
   const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-  const isNeonHost = host.endsWith('.neon.tech') || host.includes('.aws.neon.tech') || host.includes('.azure.neon.tech') || host.includes('.gcp.neon.tech');
+  const isNeonHost =
+    host.endsWith('.neon.tech') ||
+    host.includes('.aws.neon.tech') ||
+    host.includes('.azure.neon.tech') ||
+    host.includes('.gcp.neon.tech');
   const isPooledEndpoint = host.includes('-pooler.') || parsed.port === '6543';
 
   if (!parsed.password && !isLocalHost) {
@@ -153,7 +153,6 @@ export function validateAndNormalizeNeonUrl(
   let effectiveSslMode = requestedSslMode;
   if (!isLocalHost) {
     if (!effectiveSslMode) {
-      // Automatically upgrade remote/Neon connections to strict certificate verification
       parsed.searchParams.set('sslmode', 'verify-full');
       effectiveSslMode = 'verify-full';
     } else if (!STRONG_SSL_MODES.has(effectiveSslMode)) {
@@ -174,10 +173,9 @@ export function validateAndNormalizeNeonUrl(
     );
   }
 
-  // Warn if Neon Free Plan IP Allowlist / Private Networking is not configured
   if (isNeonHost && (env.NEON_PLAN_TIER || 'FREE').toUpperCase() === 'FREE') {
     warnings.push(
-      'Neon Free Plan does not include IP Allowlisting or AWS PrivateLink (requires Neon Scale plan). Enforcing backend-only access, TLS certificate verification, least-privilege role, and strict API rate limiting.'
+      'Neon Free Plan does not include IP Allowlisting or AWS PrivateLink (requires Neon Scale plan). Enforcing backend-only access, TLS certificate verification, least-privilege role, and distributed API rate limiting.'
     );
   }
 
@@ -237,7 +235,7 @@ export function buildNeonPoolConfig(env: NodeJS.ProcessEnv = process.env): {
     connectionString: runtimeConnectionString,
     max: maxConnections,
     idleTimeoutMillis: 20_000, // Release idle clients cleanly before Neon 5-min autosuspend
-    connectionTimeoutMillis: 12_000, // Accommodate Neon Free Plan ~300-500ms cold wake-up from scale-to-zero
+    connectionTimeoutMillis: 12_000, // Accommodate Neon ~300-500ms scale-to-zero wake-up
     maxUses: 7_500,
     application_name: `bloodsearch-api-${info.environment}`,
     ssl: isLocalHost

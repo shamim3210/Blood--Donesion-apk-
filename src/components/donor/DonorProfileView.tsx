@@ -73,7 +73,7 @@ import {
   clearDevOtpSandboxSession,
   DevOtpClientSession,
   User as FirebaseUser,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 
 interface DonorProfileViewProps {
   lang: Language;

@@ -137,7 +137,7 @@ export async function evaluateNeonHealthAndLimits(
       },
       freePlanAdvisories: [
         ...advisories,
-        'Configure DATABASE_URL (pooled -pooler Neon URI) and DIRECT_DATABASE_URL in server secrets before switching DB_CUTOVER_MODE to NEON_PRIMARY.',
+        'Configure DATABASE_URL (pooled -pooler Neon URI) and DIRECT_DATABASE_URL in server secrets for external Neon PostgreSQL persistence.',
       ],
     };
   }

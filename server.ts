@@ -5,10 +5,32 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import dotenv from 'dotenv';
+import { ensureMainPostgresReady } from './src/db/index';
+import {
+  DomainSecurityError,
+  isAdminRole,
+  type AuthenticatedActor,
+} from './src/db/repositories/bloodSearchRepo';
+import {
+  ADMIN_SESSION_TTL_MS,
+  authenticateGoogleClaimsInNeonTx,
+  authenticateVerifiedPhoneInNeonTx,
+  consumeGoogleOidcNonceTx,
+  extractHashedClientIp,
+  SESSION_TTL_MS,
+  setOpaqueSessionCookie,
+  verifyGoogleOidcIdToken,
+  verifyRawSessionFromHeaders,
+  verifyRequestSession,
+} from './src/server/authAndSessionService';
+import {
+  createNeonApiRouter,
+  resolveAppCallbackRedirectUri,
+  resolveGoogleOauthClientId,
+  resolveGoogleOauthClientSecret,
+} from './src/server/neonRoutes';
 import { BloodSearchOtpService, type OtpServiceOptions } from './src/server/otpService';
-import { createNeonApiRouter } from './src/server/neonRoutes';
-import { verifyServerFirebaseIdentity } from './src/server/firebaseAuthVerifier';
-import type { AuthenticatedActor } from './src/db/repositories/bloodSearchRepo';
+import { realtimeHub } from './src/server/realtimeHub';
 
 dotenv.config();
 
@@ -65,28 +87,6 @@ const ESCALATION_TIERS = [
   { level: 4, radiusKm: 500, includeNearbyDistricts: true, labelEn: 'All Bangladesh Emergency', labelBn: 'সারাদেশ জরুরি নেটওয়ার্ক' },
 ];
 
-function loadFirebaseWebApiKey(): string {
-  const envKey = (process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || '').trim();
-  if (envKey) return envKey;
-  const candidates = [
-    path.resolve(process.cwd(), 'firebase-applet-config.json'),
-    path.join(__dirname, 'firebase-applet-config.json'),
-    path.resolve(__dirname, '..', 'firebase-applet-config.json'),
-  ];
-  for (const cfgPath of candidates) {
-    try {
-      if (fs.existsSync(cfgPath)) {
-        const raw = fs.readFileSync(cfgPath, 'utf8');
-        const parsed = JSON.parse(raw) as { apiKey?: string };
-        if (parsed.apiKey) return parsed.apiKey;
-      }
-    } catch {
-      // Continue
-    }
-  }
-  return '';
-}
-
 export function sha256Short(input: string): string {
   return crypto.createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
@@ -116,8 +116,7 @@ function isSafeHttpsWebhookUrl(rawUrl: string | undefined): boolean {
 }
 
 export function getNotificationCapabilities() {
-  const vapidKey = (process.env.VITE_FIREBASE_VAPID_KEY || '').trim();
-  const fcmServerKey = (process.env.FCM_SERVER_KEY || '').trim();
+  const webPushPublicKey = (process.env.WEB_PUSH_VAPID_PUBLIC_KEY || '').trim();
   const smsProviderRaw = (process.env.SMS_PROVIDER || 'NONE').trim().toUpperCase();
 
   const twilioReady =
@@ -134,8 +133,7 @@ export function getNotificationCapabilities() {
   const smsConfigured = twilioReady || webhookReady;
 
   return {
-    fcmVapidConfigured: vapidKey.length > 20,
-    fcmServerConfigured: fcmServerKey.length > 20,
+    webPushConfigured: webPushPublicKey.length > 20,
     smsConfigured,
     smsProvider: smsConfigured ? smsProviderRaw : 'NONE',
     inAppRealtimeAlerts: true,
@@ -148,6 +146,73 @@ export function getNotificationCapabilities() {
   };
 }
 
+function buildConfiguredAllowedOrigins(): Set<string> {
+  const allowed = new Set<string>();
+  const addSafeOrigin = (raw: string | undefined) => {
+    if (!raw) return;
+    try {
+      const u = new URL(raw.trim());
+      allowed.add(u.origin.toLowerCase());
+    } catch {}
+  };
+
+  addSafeOrigin(process.env.APP_URL);
+  addSafeOrigin(process.env.SHARED_APP_URL);
+  for (const part of String(process.env.CORS_ALLOWED_ORIGINS || '').split(',')) {
+    addSafeOrigin(part);
+  }
+
+  // Capacitor Android & iOS hybrid WebView origins
+  if (process.env.CAPACITOR_ALLOW_NATIVE_ORIGIN !== 'false') {
+    allowed.add('capacitor://localhost');
+    allowed.add('https://localhost');
+    if (process.env.NODE_ENV !== 'production') {
+      allowed.add('http://localhost');
+      allowed.add('http://localhost:3000');
+      allowed.add('http://127.0.0.1:3000');
+    }
+  }
+  return allowed;
+}
+
+function evaluateRequestOrigin(
+  originHeader: string,
+  req: Request,
+  configuredAllowlist: Set<string>
+): { allowed: boolean; normalizedOrigin: string | null } {
+  const raw = originHeader.trim();
+  if (!raw) return { allowed: true, normalizedOrigin: null };
+  if (raw.toLowerCase() === 'null') return { allowed: false, normalizedOrigin: null };
+
+  // Special handling for capacitor://localhost
+  if (raw.toLowerCase() === 'capacitor://localhost') {
+    return {
+      allowed: configuredAllowlist.has('capacitor://localhost'),
+      normalizedOrigin: 'capacitor://localhost',
+    };
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const normalizedOrigin = parsed.origin;
+    const lowerOrigin = normalizedOrigin.toLowerCase();
+    const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+      .split(',')[0]
+      ?.trim()
+      .toLowerCase();
+
+    if (hostHeader && parsed.host.toLowerCase() === hostHeader) {
+      return { allowed: true, normalizedOrigin };
+    }
+    if (configuredAllowlist.has(lowerOrigin)) {
+      return { allowed: true, normalizedOrigin };
+    }
+    return { allowed: false, normalizedOrigin: null };
+  } catch {
+    return { allowed: false, normalizedOrigin: null };
+  }
+}
+
 export function createEmergencyApiApp(options?: {
   verifyTokenOverride?: (token: string) => Promise<VerifiedCaller | null>;
   verifyNeonActorOverride?: (token: string) => Promise<AuthenticatedActor | null>;
@@ -157,15 +222,17 @@ export function createEmergencyApiApp(options?: {
   app.disable('x-powered-by');
 
   const isProd = process.env.NODE_ENV === 'production';
-  const devWsSources = isProd ? '' : ' ws: wss:';
+  const configuredAllowlist = buildConfiguredAllowedOrigins();
+  const otpService = new BloodSearchOtpService(options?.otpServiceOptions);
+
   const cspDirectives = [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://www.google.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob: https:",
-    `connect-src 'self' https://*.googleapis.com https://www.gstatic.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.tile.openstreetmap.fr${devWsSources}`,
-    "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://www.google.com",
+    "connect-src 'self' ws: wss: https://*.googleapis.com https://www.gstatic.com https://accounts.google.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.tile.openstreetmap.fr https://*.basemaps.cartocdn.com",
+    "frame-src 'self' https://accounts.google.com https://www.google.com",
     "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com https://*.run.app",
     "worker-src 'self' blob:",
     "manifest-src 'self'",
@@ -208,7 +275,13 @@ export function createEmergencyApiApp(options?: {
   };
 
   app.use((req, res, next) => {
-    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    const lowerPath = (req.path || '').toLowerCase();
+    const isOAuthCallback = lowerPath === '/auth/callback' || lowerPath === '/auth/callback/';
+
+    res.setHeader(
+      'Cross-Origin-Opener-Policy',
+      isOAuthCallback ? 'unsafe-none' : 'same-origin-allow-popups'
+    );
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
     res.setHeader('X-DNS-Prefetch-Control', 'off');
@@ -223,7 +296,6 @@ export function createEmergencyApiApp(options?: {
       res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
     }
 
-    // 0. Block dangerous HTTP methods (XST / proxy tunneling) and oversized URIs
     if (!ALLOWED_METHODS.has(String(req.method || '').toUpperCase())) {
       res.status(405).json({ ok: false, code: 'METHOD_NOT_ALLOWED' });
       return;
@@ -234,23 +306,17 @@ export function createEmergencyApiApp(options?: {
       return;
     }
 
-    // 1. Block automated vulnerability scanners & exploit bots immediately
     const ua = String(req.headers['user-agent'] || '');
     if (ua && BLOCKED_SCANNER_UAS.test(ua)) {
       res.status(403).json({ ok: false, code: 'FORBIDDEN_SCANNER' });
       return;
     }
 
-    // 2. Block path traversal & sensitive server/config/database file probing
-    //    (allow /.well-known/assetlinks.json for verified Android TWA APK, and allow Vite's ?import JS wrapper for firebase-applet-config.json in dev)
-    const lowerPath = (req.path || '').toLowerCase();
-    const rawUrl = String(req.originalUrl || req.url || '');
     const isWellKnownAssetLinks = lowerPath === '/.well-known/assetlinks.json';
-    const isViteDevJsonModule =
-      !isProd && lowerPath === '/firebase-applet-config.json' && /[?&]import\b/.test(rawUrl);
+    const isPublicDownloads = lowerPath.startsWith('/downloads/');
     const isBlockedSensitiveFile =
       !isWellKnownAssetLinks &&
-      !isViteDevJsonModule &&
+      !isPublicDownloads &&
       (lowerPath.includes('..') ||
         lowerPath.includes('%2e%2e') ||
         lowerPath.includes('\0') ||
@@ -261,17 +327,16 @@ export function createEmergencyApiApp(options?: {
         lowerPath.startsWith('/backups') ||
         lowerPath.startsWith('/scripts') ||
         lowerPath.startsWith('/tests') ||
+        lowerPath.startsWith('/android') ||
         lowerPath.startsWith('/src/db') ||
         lowerPath.startsWith('/src/server') ||
         lowerPath.endsWith('.sql') ||
         lowerPath.endsWith('.map') ||
         lowerPath.endsWith('.md') ||
         lowerPath === '/drizzle.config.ts' ||
+        lowerPath === '/capacitor.config.ts' ||
         lowerPath === '/vite.config.ts' ||
         lowerPath === '/tsconfig.json' ||
-        lowerPath === '/firebase-applet-config.json' ||
-        lowerPath === '/firebase-blueprint.json' ||
-        lowerPath === '/firestore.rules' ||
         lowerPath === '/server.ts' ||
         lowerPath === '/package.json' ||
         lowerPath === '/package-lock.json');
@@ -281,8 +346,37 @@ export function createEmergencyApiApp(options?: {
       return;
     }
 
-    // 3. Cross-Site Request Forgery (CSRF) Origin & Fetch-Metadata Guard for state-changing API routes
-    if (
+    // Strict CORS Allowlist & Cross-Site Origin Validation
+    const originHeader = String(req.headers.origin || '').trim();
+    if (originHeader) {
+      const originCheck = evaluateRequestOrigin(originHeader, req, configuredAllowlist);
+      if (!originCheck.allowed) {
+        if (lowerPath.startsWith('/api/') || req.method === 'OPTIONS') {
+          res.status(403).json({
+            ok: false,
+            code: 'CORS_ORIGIN_DENIED',
+            message: 'Origin is not permitted by the server CORS allowlist.',
+          });
+          return;
+        }
+      } else if (originCheck.normalizedOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', originCheck.normalizedOrigin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Vary', 'Origin');
+        res.setHeader(
+          'Access-Control-Allow-Headers',
+          'Content-Type, Authorization, X-CSRF-Token'
+        );
+        res.setHeader(
+          'Access-Control-Allow-Methods',
+          'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS'
+        );
+        if (req.method === 'OPTIONS') {
+          res.status(204).end();
+          return;
+        }
+      }
+    } else if (
       lowerPath.startsWith('/api/') &&
       (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
     ) {
@@ -291,29 +385,164 @@ export function createEmergencyApiApp(options?: {
         res.status(403).json({ ok: false, code: 'CSRF_CROSS_SITE_BLOCKED' });
         return;
       }
-
-      const originHeader = String(req.headers.origin || '').trim();
-      const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '')
-        .split(',')[0]
-        ?.trim()
-        .toLowerCase();
-
-      if (originHeader && hostHeader) {
-        try {
-          const originHost = new URL(originHeader).host.toLowerCase();
-          if (originHost !== hostHeader) {
-            res.status(403).json({ ok: false, code: 'CSRF_ORIGIN_MISMATCH' });
-            return;
-          }
-        } catch {
-          res.status(403).json({ ok: false, code: 'CSRF_INVALID_ORIGIN' });
-          return;
-        }
-      }
     }
 
     next();
   });
+
+  // =========================================================================
+  // GOOGLE OIDC POPUP CALLBACK (/auth/callback & /auth/callback/)
+  // Verifies code -> Google ID token -> RS256 JWKS + iss + aud + exp + email_verified
+  // + atomic single-use nonce & state in Neon, sets HttpOnly session cookie,
+  // and posts completion message to opener iframe window.
+  // =========================================================================
+  const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+    const renderPopupResult = (payload: Record<string, unknown>, statusMessage: string) => {
+      const safeJson = JSON.stringify(payload).replace(/</g, '\\u003c');
+      const safeMsg = statusMessage.replace(/[<>&"]/g, '');
+      res.send(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>BloodSearch Sign-In</title></head>
+<body style="font-family:system-ui,sans-serif;background:#090d16;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+  <div style="text-align:center;padding:24px">
+    <p style="font-size:15px">${safeMsg}</p>
+  </div>
+  <script>
+    (function() {
+      var msg = ${safeJson};
+      if (window.opener) {
+        window.opener.postMessage(msg, '*');
+        window.close();
+      } else {
+        window.location.href = '/';
+      }
+    })();
+  </script>
+</body>
+</html>`);
+    };
+
+    try {
+      const oauthError = String(req.query.error || '').trim();
+      if (oauthError) {
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'GOOGLE_DENIED', message: 'Google sign-in was cancelled.' },
+          'Sign-in cancelled. Closing window...'
+        );
+        return;
+      }
+
+      const code = String(req.query.code || '').trim();
+      const state = String(req.query.state || '').trim();
+      if (!code || !state) {
+        res.status(400);
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'MISSING_CODE_OR_STATE', message: 'Missing authorization code or state.' },
+          'Invalid callback parameters.'
+        );
+        return;
+      }
+
+      const clientId = resolveGoogleOauthClientId();
+      const clientSecret = resolveGoogleOauthClientSecret();
+      if (!clientId || !clientSecret) {
+        res.status(503);
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'GOOGLE_OAUTH_NOT_CONFIGURED', message: 'Google OAuth is not configured on the server.' },
+          'Server OAuth configuration missing.'
+        );
+        return;
+      }
+
+      const { db } = await ensureMainPostgresReady();
+      if (!db) {
+        res.status(503);
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'DB_UNAVAILABLE', message: 'Primary database unavailable.' },
+          'Database temporarily unavailable.'
+        );
+        return;
+      }
+
+      const redirectUri = resolveAppCallbackRedirectUri(req);
+      const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }).toString(),
+      });
+
+      if (!tokenResp.ok) {
+        res.status(401);
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'TOKEN_EXCHANGE_FAILED', message: 'Failed to exchange Google authorization code.' },
+          'Authentication failed. Please retry.'
+        );
+        return;
+      }
+
+      const tokenJson = (await tokenResp.json()) as { id_token?: string };
+      if (!tokenJson.id_token) {
+        res.status(401);
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'ID_TOKEN_MISSING', message: 'Google did not return an OIDC ID token.' },
+          'Authentication failed.'
+        );
+        return;
+      }
+
+      const claims = await verifyGoogleOidcIdToken({
+        idToken: tokenJson.id_token,
+        expectedClientId: clientId,
+      });
+
+      if (!claims.nonce) {
+        throw new DomainSecurityError(401, 'OIDC_NONCE_MISSING', 'Missing OIDC nonce in Google ID token.');
+      }
+
+      await consumeGoogleOidcNonceTx(db, claims.nonce, state);
+
+      const ipHash = extractHashedClientIp(req);
+      const session = await authenticateGoogleClaimsInNeonTx(
+        db,
+        claims,
+        ipHash,
+        String(req.headers['user-agent'] || '')
+      );
+
+      const ttlMs = isAdminRole(session.actor.role) ? ADMIN_SESSION_TTL_MS : SESSION_TTL_MS;
+      setOpaqueSessionCookie(req, res, session.sessionToken, ttlMs);
+
+      renderPopupResult(
+        {
+          type: 'OAUTH_AUTH_SUCCESS',
+          csrfToken: session.csrfToken,
+          sessionToken: session.sessionToken,
+        },
+        'Authentication successful. Closing window...'
+      );
+    } catch (err) {
+      const msg =
+        err instanceof DomainSecurityError
+          ? err.message
+          : 'Google OIDC verification failed.';
+      res.status(401);
+      renderPopupResult(
+        { type: 'OAUTH_AUTH_ERROR', code: 'OIDC_VERIFICATION_FAILED', message: msg },
+        msg
+      );
+    }
+  };
+
+  app.get(['/auth/callback', '/auth/callback/'], handleGoogleOAuthCallback);
 
   // Dynamic Cryptographic Android APK / TWA Digital Asset Links Endpoint
   app.get('/.well-known/assetlinks.json', (_req: Request, res: Response) => {
@@ -343,9 +572,8 @@ export function createEmergencyApiApp(options?: {
     ]);
   });
 
-  app.use(express.json({ limit: '64kb', strict: true }));
+  app.use(express.json({ limit: '512kb', strict: true }));
 
-  // Mask malformed JSON syntax errors so internal Express/V8 stack traces never leak
   app.use((err: unknown, _req: Request, res: Response, next: express.NextFunction) => {
     if (err && typeof err === 'object' && ('type' in err || err instanceof SyntaxError)) {
       res.status(400).json({
@@ -358,9 +586,10 @@ export function createEmergencyApiApp(options?: {
     next(err);
   });
 
-  // Deep Prototype-Pollution, Operator-Injection, HTTP Parameter Pollution (HPP) & Null-Byte Firewall
   app.use('/api', (req: Request, res: Response, next) => {
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    if (!req.headers.origin) {
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    }
     const hasQueryArrayPollution =
       req.query &&
       typeof req.query === 'object' &&
@@ -385,11 +614,10 @@ export function createEmergencyApiApp(options?: {
     '/api/v1',
     createNeonApiRouter({
       verifyActorOverride: options?.verifyNeonActorOverride,
+      otpService,
     })
   );
 
-  const firebaseApiKey = loadFirebaseWebApiKey();
-  const otpService = new BloodSearchOtpService(options?.otpServiceOptions);
   const MAX_SERVER_BUCKETS = 5000;
   const rateBuckets = new Map<string, number[]>();
   const duplicateFingerprints = new Map<string, { requestId: string; timestampMs: number }>();
@@ -433,64 +661,30 @@ export function createEmergencyApiApp(options?: {
     return { allowed: true, retryAfterSec: 0 };
   };
 
-  const verifyBearerToken = async (req: Request): Promise<VerifiedCaller | null> => {
+  const verifyCallerSession = async (req: Request): Promise<VerifiedCaller | null> => {
     const authHeader = req.headers.authorization || '';
-    if (!authHeader.startsWith('Bearer ')) return null;
-    const idToken = authHeader.slice(7).trim();
-    if (!idToken || idToken.length > 4096) return null;
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
 
-    if (options?.verifyTokenOverride) {
-      return options.verifyTokenOverride(idToken);
+    if (bearerToken && options?.verifyTokenOverride) {
+      return options.verifyTokenOverride(bearerToken);
     }
 
-    // Enforce valid 3-segment JWT format before network/crypto verification
-    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(idToken)) {
-      return null;
-    }
-
-    // 1. Primary: Cryptographic RS256 JWKS verification via firebase-admin/auth
-    const verifiedAdminActor = await verifyServerFirebaseIdentity(req);
-    if (verifiedAdminActor?.uid) {
-      return {
-        uid: verifiedAdminActor.uid,
-        emailVerified: Boolean(
-          verifiedAdminActor.emailVerified ||
-            (verifiedAdminActor.email && verifiedAdminActor.email.includes('@')) ||
-            !verifiedAdminActor.email
-        ),
-        rawEmailVerified: verifiedAdminActor.emailVerified,
-        emailHash: verifiedAdminActor.email
-          ? sha256Short(verifiedAdminActor.email.toLowerCase())
-          : 'phone-user',
-      };
-    }
-
-    if (!firebaseApiKey) return null;
+    const { db } = await ensureMainPostgresReady();
+    if (!db) return null;
 
     try {
-      const resp = await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken }),
-        }
-      );
-      if (!resp.ok) return null;
-      const data = (await resp.json()) as {
-        users?: Array<{ localId?: string; email?: string; emailVerified?: boolean; phoneNumber?: string }>;
-      };
-      const user = data.users?.[0];
-      if (!user?.localId) return null;
-      const rawEmailVerified = Boolean(user.emailVerified);
-      const emailVerified = Boolean(
-        rawEmailVerified || user.phoneNumber || (user.email && user.email.includes('@'))
-      );
+      const verified = await verifyRequestSession(req, db, {
+        verifyActorOverride: options?.verifyNeonActorOverride,
+        enforceCsrfOnCookieMutation: true,
+      });
+      if (!verified) return null;
       return {
-        uid: user.localId,
-        emailVerified,
-        rawEmailVerified,
-        emailHash: user.email ? sha256Short(user.email.toLowerCase()) : 'phone-user',
+        uid: verified.actor.uid,
+        emailVerified: verified.actor.emailVerified,
+        rawEmailVerified: verified.actor.emailVerified,
+        emailHash: verified.actor.email
+          ? sha256Short(verified.actor.email.toLowerCase())
+          : 'phone-user',
       };
     } catch {
       return null;
@@ -507,12 +701,10 @@ export function createEmergencyApiApp(options?: {
         status: 'NOT_CONFIGURED',
         sentCount: 0,
         fallbackMessage:
-          'SMS gateway credentials are not configured on the server (SMS_PROVIDER=NONE). Using real-time in-app alerts + direct Call/WhatsApp.',
+          'SMS gateway credentials are not configured on the server (SMS_PROVIDER=NONE). Using real-time WebSocket/SSE in-app alerts + direct Call/WhatsApp.',
       };
     }
 
-    // Restrict strictly to valid Bangladesh mobile numbers (+8801[3-9]XXXXXXXX or 01[3-9]XXXXXXXX)
-    // to block international premium-rate SMS toll fraud
     const cleanPhones = phones
       .map((p) => String(p || '').replace(/[^\d+]/g, ''))
       .filter((p) => /^(\+?8801[3-9]\d{8}|01[3-9]\d{8})$/.test(p))
@@ -626,12 +818,12 @@ export function createEmergencyApiApp(options?: {
   });
 
   app.post('/api/emergency/dispatch', async (req: Request, res: Response) => {
-    const caller = await verifyBearerToken(req);
+    const caller = await verifyCallerSession(req);
     if (!caller || !caller.emailVerified) {
       res.status(401).json({
         ok: false,
         code: 'UNAUTHORIZED',
-        message: 'Verified Firebase sign-in is required to dispatch concurrent emergency broadcasts.',
+        message: 'Verified authenticated session is required to dispatch emergency broadcasts.',
       });
       return;
     }
@@ -749,11 +941,9 @@ export function createEmergencyApiApp(options?: {
     const smsText = `[BloodSearch Emergency] ${bloodGroup} blood needed (${urgency}) at ${safeSmsHospital}, ${safeSmsDistrict}. Open BloodSearch to respond or confirm availability.`;
     const smsResult = await dispatchLegitimateSmsIfConfigured(optedInSmsPhones, smsText);
 
-    const pushStatus = caps.fcmServerConfigured
-      ? 'FCM_SERVER_READY'
-      : caps.fcmVapidConfigured
-      ? 'CLIENT_VAPID_PUSH_ONLY'
-      : 'IN_APP_AND_BROWSER_LOCAL_ONLY';
+    const pushStatus = caps.webPushConfigured
+      ? 'WEB_PUSH_VAPID_READY'
+      : 'IN_APP_REALTIME_AND_LOCAL_NOTIFICATIONS';
 
     recordAudit({
       action: 'SOS_DISPATCH_VALIDATED',
@@ -774,9 +964,9 @@ export function createEmergencyApiApp(options?: {
         inAppRealtime: 'DISPATCH_AUTHORIZED',
         pushStatus,
         pushNote:
-          pushStatus === 'FCM_SERVER_READY'
-            ? 'Background FCM push configured.'
-            : 'Background FCM server push is not configured (FCM_SERVER_KEY / VITE_FIREBASE_VAPID_KEY missing). Active browser tabs receive real-time Firestore & local notifications; call opted-in donors directly for fastest response.',
+          pushStatus === 'WEB_PUSH_VAPID_READY'
+            ? 'Web Push VAPID notifications active.'
+            : 'Real-time Neon PostgreSQL + WebSocket/SSE alerts and browser local notifications dispatched; call opted-in donors directly for fastest response.',
         smsStatus: smsResult.status,
         smsSentCount: smsResult.sentCount,
         smsNote: smsResult.fallbackMessage,
@@ -787,12 +977,12 @@ export function createEmergencyApiApp(options?: {
   });
 
   app.post('/api/emergency/escalate', async (req: Request, res: Response) => {
-    const caller = await verifyBearerToken(req);
+    const caller = await verifyCallerSession(req);
     if (!caller || !caller.emailVerified) {
       res.status(401).json({
         ok: false,
         code: 'UNAUTHORIZED',
-        message: 'Verified Firebase sign-in is required to escalate a blood request.',
+        message: 'Verified authenticated session is required to escalate a blood request.',
       });
       return;
     }
@@ -844,7 +1034,7 @@ export function createEmergencyApiApp(options?: {
       ? Math.min(ESCALATION_TIERS.length - 1, Math.max(currentLevel + 1, requestedLevel))
       : Math.min(ESCALATION_TIERS.length - 1, currentLevel + 1);
 
-    const tier = ESCALATION_TIERS[nextLevel] || ESCALATION_TIERS[ESCALATION_TIERS.length - 1];
+    const tier = ESCALATION_TIERS[nextLevel] || ESCALATION_TIERS[ESCALATION_TIERS.length - 1]!;
 
     const dedupedNewDonorIds = newlyMatchedIds.filter((uid) => {
       const h = sha256Short(uid);
@@ -888,7 +1078,7 @@ export function createEmergencyApiApp(options?: {
   });
 
   app.post('/api/emergency/stop', async (req: Request, res: Response) => {
-    const caller = await verifyBearerToken(req);
+    const caller = await verifyCallerSession(req);
     if (!caller || !caller.emailVerified) {
       res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: 'Verified authentication required.' });
       return;
@@ -954,13 +1144,12 @@ export function createEmergencyApiApp(options?: {
   });
 
   // =========================================================================
-  // SECURE OTP AUTHENTICATION ENDPOINTS (Phases 2, 3, 4, 5, 6)
-  // Zero OTP plaintext logging; salted HMAC-SHA256 verification; production lock
+  // SECURE OTP AUTHENTICATION ENDPOINTS (/api/auth/otp/*)
   // =========================================================================
   const extractClientIp = (req: Request): string => {
     const xff = req.headers['x-forwarded-for'];
     if (typeof xff === 'string' && xff.trim()) {
-      return xff.split(',')[0].trim();
+      return xff.split(',')[0]!.trim();
     }
     if (Array.isArray(xff) && xff.length > 0) {
       return String(xff[0]).trim();
@@ -989,7 +1178,6 @@ export function createEmergencyApiApp(options?: {
       preferDevSandbox,
     });
 
-    // Audit strictly hashes phone & IP — NEVER logs or stores OTP values!
     recordAudit({
       action: outcome.body.ok ? 'OTP_CHALLENGE_ISSUED' : 'OTP_CHALLENGE_BLOCKED',
       actorUidHash: sha256Short(outcome.body.phoneE164 || rawPhone || 'invalid'),
@@ -1000,7 +1188,7 @@ export function createEmergencyApiApp(options?: {
     res.status(outcome.httpStatus).json(outcome.body);
   });
 
-  app.post('/api/auth/otp/verify', (req: Request, res: Response) => {
+  app.post('/api/auth/otp/verify', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const body = req.body || {};
     const challengeId = String(body.challengeId || '').slice(0, 80);
@@ -1021,6 +1209,30 @@ export function createEmergencyApiApp(options?: {
       requestId: challengeId ? challengeId.slice(0, 16) : 'otp_verify',
       channelSummary: `mode=${outcome.body.deliveryMode || 'NONE'}, result=${outcome.body.code}`,
     });
+
+    if (outcome.body.ok && outcome.body.phoneE164) {
+      try {
+        const { db } = await ensureMainPostgresReady();
+        if (db) {
+          const neonSession = await authenticateVerifiedPhoneInNeonTx(db, {
+            phoneE164: outcome.body.phoneE164,
+            isDevSandbox: outcome.body.deliveryMode === 'DEV_SANDBOX',
+            ipHash: extractHashedClientIp(req),
+            userAgent: String(req.headers['user-agent'] || ''),
+          });
+          setOpaqueSessionCookie(req, res, neonSession.sessionToken, SESSION_TTL_MS);
+          res.status(outcome.httpStatus).json({
+            ...outcome.body,
+            user: neonSession.userProfile,
+            csrfToken: neonSession.csrfToken,
+            neonSessionToken: neonSession.sessionToken,
+          });
+          return;
+        }
+      } catch {
+        // Fall through to standard OTP verification payload
+      }
+    }
 
     res.status(outcome.httpStatus).json(outcome.body);
   });
@@ -1058,7 +1270,7 @@ export function createEmergencyApiApp(options?: {
     res.json({ ok: true });
   });
 
-  app.get('/api/app-version', (req: Request, res: Response) => {
+  const serveVersionPayload = (req: Request, res: Response) => {
     const clientIp = extractClientIp(req);
     const verRate = checkRateLimit(`ver:ip:${clientIp}`, 60, 60 * 1000);
     if (!verRate.allowed) {
@@ -1088,7 +1300,10 @@ export function createEmergencyApiApp(options?: {
       version: pkgVersion,
       buildId: distBuildId || `${pkgVersion}-live`,
     });
-  });
+  };
+
+  app.get('/api/app-version', serveVersionPayload);
+  app.get('/version.json', serveVersionPayload);
 
   app.get('/api/audit/summary', async (req: Request, res: Response) => {
     const clientIp = extractClientIp(req);
@@ -1097,7 +1312,7 @@ export function createEmergencyApiApp(options?: {
       res.status(429).json({ ok: false, code: 'RATE_LIMITED', retryAfterSec: audRate.retryAfterSec });
       return;
     }
-    const caller = await verifyBearerToken(req);
+    const caller = await verifyCallerSession(req);
     if (!caller || !caller.emailVerified) {
       res.status(401).json({ ok: false, code: 'UNAUTHORIZED' });
       return;
@@ -1139,6 +1354,12 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
       const PORT = Number(process.env.PORT) || 3000;
       const app = createEmergencyApiApp();
       const httpServer = http.createServer(app);
+
+      // Attach RFC-6455 native WebSocket server (/ws) with server-verified Neon session authentication
+      realtimeHub.attachWebSocketServer(httpServer, async (req) => {
+        const { db } = await ensureMainPostgresReady();
+        return verifyRawSessionFromHeaders(req, db);
+      });
 
       if (process.env.NODE_ENV !== 'production') {
         let viteMiddleware: express.RequestHandler | null = null;

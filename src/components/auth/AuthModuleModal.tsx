@@ -18,7 +18,7 @@ import {
   clearDevOtpSandboxSession,
   AuthProviderErrorDetails,
   User,
-} from '../../firebase';
+} from '../../services/bloodSearchService';
 import {
   X,
   Mail,
@@ -159,7 +159,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
       if (savedProfile) {
         const isAdmin = await checkIsVerifiedAdminInFirestore(user).catch(() => false);
         if (isAdmin) savedProfile.role = 'ADMIN';
-        savedProfile.authSource = 'FIREBASE';
+        savedProfile.authSource = 'NEON_OIDC';
         localStorage.setItem('bloodsearch_current_user', JSON.stringify(savedProfile));
         setLocalProfile(savedProfile);
         window.dispatchEvent(new Event('bloodsearch_user_changed'));

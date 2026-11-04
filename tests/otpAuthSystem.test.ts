@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -13,7 +13,6 @@ import {
 } from '../src/utils/bdPhoneValidator';
 import {
   BloodSearchOtpService,
-  mintFirebaseCustomTokenRs256,
   OTP_EXPIRY_MS,
   OTP_RESEND_COOLDOWN_MS,
 } from '../src/server/otpService';
@@ -26,6 +25,11 @@ import {
   isSafePublicHttpsEndpoint,
 } from '../src/server/smsGateway';
 import { createEmergencyApiApp } from '../server';
+import { closeNeonDatabase } from '../src/db/index';
+
+after(async () => {
+  await closeNeonDatabase();
+});
 
 async function startTestServer(app: ReturnType<typeof createEmergencyApiApp>) {
   const server = http.createServer(app);
@@ -34,7 +38,11 @@ async function startTestServer(app: ReturnType<typeof createEmergencyApiApp>) {
   const baseUrl = `http://127.0.0.1:${port}`;
   return {
     baseUrl,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections?.();
+        server.close(() => resolve());
+      }),
   };
 }
 
@@ -463,104 +471,44 @@ test('Phase 5 & 6: Provider-independent SMS gateway adapters and RS256 Firebase 
   const btrcRes = await btrc.sendOtpSms({ toE164: '+8801521704755', otpCode: '223344', expiresMinutes: 5 });
   assert.equal(btrcRes.dispatched, true);
   assert.equal(capturedGatewayRequests, 3);
-
-  // Verify RS256 Firebase Custom Token signing with ephemeral RSA keypair
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-    modulusLength: 2048,
-    publicKeyEncoding: { type: 'spki', format: 'pem' },
-    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-  });
-
-  const jwt = mintFirebaseCustomTokenRs256({
-    serviceAccount: {
-      client_email: 'firebase-adminsdk@fifth-receiver-v5v9p.iam.gserviceaccount.com',
-      private_key: privateKey,
-    },
-    uid: 'phone_bd_user_01',
-    claims: { phone_number: '+8801712345678', bd_operator: 'GP' },
-    nowSec: 1_700_000_000,
-  });
-
-  const parts = jwt.split('.');
-  assert.equal(parts.length, 3);
-  const verifier = crypto.createVerify('RSA-SHA256');
-  verifier.update(`${parts[0]}.${parts[1]}`);
-  verifier.end();
-  const sigValid = verifier.verify(publicKey, Buffer.from(parts[2], 'base64url'));
-  assert.equal(sigValid, true);
 });
 
-test('Phase 8: Existing Firestore collections, security rules, and auth methods remain intact', () => {
-  const rulesSource = fs.readFileSync(path.resolve('firestore.rules'), 'utf8');
-  const requiredCollectionPrefixes = [
-    'match /users/',
-    'match /admins/',
-    'match /adminInviteLocks/',
-    'match /donors/',
-    'match /donorDirectContacts/',
-    'match /contactRequests/',
-    'match /requests/',
-    'match /requestDirectContacts/',
-    'match /requestAlerts/',
-    'match /liveDonorTrips/',
-    'match /communityMessages/',
-    'match /announcements/',
-    'match /bloodStock/',
-    'match /scamReports/',
-  ];
+test('Phase 8: Zero Firebase artifacts remain and Neon bloodSearchService preserves all auth & donor exports', () => {
+  assert.equal(fs.existsSync(path.resolve('src/firebase.ts')), false, 'src/firebase.ts must be deleted');
+  assert.equal(fs.existsSync(path.resolve('firestore.rules')), false, 'firestore.rules must be deleted');
+  assert.equal(fs.existsSync(path.resolve('firebase.json')), false, 'firebase.json must be deleted');
+  assert.equal(fs.existsSync(path.resolve('firebase-blueprint.json')), false, 'firebase-blueprint.json must be deleted');
 
-  for (const col of requiredCollectionPrefixes) {
-    assert.equal(
-      rulesSource.includes(col),
-      true,
-      `Firestore collection rule "${col}" must remain preserved`
-    );
-  }
+  const pkgJson = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8'));
+  const allDeps = { ...(pkgJson.dependencies || {}), ...(pkgJson.devDependencies || {}) };
+  assert.equal('firebase' in allDeps, false, 'firebase SDK must be removed from package.json');
+  assert.equal('firebase-admin' in allDeps, false, 'firebase-admin SDK must be removed from package.json');
 
-  // Ensure phone provider verification and super-admin protection are intact in firestore.rules
-  assert.equal(rulesSource.includes("request.auth.token.firebase.sign_in_provider == 'phone'"), true);
-  assert.equal(rulesSource.includes("request.auth.token.email == 'shamimrakib015@gmail.com'"), true);
-
-  // Ensure existing login, registration, and password reset remain exported in src/firebase.ts
-  const firebaseSource = fs.readFileSync(path.resolve('src/firebase.ts'), 'utf8');
-  assert.equal(firebaseSource.includes('export function signInWithGoogleReal'), true);
-  assert.equal(firebaseSource.includes('export async function registerOrLoginRealEmailPassword'), true);
-  assert.equal(firebaseSource.includes('export async function sendRealPasswordReset'), true);
-  assert.equal(firebaseSource.includes('export async function sendRealPhoneSmsOtp'), true);
-  assert.equal(firebaseSource.includes('export async function checkIsVerifiedAdminInFirestore'), true);
+  const serviceSource = fs.readFileSync(path.resolve('src/services/bloodSearchService.ts'), 'utf8');
+  assert.equal(serviceSource.includes('export async function signInWithGoogleReal'), true);
+  assert.equal(serviceSource.includes('export async function registerOrLoginRealEmailPassword'), true);
+  assert.equal(serviceSource.includes('export async function sendRealPasswordReset'), true);
+  assert.equal(serviceSource.includes('export async function sendRealPhoneSmsOtp'), true);
+  assert.equal(serviceSource.includes('export async function checkIsVerifiedAdminInFirestore'), true);
 });
 
-test('Phase 9: Profile Name, Blood Group, Custom Address (up to 120 chars), and Email/Password + Phone rules regression checks', async () => {
+test('Phase 9: Bangladesh phone normalization (Bangla + ASCII digits) and Neon schema column constraints', async () => {
   const { normalizeValidBangladeshMobileE164 } = await import('../src/utils/donorMatcher');
 
-  // Real BD numbers, Bangla digits, and official Firebase test number must normalize cleanly
   assert.equal(normalizeValidBangladeshMobileE164('01521704755'), '+8801521704755');
   assert.equal(normalizeValidBangladeshMobileE164('+8801521704755'), '+8801521704755');
   assert.equal(normalizeValidBangladeshMobileE164('০১৫২১৭০৪৭৫৫'), '+8801521704755');
   assert.equal(normalizeValidBangladeshMobileE164('01700000001'), '+8801700000001');
 
-  // Known fake/placeholder numbers must still be rejected
   assert.equal(normalizeValidBangladeshMobileE164('01700000000'), null);
   assert.equal(normalizeValidBangladeshMobileE164('01711111111'), null);
 
-  // Verify firestore.rules permits Email/Password & Phone users in isVerifiedUser while locking Super Admin to email_verified == true
-  const rulesSource = fs.readFileSync(path.resolve('firestore.rules'), 'utf8');
-  assert.equal(rulesSource.includes("request.auth.token.firebase.sign_in_provider == 'password'"), true);
-  assert.equal(rulesSource.includes('data.upazila.size() <= 120'), true);
-  const superAdminMatch = rulesSource.match(
-    /function isBootstrappedSuperAdmin\(\)\s*\{([\s\S]*?)\}/
-  );
-  assert.ok(superAdminMatch, 'isBootstrappedSuperAdmin must exist in firestore.rules');
-  assert.equal(superAdminMatch[1].includes('request.auth.token.email_verified == true'), true);
-  assert.equal(
-    superAdminMatch[1].includes("request.auth.token.email == 'shamimrakib015@gmail.com'"),
-    true
-  );
-
-  // Verify firebase-blueprint.json allows 120-character custom area/neighborhood addresses
-  const blueprint = JSON.parse(fs.readFileSync(path.resolve('firebase-blueprint.json'), 'utf8'));
-  assert.equal(blueprint.entities.UserProfile.properties.upazila.maxLength, 120);
-  assert.equal(blueprint.entities.DonorCard.properties.upazila.maxLength, 120);
-  assert.equal(blueprint.entities.BloodRequestDoc.properties.upazila.maxLength, 120);
+  const schemaSource = fs.readFileSync(path.resolve('src/db/schema.ts'), 'utf8');
+  assert.equal(schemaSource.includes("'auth_identities'"), true);
+  assert.equal(schemaSource.includes("'login_sessions'"), true);
+  assert.equal(schemaSource.includes("'contact_requests'"), true);
+  assert.equal(schemaSource.includes("'direct_messages'"), true);
+  assert.equal(schemaSource.includes("'reports'"), true);
 });
+
 
