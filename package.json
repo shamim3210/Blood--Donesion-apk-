@@ -4,6 +4,9 @@
   "version": "2.5.0",
   "description": "Enterprise emergency blood donor matching, multi-donor SOS dispatch, and white-label transfusion network platform.",
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "start": "node server.ts",
