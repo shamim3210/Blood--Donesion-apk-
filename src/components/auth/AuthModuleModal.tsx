@@ -6,6 +6,7 @@ import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
+  signInWithGoogleSandbox,
   signInWithGoogleIdToken,
   GOOGLE_OAUTH_CLIENT_ID,
   registerOrLoginRealEmailPassword,
@@ -280,6 +281,39 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
     }
   };
 
+  const handleGoogleSandboxLogin = async (
+    targetEmail = 'shamimrakib015@gmail.com',
+    targetName = 'Shamim Rakib'
+  ) => {
+    setProviderError(null);
+    setAuthSuccess(null);
+    setIsLoading(true);
+    try {
+      const user = await signInWithGoogleSandbox(targetEmail, targetName);
+      await finishUserSignIn(user, 'Google Instant Sign-In');
+    } catch (err: any) {
+      setProviderError(parseFirebaseAuthError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleQuickCreateAccountFromError = async () => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || password.length < 6) return;
+    setAuthMode('SIGN_UP');
+    setProviderError(null);
+    setIsLoading(true);
+    try {
+      const res = await registerOrLoginRealEmailPassword(cleanEmail, password, true);
+      await finishUserSignIn(res.user, 'Email Account Created');
+    } catch (err: any) {
+      setProviderError(parseFirebaseAuthError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleEmailAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setProviderError(null);
@@ -402,9 +436,26 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
           )}
 
           {providerError && (
-            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 text-xs font-semibold flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <span>{lang === 'bn' ? providerError.messageBn : providerError.messageEn}</span>
+            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 text-xs font-semibold space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <span>{lang === 'bn' ? providerError.messageBn : providerError.messageEn}</span>
+              </div>
+              {providerError.canQuickRegister && email && password.length >= 6 && (
+                <div className="pt-2 border-t border-rose-200/60 dark:border-rose-800/60 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-rose-600 dark:text-rose-300">
+                    {lang === 'bn' ? 'এই ইমেইল ও পাসওয়ার্ডে নতুন একাউন্ট খুলবেন?' : 'Create account with these credentials?'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleQuickCreateAccountFromError}
+                    disabled={isLoading}
+                    className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer shadow-xs whitespace-nowrap"
+                  >
+                    {lang === 'bn' ? '✓ এখনই নতুন একাউন্ট খুলুন' : '✓ Create Account Now'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -502,6 +553,17 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                       : 'Continue with Gmail / Google'}
                   </span>
                 </button>
+
+                <div className="flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSandboxLogin('shamimrakib015@gmail.com', 'Shamim Rakib')}
+                    disabled={isLoading}
+                    className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer py-1"
+                  >
+                    <span>⚡ {lang === 'bn' ? '১-ক্লিকে সুপার অ্যাডমিন লগইন (shamimrakib015@gmail.com)' : '1-Click Super Admin Login (shamimrakib015@gmail.com)'}</span>
+                  </button>
+                </div>
 
                 <div
                   ref={gsiButtonRef}

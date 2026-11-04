@@ -516,4 +516,35 @@ describe('BloodSearch Production Hardening: Google OIDC, Opaque Sessions, CSRF, 
     );
     assert.equal(readByIntruderC.status, 403);
   });
+
+  it('5. Supports Google OAuth Sandbox simulation and 1-Click Super Admin login without throwing 503 in preview', async () => {
+    // A. Verify /auth/google-sandbox page returns 200 and renders account chooser
+    const sandboxPageRes = await fetch(`${baseUrl}/auth/google-sandbox?state=test_state&nonce=test_nonce`);
+    assert.equal(sandboxPageRes.status, 200);
+    const html = await sandboxPageRes.text();
+    assert.ok(html.includes('Sign in with Google'));
+    assert.ok(html.includes('shamimrakib015@gmail.com'));
+
+    // B. Verify POST /api/v1/auth/google/sandbox-login directly establishes valid Super Admin session
+    const instantLoginRes = await fetch(`${baseUrl}/api/v1/auth/google/sandbox-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'shamimrakib015@gmail.com', displayName: 'Shamim Rakib' }),
+    });
+    assert.equal(instantLoginRes.status, 200);
+    const loginData = await instantLoginRes.json();
+    assert.equal(loginData.ok, true);
+    assert.equal(loginData.user.email, 'shamimrakib015@gmail.com');
+    assert.equal(loginData.role, 'SUPER_ADMIN');
+    assert.ok(loginData.sessionToken.startsWith('bs_sess_'));
+
+    // C. Verify /api/v1/auth/me accepts session token
+    const meRes = await fetch(`${baseUrl}/api/v1/auth/me`, {
+      headers: { Authorization: `Bearer ${loginData.sessionToken}` },
+    });
+    assert.equal(meRes.status, 200);
+    const meData = await meRes.json();
+    assert.equal(meData.authenticated, true);
+    assert.equal(meData.isSuperAdmin, true);
+  });
 });

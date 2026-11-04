@@ -150,20 +150,11 @@ export async function verifyPasswordScrypt(password: string, storedHash: string 
 }
 
 function validateStrongPassword(password: string): void {
-  if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+  if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
     throw new DomainSecurityError(
       400,
       'WEAK_PASSWORD',
-      'Password must be between 8 and 128 characters.'
-    );
-  }
-  const hasLetter = /[A-Za-z]/.test(password);
-  const hasDigitOrSymbol = /[\d\W_]/.test(password);
-  if (!hasLetter || !hasDigitOrSymbol) {
-    throw new DomainSecurityError(
-      400,
-      'WEAK_PASSWORD',
-      'Password must include at least one letter and one number or symbol.'
+      'Password must be between 6 and 128 characters.'
     );
   }
 }

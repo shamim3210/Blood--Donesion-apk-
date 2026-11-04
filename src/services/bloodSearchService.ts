@@ -883,11 +883,12 @@ export interface AuthProviderErrorDetails {
   messageEn: string;
   needsConsoleProviderEnable: boolean;
   isPopupBlocked?: boolean;
+  canQuickRegister?: boolean;
   consoleUrl: string;
 }
 
 export function parseFirebaseAuthError(error: unknown): AuthProviderErrorDetails {
-  const errObj = (error || {}) as { code?: string; message?: string };
+  const errObj = (error || {}) as { code?: string; message?: string; canQuickRegister?: boolean };
   const code = String(errObj.code || 'auth/unknown');
   const rawMsg = String(errObj.message || '');
 
@@ -946,8 +947,8 @@ export function parseFirebaseAuthError(error: unknown): AuthProviderErrorDetails
   if (code === 'WEAK_PASSWORD' || code === 'auth/weak-password') {
     return {
       code: 'auth/weak-password',
-      messageBn: 'পাসওয়ার্ড কমপক্ষে ৮ অক্ষরের দিন।',
-      messageEn: 'Password must be at least 8 characters long.',
+      messageBn: 'পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের দিন।',
+      messageEn: 'Password must be at least 6 characters long.',
       needsConsoleProviderEnable: false,
       consoleUrl: '',
     };
@@ -982,9 +983,10 @@ export function parseFirebaseAuthError(error: unknown): AuthProviderErrorDetails
     return {
       code: 'auth/invalid-credential',
       messageBn:
-        'ইমেইল বা পাসওয়ার্ড মেলেনি। নতুন হলে "Create Account" ট্যাব বেছে নিন অথবা "পাসওয়ার্ড ভুলে গেছেন?" চাপুন।',
+        'ইমেইল বা পাসওয়ার্ড মেলেনি। নতুন হলে নিচের "নতুন একাউন্ট" বাটনে চাপুন অথবা "পাসওয়ার্ড ভুলে গেছেন?" ব্যবহার করুন।',
       messageEn:
         'Invalid email or password. Choose "Create Account" if you are new, or tap "Forgot password?".',
+      canQuickRegister: true,
       needsConsoleProviderEnable: false,
       consoleUrl: '',
     };
@@ -1097,8 +1099,11 @@ export async function signInWithGoogleReal(_loginHintEmail?: string): Promise<Us
     };
   }
 
+  const rawUrl = String(urlJson.url);
+  const targetUrl = rawUrl.startsWith('/') ? `${origin}${rawUrl}` : rawUrl;
+
   const popup = window.open(
-    String(urlJson.url),
+    targetUrl,
     'bloodsearch_google_oauth',
     'width=540,height=680,menubar=no,toolbar=no,status=no'
   );
@@ -1125,6 +1130,7 @@ export async function signInWithGoogleReal(_loginHintEmail?: string): Promise<Us
         cleanup();
         persistSessionTokens({
           csrfToken: payload.csrfToken ? String(payload.csrfToken) : undefined,
+          sessionToken: payload.sessionToken ? String(payload.sessionToken) : undefined,
         });
         const hydrated = await hydrateSessionFromServer();
         if (hydrated) {
@@ -1157,6 +1163,39 @@ export async function signInWithGoogleReal(_loginHintEmail?: string): Promise<Us
       }
     }, 500);
   });
+}
+
+/**
+ * 1-Click Dev Sandbox Google Authentication for AI Studio preview / local testing.
+ * Directly mints a real Neon PostgreSQL session for `email` (defaults to `shamimrakib015@gmail.com` Super Admin).
+ */
+export async function signInWithGoogleSandbox(
+  email = 'shamimrakib015@gmail.com',
+  name?: string
+): Promise<User> {
+  const res = await fetch(resolveApiUrl('/api/v1/auth/google/sandbox-login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ email, displayName: name }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) {
+    throw {
+      code: json?.code || 'auth/internal-error',
+      message: json?.message || 'Google sandbox authentication failed.',
+    };
+  }
+  persistSessionTokens({
+    csrfToken: json.csrfToken,
+    sessionToken: json.sessionToken,
+  });
+  const hydrated = await hydrateSessionFromServer();
+  dismissTokenServiceAlert();
+  if (!hydrated) {
+    throw { code: 'auth/internal-error', message: 'Failed to establish Google session in database.' };
+  }
+  return hydrated;
 }
 
 /**

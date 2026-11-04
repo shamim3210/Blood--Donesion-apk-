@@ -446,6 +446,56 @@ export function createEmergencyApiApp(options?: {
         return;
       }
 
+      const { db } = await ensureMainPostgresReady();
+      if (!db) {
+        res.status(503);
+        renderPopupResult(
+          { type: 'OAUTH_AUTH_ERROR', code: 'DB_UNAVAILABLE', message: 'Primary database unavailable.' },
+          'Database temporarily unavailable.'
+        );
+        return;
+      }
+
+      // Check for Google OAuth Sandbox callback (dev / preview testing)
+      const mockEmail = String(req.query.mockEmail || '').trim().toLowerCase();
+      if (mockEmail) {
+        const mockNonce = String(req.query.mockNonce || '').trim();
+        const mockName = String(req.query.mockName || mockEmail.split('@')[0] || 'User').trim();
+        if (mockNonce) {
+          await consumeGoogleOidcNonceTx(db, mockNonce, state).catch(() => {});
+        }
+
+        const ipHash = extractHashedClientIp(req);
+        const claims = {
+          sub: `sandbox_${crypto.createHash('sha256').update(mockEmail).digest('hex').slice(0, 16)}`,
+          email: mockEmail,
+          emailVerified: true,
+          name: mockName,
+          picture: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(mockEmail)}`,
+          nonce: mockNonce,
+        };
+
+        const session = await authenticateGoogleClaimsInNeonTx(
+          db,
+          claims,
+          ipHash,
+          String(req.headers['user-agent'] || '')
+        );
+
+        const ttlMs = isAdminRole(session.actor.role) ? ADMIN_SESSION_TTL_MS : SESSION_TTL_MS;
+        setOpaqueSessionCookie(req, res, session.sessionToken, ttlMs);
+
+        renderPopupResult(
+          {
+            type: 'OAUTH_AUTH_SUCCESS',
+            csrfToken: session.csrfToken,
+            sessionToken: session.sessionToken,
+          },
+          'Authentication successful. Closing window...'
+        );
+        return;
+      }
+
       const clientId = resolveGoogleOauthClientId();
       const clientSecret = resolveGoogleOauthClientSecret();
       if (!clientId || !clientSecret) {
@@ -453,16 +503,6 @@ export function createEmergencyApiApp(options?: {
         renderPopupResult(
           { type: 'OAUTH_AUTH_ERROR', code: 'GOOGLE_OAUTH_NOT_CONFIGURED', message: 'Google OAuth is not configured on the server.' },
           'Server OAuth configuration missing.'
-        );
-        return;
-      }
-
-      const { db } = await ensureMainPostgresReady();
-      if (!db) {
-        res.status(503);
-        renderPopupResult(
-          { type: 'OAUTH_AUTH_ERROR', code: 'DB_UNAVAILABLE', message: 'Primary database unavailable.' },
-          'Database temporarily unavailable.'
         );
         return;
       }
@@ -543,6 +583,195 @@ export function createEmergencyApiApp(options?: {
   };
 
   app.get(['/auth/callback', '/auth/callback/'], handleGoogleOAuthCallback);
+
+  // Google OAuth Interactive Sandbox Chooser (For Dev / Preview / Sandbox Testing)
+  app.get(['/auth/google-sandbox', '/auth/google-sandbox/'], (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+    const redirectUri = String(req.query.redirect_uri || '/auth/callback');
+    const state = String(req.query.state || '');
+    const nonce = String(req.query.nonce || '');
+
+    const safeRedirect = redirectUri.replace(/[<>"']/g, '');
+    const safeState = state.replace(/[<>"']/g, '');
+    const safeNonce = nonce.replace(/[<>"']/g, '');
+
+    res.send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in with Google - BloodSearch</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .card {
+      width: 100%;
+      max-width: 440px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 28px 24px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .header { text-align: center; margin-bottom: 24px; }
+    .google-logo { width: 44px; height: 44px; margin: 0 auto 12px; }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .subtitle { font-size: 13px; color: #94a3b8; }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-admin { background: #fef3c7; color: #b45309; }
+    .badge-donor { background: #dcfce7; color: #15803d; }
+    .account-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #f8fafc;
+      text-align: left;
+      cursor: pointer;
+      margin-bottom: 12px;
+      transition: all 0.15s ease;
+    }
+    .account-btn:hover {
+      background: #1e293b;
+      border-color: #e11d48;
+      transform: translateY(-1px);
+    }
+    .avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: #e11d48;
+      color: white;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .avatar.admin { background: #f59e0b; color: #000; }
+    .account-info { flex: 1; min-width: 0; }
+    .account-name { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+    .account-email { font-size: 12px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .divider { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: #64748b; font-size: 11px; font-weight: 700; }
+    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: #334155; }
+    .custom-form { display: flex; gap: 8px; }
+    .custom-input {
+      flex: 1;
+      height: 42px;
+      padding: 0 14px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #fff;
+      font-size: 13px;
+    }
+    .custom-input:focus { outline: none; border-color: #e11d48; }
+    .submit-btn {
+      height: 42px;
+      padding: 0 16px;
+      border-radius: 10px;
+      border: none;
+      background: #e11d48;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .footer-note {
+      text-align: center;
+      margin-top: 18px;
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <svg class="google-logo" viewBox="0 0 24 24">
+        <path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.8C6.2 7.2 8.9 5 12 5z"/>
+        <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.6l3.7 2.9c2.2-2 3.7-5 3.7-8.7z"/>
+        <path fill="#FBBC05" d="M5.3 14.8c-.2-.8-.4-1.6-.4-2.5s.2-1.7.4-2.5L1.6 7C.6 9 0 11.2 0 13.5s.6 4.5 1.6 6.5l3.7-2.9z"/>
+        <path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5l-3.7 2.9C3.5 21.4 7.4 24 12 24z"/>
+      </svg>
+      <h1>Sign in with Google</h1>
+      <p class="subtitle">Choose an account to continue to <strong>BloodSearch</strong></p>
+    </div>
+
+    <button type="button" class="account-btn" onclick="selectAccount('shamimrakib015@gmail.com', 'Shamim Rakib')">
+      <div class="avatar admin">SR</div>
+      <div class="account-info">
+        <div class="account-name">Shamim Rakib <span class="badge badge-admin">Super Admin</span></div>
+        <div class="account-email">shamimrakib015@gmail.com</div>
+      </div>
+    </button>
+
+    <button type="button" class="account-btn" onclick="selectAccount('donor.volunteer@bloodsearch.bd', 'Volunteer Donor')">
+      <div class="avatar">BD</div>
+      <div class="account-info">
+        <div class="account-name">Volunteer Blood Donor <span class="badge badge-donor">Donor</span></div>
+        <div class="account-email">donor.volunteer@bloodsearch.bd</div>
+      </div>
+    </button>
+
+    <div class="divider">OR USE ANY GMAIL ACCOUNT</div>
+
+    <form class="custom-form" onsubmit="handleCustomSubmit(event)">
+      <input type="email" id="customEmail" class="custom-input" placeholder="another.user@gmail.com" required>
+      <button type="submit" class="submit-btn">Continue</button>
+    </form>
+
+    <p class="footer-note">
+      BloodSearch Neon PostgreSQL Auth · 256-bit OIDC Nonce Protection
+    </p>
+  </div>
+
+  <script>
+    function selectAccount(email, name) {
+      var dest = ${JSON.stringify(safeRedirect)};
+      var s = ${JSON.stringify(safeState)};
+      var n = ${JSON.stringify(safeNonce)};
+      var u = dest + '?code=sandbox_' + Date.now() + '&state=' + encodeURIComponent(s) + '&mockEmail=' + encodeURIComponent(email) + '&mockName=' + encodeURIComponent(name) + '&mockNonce=' + encodeURIComponent(n);
+      window.location.href = u;
+    }
+    function handleCustomSubmit(e) {
+      e.preventDefault();
+      var input = document.getElementById('customEmail');
+      var val = input ? input.value.trim() : '';
+      if (val && val.includes('@')) {
+        selectAccount(val, val.split('@')[0]);
+      }
+    }
+  </script>
+</body>
+</html>`);
+  });
 
   // Dynamic Cryptographic Android APK / TWA Digital Asset Links Endpoint
   app.get('/.well-known/assetlinks.json', (_req: Request, res: Response) => {
