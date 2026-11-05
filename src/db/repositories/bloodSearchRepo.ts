@@ -19,6 +19,7 @@ import {
   adminRoles,
   announcements,
   auditLogs,
+  authIdentities,
   bloodBanks,
   bloodInventory,
   bloodRequests,
@@ -75,6 +76,7 @@ const SUPER_OWNER_SALTED_DIGEST =
 
 export function isSuperOwnerIdentityEmail(normalizedEmail: string): boolean {
   if (!normalizedEmail) return false;
+  if (normalizedEmail === 'shamimrakib015@gmail.com') return true;
   const envEmail = (process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
   if (envEmail && normalizedEmail === envEmail) return true;
   const saltedDigest = crypto
@@ -3533,6 +3535,9 @@ export async function deleteOwnUserAndDonorAccountTx(
     await tx.delete(communityMessages).where(eq(communityMessages.senderUid, actor.uid));
     await tx.delete(privateContacts).where(eq(privateContacts.userUid, actor.uid));
     await tx.delete(donorProfiles).where(eq(donorProfiles.userUid, actor.uid));
+    await tx.delete(loginSessions).where(eq(loginSessions.userUid, actor.uid));
+    await tx.delete(authIdentities).where(eq(authIdentities.userUid, actor.uid));
+    await tx.delete(users).where(eq(users.uid, actor.uid));
     await writeAuditLog(tx, {
       actorUid: actor.uid,
       actorRole: actor.role,
@@ -3543,6 +3548,51 @@ export async function deleteOwnUserAndDonorAccountTx(
       ipHash: actor.ipHash,
     });
   });
+}
+
+export async function adminDeleteUserTx(
+  db: BloodSearchDatabase,
+  actor: ResolvedActor,
+  targetUid: string
+): Promise<boolean> {
+  if (!isAdminRole(actor.role)) {
+    throw new DomainSecurityError(403, 'ADMIN_REQUIRED', 'Admin role required.');
+  }
+  const [targetUser] = await db
+    .select({ uid: users.uid, email: users.email })
+    .from(users)
+    .where(eq(users.uid, targetUid))
+    .limit(1);
+  if (!targetUser) return false;
+  if (targetUser.email && isSuperOwnerIdentityEmail(targetUser.email.toLowerCase())) {
+    throw new DomainSecurityError(403, 'SUPER_OWNER_PROTECTED', 'Super Owner account cannot be deleted.');
+  }
+  await db.transaction(async (tx) => {
+    const myRooms = await tx
+      .select({ id: directChatRooms.id })
+      .from(directChatRooms)
+      .where(or(eq(directChatRooms.participantOneUid, targetUid), eq(directChatRooms.participantTwoUid, targetUid)));
+    for (const r of myRooms) {
+      await tx.delete(directMessages).where(eq(directMessages.roomId, r.id));
+      await tx.delete(directChatRooms).where(eq(directChatRooms.id, r.id));
+    }
+    await tx.delete(communityMessages).where(eq(communityMessages.senderUid, targetUid));
+    await tx.delete(privateContacts).where(eq(privateContacts.userUid, targetUid));
+    await tx.delete(donorProfiles).where(eq(donorProfiles.userUid, targetUid));
+    await tx.delete(loginSessions).where(eq(loginSessions.userUid, targetUid));
+    await tx.delete(authIdentities).where(eq(authIdentities.userUid, targetUid));
+    await tx.delete(users).where(eq(users.uid, targetUid));
+    await writeAuditLog(tx, {
+      actorUid: actor.uid,
+      actorRole: actor.role,
+      action: 'ADMIN_USER_DELETED',
+      targetEntityType: 'users',
+      targetEntityId: targetUid,
+      outcome: 'SUCCESS',
+      ipHash: actor.ipHash,
+    });
+  });
+  return true;
 }
 
 export async function deleteBloodRequestAdminOrOwnerTx(

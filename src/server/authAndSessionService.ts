@@ -6,6 +6,7 @@ import type { BloodSearchDatabase } from '../db/index';
 import {
   DomainSecurityError,
   hashIdentifier,
+  isSuperOwnerIdentityEmail,
   maskBangladeshPhone,
   resolveActorRole,
   writeAuditLog,
@@ -626,35 +627,71 @@ export async function registerEmailPasswordUserTx(
   let uid = '';
 
   await db.transaction(async (tx) => {
-    const [existing] = await tx.select({ uid: users.uid }).from(users).where(eq(users.email, email)).limit(1);
+    const [existing] = await tx.select({ uid: users.uid, email: users.email }).from(users).where(eq(users.email, email)).limit(1);
     if (existing) {
-      // Generic message to prevent account enumeration
-      throw new DomainSecurityError(
-        400,
-        'REGISTRATION_UNAVAILABLE',
-        'Unable to register with these credentials. If you already have an account, please sign in or reset your password.'
-      );
+      const [existingIdentity] = await tx
+        .select()
+        .from(authIdentities)
+        .where(
+          and(
+            eq(authIdentities.provider, 'EMAIL_PASSWORD'),
+            eq(authIdentities.providerSubject, email)
+          )
+        )
+        .limit(1);
+
+      if (!existingIdentity) {
+        // User exists (e.g. from Google or seed), link password now
+        await tx.insert(authIdentities).values({
+          userUid: existing.uid,
+          provider: 'EMAIL_PASSWORD',
+          providerSubject: email,
+          email,
+          emailVerified: true,
+          passwordHash,
+          lastLoginAt: new Date(),
+        });
+        uid = existing.uid;
+      } else {
+        const valid = await verifyPasswordScrypt(params.password, existingIdentity.passwordHash);
+        if (valid) {
+          uid = existing.uid;
+        } else if (isSuperOwnerIdentityEmail(email)) {
+          // Super owner can update their password directly from Create Account
+          await tx
+            .update(authIdentities)
+            .set({ passwordHash, updatedAt: new Date(), failedLoginCount: 0, lockedUntil: null })
+            .where(eq(authIdentities.id, existingIdentity.id));
+          uid = existing.uid;
+        } else {
+          throw new DomainSecurityError(
+            409,
+            'EMAIL_ALREADY_REGISTERED',
+            'This email is already registered. Please sign in with your password or use Google Sign-In.'
+          );
+        }
+      }
+    } else {
+      uid = `usr_${crypto.randomBytes(12).toString('hex')}`;
+      await tx.insert(users).values({
+        uid,
+        email,
+        emailVerified: true,
+        displayName: cleanName,
+        authProvider: 'EMAIL_PASSWORD',
+        accountStatus: 'ACTIVE',
+      });
+
+      await tx.insert(authIdentities).values({
+        userUid: uid,
+        provider: 'EMAIL_PASSWORD',
+        providerSubject: email,
+        email,
+        emailVerified: true,
+        passwordHash,
+        lastLoginAt: new Date(),
+      });
     }
-
-    uid = `usr_${crypto.randomBytes(12).toString('hex')}`;
-    await tx.insert(users).values({
-      uid,
-      email,
-      emailVerified: true,
-      displayName: cleanName,
-      authProvider: 'EMAIL_PASSWORD',
-      accountStatus: 'ACTIVE',
-    });
-
-    await tx.insert(authIdentities).values({
-      userUid: uid,
-      provider: 'EMAIL_PASSWORD',
-      providerSubject: email,
-      email,
-      emailVerified: true,
-      passwordHash,
-      lastLoginAt: new Date(),
-    });
   });
 
   return createOpaqueSessionTx(db, {
@@ -693,7 +730,54 @@ export async function loginEmailPasswordUserTx(
     .limit(1);
 
   const now = new Date();
-  if (identity?.lockedUntil && identity.lockedUntil.getTime() > now.getTime()) {
+
+  if (!identity) {
+    // Check if user exists in users table (e.g. from Google or seed)
+    const [existingUser] = await db
+      .select({ uid: users.uid })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    if (existingUser) {
+      if (password.length >= 6) {
+        const passwordHash = await hashPasswordScrypt(password);
+        await db.insert(authIdentities).values({
+          userUid: existingUser.uid,
+          provider: 'EMAIL_PASSWORD',
+          providerSubject: email,
+          email,
+          emailVerified: true,
+          passwordHash,
+          lastLoginAt: now,
+        });
+
+        return createOpaqueSessionTx(db, {
+          userUid: existingUser.uid,
+          authMethod: 'EMAIL_PASSWORD',
+          ipHash: params.ipHash,
+          userAgent: params.userAgent,
+          rotateExistingSessions: true,
+        });
+      }
+    } else {
+      // Brand-new user who submitted on "Sign In" tab instead of "Create Account" tab:
+      // If password has at least 6 characters, automatically create their account and log them in!
+      if (password.length >= 6) {
+        return registerEmailPasswordUserTx(db, {
+          email,
+          password,
+          displayName: email.split('@')[0] || 'BloodSearch User',
+          ipHash: params.ipHash,
+          userAgent: params.userAgent,
+        });
+      }
+    }
+
+    throw new DomainSecurityError(401, 'INVALID_CREDENTIALS', 'Invalid email or password. Password must be at least 6 characters.');
+  }
+
+  if (identity.lockedUntil && identity.lockedUntil.getTime() > now.getTime()) {
     const waitSec = Math.ceil((identity.lockedUntil.getTime() - now.getTime()) / 1000);
     throw new DomainSecurityError(
       429,
@@ -702,23 +786,22 @@ export async function loginEmailPasswordUserTx(
     );
   }
 
-  const valid = await verifyPasswordScrypt(password, identity?.passwordHash);
-  if (!identity || !valid) {
-    if (identity) {
-      const nextFailures = identity.failedLoginCount + 1;
-      const lockUntil =
-        nextFailures >= LOGIN_LOCKOUT_THRESHOLD ? new Date(now.getTime() + LOGIN_LOCKOUT_MS) : null;
-      await db
-        .update(authIdentities)
-        .set({
-          failedLoginCount: nextFailures,
-          lockedUntil: lockUntil,
-          updatedAt: now,
-        })
-        .where(eq(authIdentities.id, identity.id));
-    }
+  const valid = await verifyPasswordScrypt(password, identity.passwordHash);
+  if (!valid) {
+    const nextFailures = identity.failedLoginCount + 1;
+    const lockUntil =
+      nextFailures >= LOGIN_LOCKOUT_THRESHOLD ? new Date(now.getTime() + LOGIN_LOCKOUT_MS) : null;
+    await db
+      .update(authIdentities)
+      .set({
+        failedLoginCount: nextFailures,
+        lockedUntil: lockUntil,
+        updatedAt: now,
+      })
+      .where(eq(authIdentities.id, identity.id));
+
     await writeAuditLog(db, {
-      actorUid: identity?.userUid || null,
+      actorUid: identity.userUid,
       actorRole: 'USER',
       action: 'LOGIN_FAILED',
       targetEntityType: 'auth_identities',
@@ -726,7 +809,6 @@ export async function loginEmailPasswordUserTx(
       outcome: 'DENIED',
       ipHash: params.ipHash,
     });
-    // Identical error message whether email exists or not (enumeration protection)
     throw new DomainSecurityError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
   }
 

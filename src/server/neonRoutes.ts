@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { ensureMainPostgresReady, type BloodSearchDatabase } from '../db/index';
 import { evaluateNeonHealthAndLimits } from '../db/neonMonitor';
 import {
+  adminDeleteUserTx,
   claimCoAdminInviteCodeTx,
   createBloodRequestWithAlertsTx,
   createCoAdminInviteCodeTx,
@@ -963,8 +964,9 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
       if (!actor) return;
 
       await deleteOwnUserAndDonorAccountTx(db, actor);
+      clearOpaqueSessionCookie(req, res);
       realtimeHub.emitEvent('donors:deleted', 'public:donors', { donorId: actor.uid });
-      res.json({ ok: true });
+      res.json({ ok: true, deleted: true });
     } catch (err) {
       handleRouteError(res, err);
     }
@@ -2232,6 +2234,28 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         nextStatus
       );
       res.json({ ok: true, user: updated });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.delete('/admin/users/:uid', async (req: Request, res: Response) => {
+    const db = await requireDatabase(res);
+    if (!db) return;
+
+    const ipHash = extractHashedClientIp(req);
+    if (!(await enforceDistributedRateLimit(res, db, `admuserdel:${ipHash}`, 15, 60_000))) return;
+
+    try {
+      const actor = await requireAuthenticatedActor(req, res, db);
+      if (!actor) return;
+
+      const targetUid = String(req.params.uid || '');
+      const deleted = await adminDeleteUserTx(db, actor, targetUid);
+      if (deleted) {
+        realtimeHub.emitEvent('donors:deleted', 'public:donors', { donorId: targetUid });
+      }
+      res.json({ ok: true, deleted });
     } catch (err) {
       handleRouteError(res, err);
     }
