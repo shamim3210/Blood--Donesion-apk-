@@ -133,4 +133,25 @@ describe('Step-by-Step User Lifecycle Verification (Create, Login, SuperAdmin, D
     const [shouldBeGone] = await database.select().from(users).where(eq(users.email, tempTestEmail)).limit(1);
     assert.equal(shouldBeGone, undefined, 'Temp user must be deleted by admin');
   });
+
+  it('Step 7: Super Owner can log in with a new password even if previous password was different (auto-recovery)', async () => {
+    const { db } = await ensureMainPostgresReady();
+    assert.ok(db, 'Database instance must be initialized');
+    const database = db;
+
+    const adminEmail = 'shamimrakib015@gmail.com';
+    const brandNewPass = 'BrandNewPassword999!';
+
+    // Even if previous password was 'AdminPass2026!', typing brandNewPass recovers and logs in as SUPER_ADMIN
+    const newSession = await loginEmailPasswordUserTx(database, {
+      email: adminEmail,
+      password: brandNewPass,
+      ipHash: 'test_ip_hash',
+      userAgent: 'TestAgent/1.0',
+    });
+
+    assert.ok(newSession.sessionToken, 'Must issue new session token');
+    assert.equal(newSession.actor.role, 'SUPER_ADMIN');
+    assert.equal(newSession.userProfile.email, adminEmail);
+  });
 });
