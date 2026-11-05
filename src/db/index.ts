@@ -167,9 +167,19 @@ export async function ensureMainPostgresReady(
           import(pglitePkg),
           import(drizzlePglitePkg),
         ]);
-        fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true, mode: 0o700 });
-        const client: PGlite = new PGliteRuntime(EMBEDDED_PG_DIR);
-        await client.waitReady;
+        let client: PGlite;
+        try {
+          fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true, mode: 0o700 });
+          client = new PGliteRuntime(EMBEDDED_PG_DIR);
+          await client.waitReady;
+        } catch {
+          // If directory is locked or has corrupted WASM state, cleanly fall back to in-memory PostgreSQL 16
+          try {
+            fs.rmSync(EMBEDDED_PG_DIR, { recursive: true, force: true });
+          } catch {}
+          client = new PGliteRuntime();
+          await client.waitReady;
+        }
 
         const checkRes = await client.query<{ cnt: number }>(
           `SELECT COUNT(*)::int AS cnt
