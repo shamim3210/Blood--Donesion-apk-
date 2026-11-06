@@ -141,43 +141,18 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
 
       let savedProfile: UserAccount | null = null;
       try {
-        savedProfile = await ensureUserAutoSyncedInFirestore(user);
-        if (!savedProfile) {
-          const fetched = await fetchUserProfileFromFirestore(user.uid);
-          if (
-            fetched &&
-            !isFakePersonName(fetched.name) &&
-            fetched.phone &&
-            fetched.phone !== '01700000000'
-          ) {
-            savedProfile = fetched;
-          }
+        const fetched = await fetchUserProfileFromFirestore(user.uid);
+        if (
+          fetched &&
+          !isFakePersonName(fetched.name) &&
+          fetched.phone &&
+          fetched.phone !== '01700000000' &&
+          fetched.phone !== '01711000000'
+        ) {
+          savedProfile = fetched;
         }
       } catch {
         savedProfile = null;
-      }
-
-      if (!savedProfile && (user.email === 'shamimrakib015@gmail.com' || (user as any).role === 'SUPER_ADMIN')) {
-        savedProfile = {
-          id: user.uid,
-          name: user.displayName || 'Shamim Rakib',
-          email: user.email || 'shamimrakib015@gmail.com',
-          phone: '01711000000',
-          bloodGroup: 'O+',
-          division: 'Dhaka',
-          district: 'Dhaka',
-          upazila: 'Dhanmondi',
-          role: 'ADMIN',
-          verifiedStatus: true,
-          idCardNumber: 'BD-ADMIN-01',
-          age: 30,
-          gender: 'MALE',
-          weightKg: 70,
-          availableToDonate: true,
-          totalDonations: 0,
-          createdAt: new Date().toISOString(),
-          authSource: 'NEON_OIDC',
-        };
       }
 
       if (savedProfile) {
@@ -189,7 +164,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
         localStorage.setItem('bloodsearch_current_user', JSON.stringify(savedProfile));
         setLocalProfile(savedProfile);
         window.dispatchEvent(new Event('bloodsearch_user_changed'));
-        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (profile restored)`);
+        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (profile loaded)`);
         setAuthSuccess(
           lang === 'bn'
             ? `✓ সফলভাবে সাইন ইন হয়েছে (${savedProfile.name})`
@@ -200,26 +175,24 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
           onClose();
         }, 550);
       } else {
-        // User has NOT filled their own profile yet -> clear any old dummy profile and open Profile Setup so USER enters their own info!
+        // User has NOT filled their profile yet. No fake/dummy profile is created.
+        // All profile info must be manually provided by the user.
         localStorage.removeItem('bloodsearch_current_user');
         setLocalProfile(null);
         window.dispatchEvent(new Event('bloodsearch_user_changed'));
-        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (ready for user profile setup)`);
+        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (signed in - profile pending user entry)`);
         setAuthSuccess(
           lang === 'bn'
-            ? '✓ সাইন ইন সম্পন্ন! এখন আপনার নিজের নাম, রক্তের গ্রুপ ও ঠিকানা দিন।'
-            : '✓ Signed in! Now enter your own Name, Blood Group & Address.'
+            ? '✓ সফলভাবে সাইন ইন সম্পন্ন হয়েছে!'
+            : '✓ Signed in successfully!'
         );
         window.setTimeout(() => {
           setAuthSuccess(null);
           onClose();
-          if (onOpenRegister) {
-            onOpenRegister();
-          }
         }, 550);
       }
     },
-    [lang, onClose, onLogAudit, onOpenRegister]
+    [lang, onClose, onLogAudit]
   );
 
   // Mount embedded Google Identity Services button for browsers where popups are blocked

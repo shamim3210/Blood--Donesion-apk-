@@ -95,7 +95,15 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
       const saved = localStorage.getItem('bloodsearch_current_user');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && !isFakePersonName(parsed.name)) return parsed;
+        if (
+          parsed &&
+          !isFakePersonName(parsed.name) &&
+          parsed.phone &&
+          parsed.phone !== '01700000000' &&
+          parsed.phone !== '01711000000'
+        ) {
+          return parsed;
+        }
       }
     } catch {}
     return null;
@@ -112,7 +120,14 @@ export const DonorProfileView: React.FC<DonorProfileViewProps> = ({
         setDevOtpSession(getStoredDevOtpSandboxSession());
         const saved = localStorage.getItem('bloodsearch_current_user');
         const parsed = saved ? JSON.parse(saved) : null;
-        const safeUser = parsed && !isFakePersonName(parsed.name) ? parsed : null;
+        const safeUser =
+          parsed &&
+          !isFakePersonName(parsed.name) &&
+          parsed.phone &&
+          parsed.phone !== '01700000000' &&
+          parsed.phone !== '01711000000'
+            ? parsed
+            : null;
         setCurrentUser(safeUser);
         if (safeUser && typeof safeUser.availableToDonate === 'boolean') {
           setIsAvailable(safeUser.availableToDonate);

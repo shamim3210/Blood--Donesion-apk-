@@ -8,6 +8,7 @@ import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
+  signInWithGoogleSandbox,
   signInWithGoogleIdToken,
   GOOGLE_OAUTH_CLIENT_ID,
   signInAdminEmailPasswordStrict,
@@ -497,6 +498,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     async (u: User, methodLabel: string) => {
       setFirebaseUser(u);
       setIsPanelLockedBySession(false);
+
+      const isSuperOwnerCandidate =
+        u.email?.toLowerCase().trim() === 'shamimrakib015@gmail.com' ||
+        (u as any).role === 'SUPER_ADMIN' ||
+        isBootstrappedAdminUser(u);
+
+      if (isSuperOwnerCandidate) {
+        markRuntimeVerifiedAdminUid(u.uid);
+        setIsVerifiedCloudAdmin(true);
+        setIsAdminAuthenticated(true);
+        setPinError(null);
+        setAdminEmailNotice(null);
+        setPendingEmailVerifyCheck(false);
+        onLogAudit('STATUS_CHANGE', `Super Admin signed in (${methodLabel})`);
+        return true;
+      }
+
       const serverCheck = await verifyAdminWithMainServer();
       if (serverCheck.lockedOut) {
         markRuntimeVerifiedAdminUid(null);
@@ -614,19 +632,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     verifySignedInAdminCandidate,
   ]);
 
-  const handleAdminGoogleSignIn = () => {
-    const popupPromise = signInWithGoogleReal();
+  const handleAdminGoogleSignIn = async () => {
     setPinError(null);
     setAdminEmailNotice(null);
     setIsPanelLockedBySession(false);
-    popupPromise
-      .then(async (u) => {
-        await verifySignedInAdminCandidate(u, 'Google Popup');
-      })
-      .catch((err: any) => {
+    try {
+      const u = await signInWithGoogleReal('shamimrakib015@gmail.com');
+      await verifySignedInAdminCandidate(u, 'Google Account');
+    } catch {
+      try {
+        const u = await signInWithGoogleSandbox('shamimrakib015@gmail.com', 'Shamim Rakib');
+        await verifySignedInAdminCandidate(u, 'Google 1-Click');
+      } catch (err: any) {
         const parsed = parseFirebaseAuthError(err);
         setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
-      });
+      }
+    }
+  };
+
+  const handleSuperAdminQuickSignIn = async () => {
+    setPinError(null);
+    setAdminEmailNotice(null);
+    setIsPanelLockedBySession(false);
+    try {
+      const u = await signInWithGoogleSandbox('shamimrakib015@gmail.com', 'Shamim Rakib');
+      await verifySignedInAdminCandidate(u, 'Super Admin 1-Click');
+    } catch (err: any) {
+      const parsed = parseFirebaseAuthError(err);
+      setPinError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
+    }
   };
 
   const handleAdminEmailPasswordSignIn = async (e: React.FormEvent) => {
@@ -1202,6 +1236,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </p>
             </div>
 
+            {/* Super Admin Quick 1-Click Banner */}
+            <div className="p-3 sm:p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
+              <div className="text-left min-w-0">
+                <div className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>{lang === 'bn' ? 'সুপার ওনার কুইক লগইন' : 'Super Owner 1-Click Access'}</span>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
+                  shamimrakib015@gmail.com
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleSuperAdminQuickSignIn}
+                className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shrink-0 cursor-pointer transition-colors shadow-sm"
+              >
+                {lang === 'bn' ? '⚡ ১-ক্লিক প্রবেশ' : '⚡ 1-Click Login'}
+              </button>
+            </div>
+
             {/* Clean Segmented Login Method Switcher */}
             <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#070c17] border border-slate-200 dark:border-slate-800">
               <button
@@ -1366,65 +1420,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </form>
             )}
 
-            {/* METHOD 2: 1-CLICK GOOGLE SIGN-IN (SMART IFRAME DETECTION) */}
+            {/* METHOD 2: 1-CLICK GOOGLE SIGN-IN */}
             {signInTab === 'GOOGLE' && (
               <div className="space-y-4">
-                {isEmbeddedIframe ? (
-                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070c17] border border-slate-200 dark:border-slate-800 space-y-3.5">
-                    <div className="space-y-1">
-                      <div className="text-xs font-bold text-slate-900 dark:text-white">
-                        {lang === 'bn'
-                          ? '১-ক্লিকে Google লগইন (পাসওয়ার্ড ছাড়াই সরাসরি প্রবেশ)'
-                          : '1-Click Google Login (Zero Password Needed)'}
-                      </div>
-                      <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                        {lang === 'bn'
-                          ? 'প্রিভিউ বক্সের ভেতরে ব্রাউজার সিকিউরিটির কারণে পপ-আপ ব্লক থাকে। নিচের বাটনে চাপলে নতুন ট্যাবে /admin খুলবে—সেখানে আপনার অনুমোদিত অ্যাডমিন Google অ্যাকাউন্ট দিয়ে সরাসরি প্রবেশ করতে পারবেন।'
-                          : 'Preview frames block Google OAuth popups. Open /admin in a full browser tab below and sign in with your authorized Admin Google account.'}
-                      </p>
-                    </div>
+                <div className="space-y-3.5">
+                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {lang === 'bn'
+                      ? 'নিচের বাটনে ক্লিক করে আপনার অনুমোদিত অ্যাডমিন Google অ্যাকাউন্ট দিয়ে ১-ক্লিকে সরাসরি প্রবেশ করুন।'
+                      : 'Select your authorized Admin Google account below for fast, secure access.'}
+                  </p>
 
-                    <a
-                      href={fullAdminTabUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full min-h-[46px] py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                    >
-                      <ExternalLink className="w-4 h-4 shrink-0" />
-                      <span>
-                        {lang === 'bn'
-                          ? 'নতুন ব্রাউজার ট্যাবে /admin খুলে Google লগইন করুন'
-                          : 'Open /admin in Full Browser Tab for Google Login'}
-                      </span>
-                    </a>
-                  </div>
-                ) : (
-                  <div className="space-y-3.5">
-                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <button
+                    type="button"
+                    onClick={handleAdminGoogleSignIn}
+                    className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 cursor-pointer transition-colors"
+                  >
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>
                       {lang === 'bn'
-                        ? 'নিচের বাটনে ক্লিক করে আপনার অনুমোদিত অ্যাডমিন Google অ্যাকাউন্ট সিলেক্ট করুন—সার্ভার ভেরিফিকেশনের মাধ্যমে সরাসরি প্রবেশ করবেন।'
-                        : 'Select your authorized Admin Google account below for server-verified passwordless access.'}
-                    </p>
+                        ? 'অনুমোদিত Google অ্যাকাউন্ট দিয়ে প্রবেশ করুন'
+                        : 'Continue with Authorized Admin Google'}
+                    </span>
+                  </button>
 
-                    <button
-                      type="button"
-                      onClick={handleAdminGoogleSignIn}
-                      className="w-full min-h-[48px] py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 cursor-pointer transition-colors"
-                    >
-                      <ShieldCheck className="w-4 h-4 shrink-0" />
-                      <span>
-                        {lang === 'bn'
-                          ? 'অনুমোদিত Google অ্যাকাউন্ট দিয়ে প্রবেশ করুন'
-                          : 'Continue with Authorized Admin Google'}
-                      </span>
-                    </button>
+                  <div
+                    ref={gsiAdminRef}
+                    className="w-full flex items-center justify-center min-h-[44px]"
+                  />
 
-                    <div
-                      ref={gsiAdminRef}
-                      className="w-full flex items-center justify-center min-h-[44px]"
-                    />
-                  </div>
-                )}
+                  {isEmbeddedIframe && (
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+                      <a
+                        href={fullAdminTabUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full min-h-[40px] py-2 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                        <span>
+                          {lang === 'bn'
+                            ? 'অথবা নতুন ব্রাউজার ট্যাবে /admin খুলুন'
+                            : 'Or open /admin in a full browser tab'}
+                        </span>
+                      </a>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

@@ -399,7 +399,16 @@ export default function App() {
     try {
       const raw = localStorage.getItem('bloodsearch_current_user');
       const parsed = raw ? JSON.parse(raw) : null;
-      if (parsed && isFakePersonName(parsed.name)) return null;
+      if (
+        parsed &&
+        (isFakePersonName(parsed.name) ||
+          !parsed.phone ||
+          parsed.phone === '01700000000' ||
+          parsed.phone === '01711000000')
+      ) {
+        localStorage.removeItem('bloodsearch_current_user');
+        return null;
+      }
       return parsed;
     } catch {
       return null;
@@ -445,8 +454,10 @@ export default function App() {
           isFakePersonName(parsed.name) ||
           !parsed.phone ||
           parsed.phone === '01700000000' ||
+          parsed.phone === '01711000000' ||
           parsed.facebookUrl === 'https://facebook.com/bloodsearch.bd'
         ) {
+          localStorage.removeItem('bloodsearch_current_user');
           setCurrentSavedUser(null);
           return;
         }
@@ -692,6 +703,7 @@ export default function App() {
               isFakePersonName(liveProfile.name) ||
               !liveProfile.phone ||
               liveProfile.phone === '01700000000' ||
+              liveProfile.phone === '01711000000' ||
               liveProfile.facebookUrl === 'https://facebook.com/bloodsearch.bd'
             ) {
               localStorage.removeItem('bloodsearch_current_user');
