@@ -269,9 +269,10 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
     setProviderError(null);
     setAuthSuccess(null);
     setIsLoading(true);
+    const candidateEmail = email.trim();
     try {
-      const user = await signInWithGoogleReal();
-      await finishUserSignIn(user, 'Google Popup Sign-In');
+      const user = await signInWithGoogleReal(candidateEmail || undefined);
+      await finishUserSignIn(user, 'Google Sign-In');
     } catch (err: any) {
       setProviderError(parseFirebaseAuthError(err));
     } finally {
@@ -551,17 +552,6 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                       : 'Continue with Gmail / Google'}
                   </span>
                 </button>
-
-                <div className="flex items-center justify-center">
-                  <button
-                    type="button"
-                    onClick={() => handleGoogleSandboxLogin('shamimrakib015@gmail.com', 'Shamim Rakib')}
-                    disabled={isLoading}
-                    className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer py-1"
-                  >
-                    <span>⚡ {lang === 'bn' ? '১-ক্লিকে সুপার অ্যাডমিন লগইন (shamimrakib015@gmail.com)' : '1-Click Super Admin Login (shamimrakib015@gmail.com)'}</span>
-                  </button>
-                </div>
 
                 <div
                   ref={gsiButtonRef}

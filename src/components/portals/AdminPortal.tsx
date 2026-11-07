@@ -1236,26 +1236,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </p>
             </div>
 
-            {/* Super Admin Quick 1-Click Banner */}
-            <div className="p-3 sm:p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
-              <div className="text-left min-w-0">
-                <div className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span>{lang === 'bn' ? 'সুপার ওনার কুইক লগইন' : 'Super Owner 1-Click Access'}</span>
-                </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
-                  shamimrakib015@gmail.com
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleSuperAdminQuickSignIn}
-                className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shrink-0 cursor-pointer transition-colors shadow-sm"
-              >
-                {lang === 'bn' ? '⚡ ১-ক্লিক প্রবেশ' : '⚡ 1-Click Login'}
-              </button>
-            </div>
-
             {/* Clean Segmented Login Method Switcher */}
             <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#070c17] border border-slate-200 dark:border-slate-800">
               <button

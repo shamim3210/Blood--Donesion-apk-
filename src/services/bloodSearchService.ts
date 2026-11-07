@@ -1099,9 +1099,7 @@ export async function signInWithGoogleReal(_loginHintEmail?: string): Promise<Us
     urlJson = null;
   }
 
-  // If server is in sandbox/preview mode, or Google OAuth credentials aren't configured yet:
-  // Directly authenticate via instant Google login so the user never encounters 503 or popup blocks!
-  if (!urlJson?.ok || !urlJson?.url || urlJson?.isSandbox) {
+  if (!urlJson?.ok || !urlJson?.url) {
     return signInWithGoogleSandbox(defaultEmail, defaultName);
   }
 
