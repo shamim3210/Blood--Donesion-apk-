@@ -494,52 +494,65 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
       )}
 
       {/* 1. Signature Brand Hero Command Card (Deep Navy + Crimson) */}
-      <section className="rounded-3xl hero-brand-surface text-white overflow-hidden">
-        <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+      <section className="rounded-3xl hero-brand-surface text-white overflow-hidden shadow-2xl relative border border-white/12">
+        {/* Subtle ambient lighting */}
+        <div className="absolute -top-24 -right-24 w-96 h-96 bg-rose-600/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-24 -left-24 w-80 h-80 bg-sky-600/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="relative p-4 sm:p-6 lg:p-7 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6 items-stretch">
           <div className="lg:col-span-7 flex flex-col justify-between space-y-4">
             <div className="flex items-start gap-3.5 sm:gap-4">
               <BrandLogo
                 variant="card"
-                className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 shadow-lg"
+                className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 shadow-xl ring-1 ring-white/15"
               />
               <div className="space-y-1.5 min-w-0 flex-1">
-                <div className="text-xs font-bold text-rose-300 tracking-tight">
-                  {lang === 'bn'
-                    ? 'বাংলাদেশ জরুরি রক্তদাতা সংযোগ নেটওয়ার্ক · ৬৪ জেলা'
-                    : 'Bangladesh Direct Blood Donor Network · 64 Districts'}
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-400/30 text-rose-200 text-[11px] sm:text-xs font-bold tracking-tight">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>
+                    {lang === 'bn'
+                      ? '৬৪ জেলা লাইভ নেটওয়ার্ক · সরাসরি কল ও WhatsApp'
+                      : '64 Districts Live Network · Direct Call & WhatsApp'}
+                  </span>
                 </div>
-                <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight leading-snug">
+                <h2 className="text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-tight leading-snug">
                   {lang === 'bn'
                     ? 'জরুরি মুহূর্তে সরাসরি প্রস্তুত রক্তদাতার সাথে যোগাযোগ করুন'
                     : 'Find Verified Blood Donors & Contact Directly in Minutes'}
                 </h2>
-                <p className="text-xs sm:text-sm text-slate-200/90 leading-relaxed max-w-2xl">
+                <p className="text-xs sm:text-sm text-slate-200/90 leading-relaxed max-w-2xl font-normal">
                   {lang === 'bn'
-                    ? 'রক্তের গ্রুপ ও জেলা নির্বাচন করে ১ ক্লিকেই নিকটস্থ প্রস্তুত রক্তদাতাদের সরাসরি কল বা WhatsApp করুন, অথবা জরুরি SOS ব্রডকাস্ট পাঠান।'
+                    ? 'রক্তের গ্রুপ ও জেলা নির্বাচন করে ১ ক্লিকেই নিকটস্থ রক্তদাতাদের সরাসরি কল বা WhatsApp করুন, অথবা জরুরি SOS ব্রডকাস্ট পাঠান।'
                     : 'Pick blood group & district below to call or WhatsApp available donors in one tap, or broadcast an emergency SOS alert.'}
                 </p>
               </div>
             </div>
 
             {/* Instant 1-Step High-Contrast Express Blood Group & District Finder */}
-            <div className="p-3.5 sm:p-4 rounded-2xl bg-white/96 dark:bg-[#0d1527]/95 text-slate-900 dark:text-white border border-white/60 dark:border-slate-700/80 shadow-lg space-y-3">
+            <div className="p-4 sm:p-5 rounded-2xl bg-white/96 dark:bg-[#0c1424]/95 text-slate-900 dark:text-white border border-white/70 dark:border-slate-700/80 shadow-xl space-y-3.5">
               <div className="flex items-center justify-between gap-2 text-xs">
-                <span className="font-bold text-[#0b2239] dark:text-slate-200">
-                  {lang === 'bn'
-                    ? 'দ্রুত রক্তের গ্রুপ নির্বাচন করুন'
-                    : 'Select Blood Group Needed'}
+                <span className="font-extrabold text-[#0b2239] dark:text-slate-100 flex items-center gap-1.5">
+                  <Droplet className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-600 dark:fill-rose-400" />
+                  <span>
+                    {lang === 'bn'
+                      ? 'দ্রুত রক্তের গ্রুপ নির্বাচন করুন'
+                      : 'Select Blood Group Needed'}
+                  </span>
                 </span>
-                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                <span className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 px-2 py-0.5 rounded-md border border-rose-200/60 dark:border-rose-900/60">
                   {lang === 'bn' ? '১ ক্লিকে সরাসরি সার্চ' : '1-Tap Instant Search'}
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+              {/* Smart Tactile Blood Group Selector Cards */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
                 <button
                   type="button"
                   onClick={() => setExpressGroup('ALL')}
-                  className={`min-h-[42px] px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
-                    expressGroup === 'ALL' ? 'btn-crimson' : 'btn-surface'
+                  className={`min-h-[46px] px-3.5 py-2 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 transition-all ${
+                    expressGroup === 'ALL'
+                      ? 'bg-gradient-to-b from-rose-500 via-rose-600 to-red-700 text-white shadow-md shadow-rose-950/40 ring-2 ring-white/80 scale-[1.02]'
+                      : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
                   }`}
                 >
                   {lang === 'bn' ? 'সব গ্রুপ' : 'All'}
@@ -551,8 +564,10 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       key={grp}
                       type="button"
                       onClick={() => setExpressGroup(grp)}
-                      className={`min-h-[42px] min-w-[46px] px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
-                        selected ? 'btn-crimson' : 'btn-surface'
+                      className={`min-h-[46px] min-w-[50px] px-3 py-2 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 transition-all ${
+                        selected
+                          ? 'bg-gradient-to-b from-rose-500 via-rose-600 to-red-700 text-white shadow-md shadow-rose-950/40 ring-2 ring-white/80 scale-[1.04]'
+                          : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
                       }`}
                     >
                       {grp}
@@ -561,24 +576,26 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 })}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                <select
-                  id="home-express-district"
-                  name="expressDistrict"
-                  value={expressDistrict}
-                  onChange={(e) => setExpressDistrict(e.target.value)}
-                  aria-label="Express District Selector"
-                  className="sm:col-span-5 h-11 px-3 text-xs font-semibold rounded-xl bg-slate-50 dark:bg-[#111b30] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-                >
-                  <option value="ALL">
-                    {lang === 'bn' ? 'সকল জেলা (সমগ্র বাংলাদেশ)' : 'All 64 Districts'}
-                  </option>
-                  {DISTRICTS.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {lang === 'bn' ? d.nameBn : d.nameEn}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 pt-0.5">
+                <div className="sm:col-span-5 relative">
+                  <select
+                    id="home-express-district"
+                    name="expressDistrict"
+                    value={expressDistrict}
+                    onChange={(e) => setExpressDistrict(e.target.value)}
+                    aria-label="Express District Selector"
+                    className="w-full h-12 px-3 text-xs font-bold rounded-xl bg-slate-50 dark:bg-[#111c33] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                  >
+                    <option value="ALL">
+                      {lang === 'bn' ? 'সকল জেলা (সমগ্র বাংলাদেশ)' : 'All 64 Districts'}
                     </option>
-                  ))}
-                </select>
+                    {DISTRICTS.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {lang === 'bn' ? d.nameBn : d.nameEn}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
                 <button
                   type="button"
@@ -589,7 +606,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       onNavigateTab('search');
                     }
                   }}
-                  className="sm:col-span-4 min-h-[44px] px-4 py-2 rounded-xl btn-crimson font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  className="sm:col-span-4 min-h-[48px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 via-rose-700 to-red-700 hover:from-rose-500 hover:to-red-600 text-white font-black text-xs shadow-md shadow-rose-950/30 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
                 >
                   <Search className="w-4 h-4 shrink-0" />
                   <span>
@@ -611,32 +628,56 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       district: expressDistrict !== 'ALL' ? expressDistrict : undefined,
                     })
                   }
-                  className="sm:col-span-3 min-h-[44px] px-3 py-2 rounded-xl btn-obsidian font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  className="sm:col-span-3 min-h-[48px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-[#070e1e] dark:hover:bg-[#111a33] text-rose-300 hover:text-white border border-rose-500/40 hover:border-rose-400 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
                 >
                   <Megaphone className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                  <span>{lang === 'bn' ? 'SOS পোস্ট' : 'Post SOS'}</span>
+                  <span>{lang === 'bn' ? 'জরুরি SOS' : 'Post SOS'}</span>
                 </button>
               </div>
+
+              {/* Fresh Slate Welcome Note (If zero records exist) */}
+              {totalReadyDonors === 0 && activeRequestsAll.length === 0 && (
+                <div className="p-3 rounded-xl bg-rose-50/80 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 flex items-center justify-between gap-2.5 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                    <span className="font-semibold text-rose-900 dark:text-rose-200 truncate">
+                      {lang === 'bn'
+                        ? 'ডাটাবেস সম্পূর্ণ ফ্রেশ ও প্রস্তুত! আপনি প্রথম ডোনার হতে পারেন।'
+                        : 'Clean database ready! You can register as the first verified donor.'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onOpenRegister('USER')}
+                    className="shrink-0 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] cursor-pointer"
+                  >
+                    {lang === 'bn' ? 'নিবন্ধন করুন' : 'Join Now'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Right Live Real Metrics & Quick Shortcuts */}
-          <div className="lg:col-span-5 grid grid-cols-2 gap-2.5 content-between">
+          <div className="lg:col-span-5 grid grid-cols-2 gap-3 content-between">
             <button
               type="button"
               onClick={() => {
                 if (onQuickSearchByGroup) onQuickSearchByGroup('ALL', 'ALL');
                 else onNavigateTab('search');
               }}
-              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left transition-colors cursor-pointer backdrop-blur-xs"
+              className="p-4 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left transition-all cursor-pointer backdrop-blur-xs hover:border-white/30"
             >
-              <div className="text-[11px] font-semibold text-slate-200">
-                {lang === 'bn' ? 'প্রস্তুত রক্তদাতা' : 'Ready Donors'}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-200">
+                  {lang === 'bn' ? 'প্রস্তুত রক্তদাতা' : 'Ready Donors'}
+                </span>
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
               </div>
-              <div className="text-2xl sm:text-3xl font-black text-white font-mono tabular-nums mt-0.5">
+              <div className="text-3xl sm:text-4xl font-black text-white font-mono tabular-nums mt-1">
                 {totalReadyDonors}
               </div>
-              <div className="text-[11px] text-emerald-300 font-bold mt-1 flex items-center gap-1 whitespace-nowrap">
+              <div className="text-[11px] text-emerald-300 font-bold mt-2 flex items-center gap-1 whitespace-nowrap">
                 <span>{lang === 'bn' ? 'ডিরেক্টরি দেখুন' : 'Browse directory'}</span>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               </div>
@@ -645,15 +686,18 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigateTab('requests')}
-              className="p-3.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/28 border border-rose-300/25 text-left transition-colors cursor-pointer backdrop-blur-xs"
+              className="p-4 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-300/30 text-left transition-all cursor-pointer backdrop-blur-xs hover:border-rose-300/50"
             >
-              <div className="text-[11px] font-semibold text-rose-100">
-                {lang === 'bn' ? 'সক্রিয় জরুরি আবেদন' : 'Active SOS Requests'}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-rose-100">
+                  {lang === 'bn' ? 'সক্রিয় জরুরি আবেদন' : 'Active SOS Requests'}
+                </span>
+                <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
               </div>
-              <div className="text-2xl sm:text-3xl font-black text-white font-mono tabular-nums mt-0.5">
+              <div className="text-3xl sm:text-4xl font-black text-white font-mono tabular-nums mt-1">
                 {activeRequestsAll.length}
               </div>
-              <div className="text-[11px] text-rose-200 font-bold mt-1 flex items-center gap-1 whitespace-nowrap">
+              <div className="text-[11px] text-rose-200 font-bold mt-2 flex items-center gap-1 whitespace-nowrap">
                 <span>{lang === 'bn' ? 'সকল আবেদন দেখুন' : 'View requests'}</span>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               </div>
@@ -661,29 +705,29 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
 
             <button
               type="button"
-              onClick={() => onNavigateTab('chat')}
-              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer backdrop-blur-xs"
+              onClick={() => onNavigateTab('map')}
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2.5 transition-all cursor-pointer backdrop-blur-xs hover:border-white/30"
             >
               <div className="min-w-0">
-                <div className="text-xs font-bold text-white truncate">
-                  {lang === 'bn' ? 'লাইভ চ্যাট ও GPS' : 'Live Chat & GPS'}
+                <div className="text-xs font-black text-white truncate">
+                  {lang === 'bn' ? 'লাইভ ম্যাপ ও GPS' : 'Live Map & GPS'}
                 </div>
                 <div className="text-[11px] text-slate-300 truncate mt-0.5">
-                  {lang === 'bn' ? 'স্লিপ ছবি ও লোকেশন' : 'Slip & location'}
+                  {lang === 'bn' ? 'নিকটস্থ হাসপাতাল ও ডোনার' : 'Nearby hospitals & donors'}
                 </div>
               </div>
-              <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
-                <MessageSquare className="w-4 h-4" />
+              <div className="w-9 h-9 rounded-xl bg-sky-500/20 text-sky-300 flex items-center justify-center shrink-0 border border-sky-400/30">
+                <MapPin className="w-4 h-4" />
               </div>
             </button>
 
             <button
               type="button"
               onClick={() => onOpenRegister('USER')}
-              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer backdrop-blur-xs"
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2.5 transition-all cursor-pointer backdrop-blur-xs hover:border-white/30"
             >
               <div className="min-w-0">
-                <div className="text-xs font-bold text-white truncate">
+                <div className="text-xs font-black text-white truncate">
                   {isLoggedIn
                     ? lang === 'bn'
                       ? 'ডোনার কার্ড আপডেট'
@@ -696,7 +740,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   {lang === 'bn' ? 'স্মার্ট আইডি ও সেটিংস' : 'Smart ID & privacy'}
                 </div>
               </div>
-              <div className="w-8 h-8 rounded-xl bg-rose-500/25 text-rose-200 flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-xl bg-rose-500/25 text-rose-200 flex items-center justify-center shrink-0 border border-rose-400/30">
                 <UserPlus className="w-4 h-4" />
               </div>
             </button>
@@ -705,11 +749,11 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenPlayStore}
-                className="col-span-2 min-h-[44px] px-3.5 py-2 rounded-2xl bg-white/12 hover:bg-white/20 border border-white/18 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                className="col-span-2 min-h-[46px] px-4 py-2.5 rounded-2xl bg-white/12 hover:bg-white/20 border border-white/20 text-left flex items-center justify-between gap-2 transition-all cursor-pointer"
               >
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-2.5 min-w-0">
                   <Download className="w-4 h-4 text-emerald-300 shrink-0" />
-                  <span className="text-xs font-bold text-white truncate">
+                  <span className="text-xs font-extrabold text-white truncate">
                     {lang === 'bn'
                       ? 'BloodSearch অ্যাপ ইনস্টল করুন'
                       : 'Install BloodSearch App'}

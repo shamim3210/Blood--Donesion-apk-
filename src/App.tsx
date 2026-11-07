@@ -255,35 +255,29 @@ export default function App() {
 
   // Application Data States (100% Real Registered Users & Real SOS Requests)
   const [donors, setDonors] = useState<Donor[]>(() => {
-    const saved = localStorage.getItem('bloodsearch_donors');
-    if (saved) {
-      try {
+    try {
+      const saved = localStorage.getItem('bloodsearch_donors');
+      if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          const realSaved = parsed.filter((d) => d && !isSeedDonorId(d.id));
-          return evictSeedsProgressively(realSaved, INITIAL_DONORS);
+          return parsed.filter((d) => d && !isSeedDonorId(d.id));
         }
-      } catch {
-        return evictSeedsProgressively([], INITIAL_DONORS);
       }
-    }
-    return evictSeedsProgressively([], INITIAL_DONORS);
+    } catch {}
+    return [];
   });
 
   const [requests, setRequests] = useState<BloodRequest[]>(() => {
-    const saved = localStorage.getItem('bloodsearch_requests');
-    if (saved) {
-      try {
+    try {
+      const saved = localStorage.getItem('bloodsearch_requests');
+      if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          const realSaved = parsed.filter((r) => r && !isSeedRequestId(r.id));
-          return evictSeedsProgressively(realSaved, INITIAL_REQUESTS);
+          return parsed.filter((r) => r && !isSeedRequestId(r.id));
         }
-      } catch {
-        return evictSeedsProgressively([], INITIAL_REQUESTS);
       }
-    }
-    return evictSeedsProgressively([], INITIAL_REQUESTS);
+    } catch {}
+    return [];
   });
 
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
@@ -783,70 +777,20 @@ export default function App() {
     let unsubAnnouncements: (() => void) | null = null;
     try {
       unsubDonors = subscribePublicDonors((cloudDonors) => {
-        const nextCloudIds = new Set(cloudDonors.map((d) => d.id));
-        const prevCloudIds = cloudDonorIdsRef.current;
-        cloudDonorIdsRef.current = nextCloudIds;
-        setDonors((prev) => {
-          const realLocalOnly = prev.filter(
-            (p) => !isSeedDonorId(p.id) && !nextCloudIds.has(p.id) && !prevCloudIds.has(p.id)
-          );
-          return evictSeedsProgressively([...cloudDonors, ...realLocalOnly], INITIAL_DONORS);
-        });
+        cloudDonorIdsRef.current = new Set(cloudDonors.map((d) => d.id));
+        setDonors(cloudDonors);
       });
       unsubRequests = subscribePublicRequests((cloudReqs) => {
-        const nextCloudIds = new Set(cloudReqs.map((r) => r.id));
-        const prevCloudIds = cloudRequestIdsRef.current;
-        cloudRequestIdsRef.current = nextCloudIds;
-        setRequests((prev) => {
-          const prevById = new Map(prev.map((p) => [p.id, p]));
-          const mergedCloud = cloudReqs.map((cr) => {
-            const existing = prevById.get(cr.id);
-            const hasCloudValidPhone = !isPhoneMaskedOrInvalid(cr.contactPhone);
-            const hasExistingValidPhone =
-              existing && !isPhoneMaskedOrInvalid(existing.contactPhone);
-            return {
-              ...cr,
-              contactPhone: hasCloudValidPhone
-                ? cr.contactPhone
-                : hasExistingValidPhone
-                  ? existing.contactPhone
-                  : cr.contactPhone,
-              contactName:
-                cr.contactName && cr.contactName !== cr.patientName
-                  ? cr.contactName
-                  : existing?.contactName || cr.contactName,
-              responders:
-                cr.responders.length > 0 ? cr.responders : existing?.responders || [],
-            };
-          });
-          const realLocalOnly = prev.filter(
-            (p) => !isSeedRequestId(p.id) && !nextCloudIds.has(p.id) && !prevCloudIds.has(p.id)
-          );
-          return evictSeedsProgressively([...mergedCloud, ...realLocalOnly], INITIAL_REQUESTS);
-        });
+        cloudRequestIdsRef.current = new Set(cloudReqs.map((r) => r.id));
+        setRequests(cloudReqs);
       });
       unsubAnnouncements = subscribeActiveAnnouncements(setActiveAnnouncements);
     } catch {}
 
     const syncRealOnlyMode = () => {
-      setDonors((prev) =>
-        evictSeedsProgressively(
-          prev.filter((d) => !isSeedDonorId(d.id)),
-          INITIAL_DONORS
-        )
-      );
-      setRequests((prev) =>
-        evictSeedsProgressively(
-          prev.filter((r) => !isSeedRequestId(r.id)),
-          INITIAL_REQUESTS
-        )
-      );
-      setAuditLogs((prev) =>
-        evictSeedsProgressively(
-          prev.filter((a) => !isSeedAuditId(a.id)),
-          INITIAL_AUDIT_LOGS
-        )
-      );
+      setDonors((prev) => prev.filter((d) => !isSeedDonorId(d.id)));
+      setRequests((prev) => prev.filter((r) => !isSeedRequestId(r.id)));
+      setAuditLogs((prev) => prev.filter((a) => !isSeedAuditId(a.id)));
     };
     window.addEventListener('bloodsearch_real_mode_changed', syncRealOnlyMode);
 

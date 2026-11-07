@@ -680,8 +680,10 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
             <button
               type="button"
               onClick={() => setSelectedGroup('ALL')}
-              className={`min-h-[44px] px-3.5 sm:px-4 py-2 text-xs font-bold rounded-xl cursor-pointer whitespace-nowrap shrink-0 ${
-                selectedGroup === 'ALL' ? 'btn-crimson' : 'btn-surface'
+              className={`min-h-[46px] px-4 py-2 text-xs font-black rounded-xl cursor-pointer whitespace-nowrap shrink-0 transition-all ${
+                selectedGroup === 'ALL'
+                  ? 'bg-gradient-to-b from-rose-500 via-rose-600 to-red-700 text-white shadow-md shadow-rose-950/30 ring-2 ring-rose-400 dark:ring-white/70 scale-[1.02]'
+                  : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
               }`}
             >
               {lang === 'bn' ? 'সব গ্রুপ' : 'All'}
@@ -694,8 +696,10 @@ const DonorSearchComponent: React.FC<DonorSearchProps> = ({
                   type="button"
                   key={group}
                   onClick={() => setSelectedGroup(group)}
-                  className={`min-h-[44px] min-w-[50px] px-3 py-2 text-xs sm:text-sm font-black rounded-xl cursor-pointer whitespace-nowrap shrink-0 ${
-                    isSelected ? 'btn-crimson' : 'btn-surface'
+                  className={`min-h-[46px] min-w-[50px] px-3.5 py-2 text-xs sm:text-sm font-black rounded-xl cursor-pointer whitespace-nowrap shrink-0 transition-all ${
+                    isSelected
+                      ? 'bg-gradient-to-b from-rose-500 via-rose-600 to-red-700 text-white shadow-md shadow-rose-950/40 ring-2 ring-rose-400 dark:ring-white/70 scale-[1.04]'
+                      : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
                   }`}
                 >
                   {group}

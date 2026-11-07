@@ -162,6 +162,23 @@ function hasInvalidLocalRequestPhone(rawPhone?: string): boolean {
 export function scrubFakeLocalStorageOnBoot(): void {
   if (typeof window === 'undefined') return;
   try {
+    // One-time v9 Complete Zero-Slate Reset: wipe all cached donors, requests, and stale local user session
+    if (localStorage.getItem('bloodsearch_zero_slate_v9') !== 'done') {
+      localStorage.removeItem('bloodsearch_current_user');
+      localStorage.removeItem('bloodsearch_pending_profile_draft');
+      localStorage.removeItem('bloodsearch_donors');
+      localStorage.removeItem('bloodsearch_requests');
+      localStorage.removeItem('bloodsearch_audit_logs');
+      localStorage.removeItem('bloodsearch_live_donor_trips');
+      localStorage.removeItem('bloodsearch_saved_community_chat_v1');
+      localStorage.removeItem('bloodsearch_saved_direct_chat_v1');
+      localStorage.removeItem('bloodsearch_donation_logs_v1');
+      localStorage.removeItem('bloodsearch_family_members');
+      localStorage.removeItem('bloodsearch_shortlisted_donors');
+      localStorage.removeItem('bloodsearch_thalassemia_patients');
+      localStorage.setItem('bloodsearch_zero_slate_v9', 'done');
+    }
+
     if (localStorage.getItem('bloodsearch_zero_slate_v6') !== 'done') {
       localStorage.removeItem('bloodsearch_current_user');
       localStorage.removeItem('bloodsearch_pending_profile_draft');
