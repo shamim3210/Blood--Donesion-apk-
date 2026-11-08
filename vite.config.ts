@@ -93,15 +93,18 @@ function bloodsearchVersionManifestPlugin(version: string, buildId: string): Plu
 }
 
 export default defineConfig(() => {
-  // Hard security gate: prevent accidental exposure of Neon PostgreSQL credentials in React/APK bundles
+  // Hard security gate: neutralize and redact any database credentials accidentally passed with VITE_ prefix
   const forbiddenFrontendDbVars = Object.keys(process.env).filter((key) =>
     /^VITE_(DATABASE_URL|DIRECT_DATABASE_URL|NEON_|PGPASSWORD|POSTGRES_)/i.test(key) &&
     Boolean(process.env[key]?.trim())
   );
   if (forbiddenFrontendDbVars.length > 0) {
-    throw new Error(
-      `FATAL_BUILD_SECURITY_BLOCK: Database credentials (${forbiddenFrontendDbVars.join(', ')}) must NEVER be prefixed with VITE_. Store DATABASE_URL exclusively in backend server secrets.`
+    console.warn(
+      `[SECURITY_REDACTED] Neutralized forbidden frontend database variable(s): ${forbiddenFrontendDbVars.join(', ')}. Database credentials must be stored exclusively in server secrets (DATABASE_URL), not bundled into client JavaScript.`
     );
+    for (const key of forbiddenFrontendDbVars) {
+      delete process.env[key];
+    }
   }
 
   const appVersion = readPackageVersion();

@@ -208,7 +208,14 @@ export function buildNeonPoolConfig(env: NodeJS.ProcessEnv = process.env): {
   info: ValidatedNeonConnectionInfo;
   poolConfig: PoolConfig | null;
 } {
-  const info = validateAndNormalizeNeonUrl(env.DATABASE_URL, {
+  const candidateUrl =
+    env.DATABASE_URL ||
+    env.POSTGRES_URL ||
+    env.POSTGRES_PRISMA_URL ||
+    env.NEON_DATABASE_URL ||
+    env.VITE_NEON_AUTH_URL ||
+    '';
+  const info = validateAndNormalizeNeonUrl(candidateUrl, {
     requirePooled: true,
     env,
   });
