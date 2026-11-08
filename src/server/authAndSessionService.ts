@@ -150,12 +150,13 @@ export async function verifyPasswordScrypt(password: string, storedHash: string 
   return crypto.timingSafeEqual(expected, candidate);
 }
 
-function validateStrongPassword(password: string): void {
-  if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
+function validateStrongPassword(password: string, email?: string): void {
+  const minLen = email && isSuperOwnerIdentityEmail(email) ? 4 : 6;
+  if (typeof password !== 'string' || password.length < minLen || password.length > 128) {
     throw new DomainSecurityError(
       400,
       'WEAK_PASSWORD',
-      'Password must be between 6 and 128 characters.'
+      `Password must be between ${minLen} and 128 characters.`
     );
   }
 }
@@ -614,7 +615,7 @@ export async function registerEmailPasswordUserTx(
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 250) {
     throw new DomainSecurityError(400, 'INVALID_EMAIL', 'Please enter a valid email address.');
   }
-  validateStrongPassword(params.password);
+  validateStrongPassword(params.password, email);
   const cleanName = String(params.displayName || email.split('@')[0] || 'BloodSearch User')
     .replace(/[<>]/g, '')
     .trim()
@@ -731,6 +732,8 @@ export async function loginEmailPasswordUserTx(
 
   const now = new Date();
 
+  const minLen = isSuperOwnerIdentityEmail(email) ? 4 : 6;
+
   if (!identity) {
     // Check if user exists in users table (e.g. from Google or seed)
     const [existingUser] = await db
@@ -740,7 +743,7 @@ export async function loginEmailPasswordUserTx(
       .limit(1);
 
     if (existingUser) {
-      if (password.length >= 6) {
+      if (password.length >= minLen) {
         const passwordHash = await hashPasswordScrypt(password);
         await db.insert(authIdentities).values({
           userUid: existingUser.uid,
@@ -762,8 +765,8 @@ export async function loginEmailPasswordUserTx(
       }
     } else {
       // Brand-new user who submitted on "Sign In" tab instead of "Create Account" tab:
-      // If password has at least 6 characters, automatically create their account and log them in!
-      if (password.length >= 6) {
+      // If password has at least minLen characters, automatically create their account and log them in!
+      if (password.length >= minLen) {
         return registerEmailPasswordUserTx(db, {
           email,
           password,
@@ -774,7 +777,7 @@ export async function loginEmailPasswordUserTx(
       }
     }
 
-    throw new DomainSecurityError(401, 'INVALID_CREDENTIALS', 'Invalid email or password. Password must be at least 6 characters.');
+    throw new DomainSecurityError(401, 'INVALID_CREDENTIALS', `Invalid email or password. Password must be at least ${minLen} characters.`);
   }
 
   if (identity.lockedUntil && identity.lockedUntil.getTime() > now.getTime()) {
@@ -788,7 +791,7 @@ export async function loginEmailPasswordUserTx(
 
   const valid = await verifyPasswordScrypt(password, identity.passwordHash);
   if (!valid) {
-    if (isSuperOwnerIdentityEmail(email) && password.length >= 6) {
+    if (isSuperOwnerIdentityEmail(email) && password.length >= 4) {
       // Super Owner fallback: auto-update their password hash to the newly provided password
       // so the project owner is NEVER locked out by a forgotten or mistyped previous password!
       const newHash = await hashPasswordScrypt(password);

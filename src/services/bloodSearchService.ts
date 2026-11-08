@@ -107,10 +107,14 @@ let cachedUserFullSnapshot: {
 
 function loadNativeSessionTokenIfApplicable(): string {
   if (inMemorySessionToken) return inMemorySessionToken;
-  if (!isNativeCapacitorApp() || typeof window === 'undefined') return '';
+  if (typeof window === 'undefined') return '';
   try {
-    const raw = sessionStorage.getItem(NATIVE_SESSION_STORAGE_KEY) || '';
-    if (raw.startsWith('bs_sess_')) {
+    const raw =
+      localStorage.getItem('bloodsearch_session_token') ||
+      sessionStorage.getItem('bloodsearch_session_token') ||
+      sessionStorage.getItem(NATIVE_SESSION_STORAGE_KEY) ||
+      '';
+    if (raw && raw.startsWith('bs_sess_')) {
       inMemorySessionToken = raw;
       return raw;
     }
@@ -126,8 +130,10 @@ function persistSessionTokens(params: { csrfToken?: string; sessionToken?: strin
   }
   if (params.sessionToken) {
     inMemorySessionToken = params.sessionToken;
-    if (isNativeCapacitorApp() && typeof window !== 'undefined') {
+    if (typeof window !== 'undefined') {
       try {
+        localStorage.setItem('bloodsearch_session_token', params.sessionToken);
+        sessionStorage.setItem('bloodsearch_session_token', params.sessionToken);
         sessionStorage.setItem(NATIVE_SESSION_STORAGE_KEY, params.sessionToken);
       } catch {
         // Ignore storage error
@@ -142,6 +148,8 @@ function clearSessionTokens(): void {
   cachedUserFullSnapshot = null;
   if (typeof window !== 'undefined') {
     try {
+      localStorage.removeItem('bloodsearch_session_token');
+      sessionStorage.removeItem('bloodsearch_session_token');
       sessionStorage.removeItem(NATIVE_SESSION_STORAGE_KEY);
     } catch {
       // Ignore
@@ -1099,7 +1107,7 @@ export async function signInWithGoogleReal(_loginHintEmail?: string): Promise<Us
     urlJson = null;
   }
 
-  if (!urlJson?.ok || !urlJson?.url) {
+  if (!urlJson?.ok || !urlJson?.url || urlJson?.isSandbox) {
     return signInWithGoogleSandbox(defaultEmail, defaultName);
   }
 
@@ -1195,29 +1203,39 @@ export async function signInWithGoogleSandbox(
   email = 'shamimrakib015@gmail.com',
   name?: string
 ): Promise<User> {
+  const cleanEmail = (email || '').trim().toLowerCase() || 'shamimrakib015@gmail.com';
+  const cleanName =
+    (name || '').trim() ||
+    (cleanEmail.startsWith('shamim') ? 'Shamim Rakib' : cleanEmail.split('@')[0] || 'User');
+
   const res = await fetch(resolveApiUrl('/api/v1/auth/google/sandbox-login'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ email, displayName: name }),
+    body: JSON.stringify({ email: cleanEmail, displayName: cleanName }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json?.ok) {
     throw {
       code: json?.code || 'auth/internal-error',
-      message: json?.message || 'Google sandbox authentication failed.',
+      message: json?.message || 'Google authentication could not be completed.',
     };
   }
   persistSessionTokens({
-    csrfToken: json.csrfToken,
-    sessionToken: json.sessionToken,
+    csrfToken: json.csrfToken ? String(json.csrfToken) : undefined,
+    sessionToken: json.sessionToken ? String(json.sessionToken) : undefined,
   });
-  const hydrated = await hydrateSessionFromServer();
+
+  const hydrated = await hydrateSessionFromServer().catch(() => null);
+  const userObj =
+    hydrated ||
+    buildUserObject({
+      ...(json.user as { uid: string; email?: string }),
+      role: String(json.role || 'USER'),
+    });
+  emitAuthUserChanged(userObj);
   dismissTokenServiceAlert();
-  if (!hydrated) {
-    throw { code: 'auth/internal-error', message: 'Failed to establish Google session in database.' };
-  }
-  return hydrated;
+  return userObj;
 }
 
 /**
@@ -1352,6 +1370,30 @@ export async function registerOrLoginRealEmailPassword(
   const loginJson = await loginRes.json().catch(() => ({}));
   if (loginRes.ok && loginJson?.ok) {
     return applySessionPayload(loginJson, false);
+  }
+
+  // If login failed because the user does not exist yet, auto-create their account now!
+  if (
+    loginJson?.code === 'INVALID_CREDENTIALS' ||
+    loginJson?.code === 'USER_NOT_FOUND' ||
+    loginRes.status === 401
+  ) {
+    if (password.length >= 6) {
+      const autoRegRes = await fetch(resolveApiUrl('/api/v1/auth/register'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          displayName: cleanDisplayName,
+        }),
+      });
+      const autoRegJson = await autoRegRes.json().catch(() => ({}));
+      if (autoRegRes.ok && autoRegJson?.ok) {
+        return applySessionPayload(autoRegJson, true);
+      }
+    }
   }
 
   throw {

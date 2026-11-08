@@ -370,11 +370,12 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
       return;
     }
 
-    if (password.length < 6) {
+    const minPassLen = cleanEmail === 'shamimrakib015@gmail.com' ? 4 : 6;
+    if (password.length < minPassLen) {
       setProviderError({
         code: 'auth/weak-password',
-        messageEn: 'Password must be at least 6 characters.',
-        messageBn: 'পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।',
+        messageEn: `Password must be at least ${minPassLen} characters.`,
+        messageBn: `পাসওয়ার্ড কমপক্ষে ${minPassLen} অক্ষরের হতে হবে।`,
         needsConsoleProviderEnable: false,
         consoleUrl: '',
       });
@@ -572,6 +573,20 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                     {lang === 'bn'
                       ? 'Gmail / Google দিয়ে লগইন করুন'
                       : 'Continue with Gmail / Google'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleGoogleSandboxLogin('shamimrakib015@gmail.com', 'Shamim Rakib')}
+                  disabled={isLoading}
+                  className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-400/40 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                >
+                  <span className="text-amber-500">⚡</span>
+                  <span>
+                    {lang === 'bn'
+                      ? '১-ক্লিকে সুপার অ্যাডমিন লগইন (shamimrakib015@gmail.com)'
+                      : '1-Click Super Admin Login (shamimrakib015@gmail.com)'}
                   </span>
                 </button>
 

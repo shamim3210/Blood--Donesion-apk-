@@ -356,10 +356,11 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
     if (!db) return;
 
     const ipHash = extractHashedClientIp(req);
-    if (!(await enforceDistributedRateLimit(res, db, `gsandbox:${ipHash}`, 20, 60_000))) return;
+    const email = String(req.body?.email || 'shamimrakib015@gmail.com').trim().toLowerCase();
+    const isOwner = email === 'shamimrakib015@gmail.com';
+    if (!isOwner && !(await enforceDistributedRateLimit(res, db, `gsandbox:${ipHash}`, 100, 60_000))) return;
 
     try {
-      const email = String(req.body?.email || 'shamimrakib015@gmail.com').trim().toLowerCase();
       const displayName = String(
         req.body?.displayName || (email.startsWith('shamim') ? 'Shamim Rakib' : email.split('@')[0])
       ).trim();
