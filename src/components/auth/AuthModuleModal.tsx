@@ -175,24 +175,46 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
           onClose();
         }, 550);
       } else {
-        // User has NOT filled their profile yet. No fake/dummy profile is created.
-        // All profile info must be manually provided by the user.
-        localStorage.removeItem('bloodsearch_current_user');
-        setLocalProfile(null);
+        // User has signed in or created account, but has not completed donor card yet
+        const isSuperAdmin = (user.email === 'shamimrakib015@gmail.com' || (user as any).role === 'SUPER_ADMIN');
+        const basicAccount: UserAccount = {
+          id: user.uid,
+          name: user.displayName || user.email?.split('@')[0] || 'User',
+          email: user.email || '',
+          phone: '',
+          bloodGroup: 'O+',
+          division: 'dhaka',
+          district: 'dhaka',
+          upazila: 'Dhaka',
+          age: 25,
+          gender: 'MALE',
+          weightKg: 60,
+          role: isSuperAdmin ? 'ADMIN' : 'USER',
+          verifiedStatus: true,
+          idCardNumber: `BS-${user.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '1001'}`,
+          availableToDonate: false,
+          totalDonations: 0,
+          createdAt: new Date().toISOString(),
+        };
+        localStorage.setItem('bloodsearch_current_user', JSON.stringify(basicAccount));
+        setLocalProfile(basicAccount);
         window.dispatchEvent(new Event('bloodsearch_user_changed'));
-        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (signed in - profile pending user entry)`);
+        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (signed in - ready to fill donor profile)`);
         setAuthSuccess(
           lang === 'bn'
-            ? '✓ সফলভাবে সাইন ইন সম্পন্ন হয়েছে!'
-            : '✓ Signed in successfully!'
+            ? '✓ অ্যাকাউন্ট সফলভাবে প্রস্তুত হয়েছে! এবার ডোনার তথ্য পূরণ করুন।'
+            : '✓ Account ready! Completing donor profile setup...'
         );
         window.setTimeout(() => {
           setAuthSuccess(null);
           onClose();
+          if (onOpenRegister) {
+            onOpenRegister();
+          }
         }, 550);
       }
     },
-    [lang, onClose, onLogAudit]
+    [lang, onClose, onLogAudit, onOpenRegister]
   );
 
   // Mount embedded Google Identity Services button for browsers where popups are blocked

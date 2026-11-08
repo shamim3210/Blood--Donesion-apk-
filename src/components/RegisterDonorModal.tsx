@@ -15,6 +15,7 @@ import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
+  registerOrLoginRealEmailPassword,
   computeAdminProofHashSync,
   verifyAdminInviteCodeInCloud,
   isBootstrappedAdminUser,
@@ -50,6 +51,10 @@ import {
   ChevronUp,
   MessageCircle,
   Globe,
+  Mail,
+  Lock,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface RegisterDonorModalProps {
@@ -131,6 +136,10 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
   const [accountRole, setAccountRole] = useState<'USER' | 'ADMIN'>('USER');
   const [adminSecretCode] = useState('');
 
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
   const [formError, setFormError] = useState<string | null>(null);
   const [savedAccount, setSavedAccount] = useState<UserAccount | null>(null);
 
@@ -144,26 +153,41 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         const rawDraft = localStorage.getItem('bloodsearch_pending_profile_draft');
         const rawSaved = localStorage.getItem('bloodsearch_current_user');
         let source: Partial<UserAccount> | null = null;
+        let savedParsed: Partial<UserAccount> | null = null;
+        if (rawSaved) {
+          try {
+            savedParsed = JSON.parse(rawSaved);
+          } catch {}
+        }
         if (rawDraft) {
-          const d = JSON.parse(rawDraft);
-          if (d && !isFakePersonName(d.name) && d.phone && d.phone !== '01700000000') {
-            source = d;
+          try {
+            const d = JSON.parse(rawDraft);
+            if (d && !isFakePersonName(d.name)) {
+              source = d;
+            }
+          } catch {}
+        }
+        if (!source && savedParsed) {
+          if (!auth.currentUser || !savedParsed.id || savedParsed.id === auth.currentUser.uid) {
+            source = savedParsed;
           }
         }
-        if (!source && rawSaved) {
-          const s = JSON.parse(rawSaved);
-          if (
-            s &&
-            !isFakePersonName(s.name) &&
-            s.phone &&
-            s.phone !== '01700000000' &&
-            (!auth.currentUser || !s.id || s.id === auth.currentUser.uid)
-          ) {
-            source = s;
-          }
-        }
+
+        const prefillName =
+          (source?.name && !isFakePersonName(source.name) ? source.name : '') ||
+          auth.currentUser?.displayName ||
+          (savedParsed?.name && !isFakePersonName(savedParsed.name) ? savedParsed.name : '') ||
+          '';
+        const prefillEmail =
+          auth.currentUser?.email ||
+          source?.email ||
+          savedParsed?.email ||
+          '';
+
+        setName(prefillName);
+        setEmailInput(prefillEmail);
+
         if (source) {
-          setName(source.name && !isFakePersonName(source.name) ? source.name : '');
           setBloodGroup(source.bloodGroup || '');
           setAgeInput(
             typeof source.age === 'number' && source.age >= 18 && source.age <= 65
@@ -181,7 +205,9 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               : ''
           );
           const cleanSavedPhone =
-            source.phone && source.phone !== '01700000000' ? source.phone : '';
+            source.phone && source.phone !== '01700000000' && source.phone !== '01711000000'
+              ? source.phone
+              : '';
           setPhone(cleanSavedPhone);
           setWhatsappPhone(
             source.whatsappPhone && source.whatsappPhone !== '01700000000'
@@ -215,7 +241,6 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
           }
           if (source.photoUrl) setPhotoUrl(source.photoUrl);
         } else {
-          setName('');
           setBloodGroup('');
           setAgeInput('');
           setWeightInput('');
@@ -388,25 +413,12 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
       return;
     }
 
-    const cleanWa = normalizeValidBangladeshMobileE164(whatsappPhone);
-    if (!cleanWa || !isValidBangladeshMobilePhone(whatsappPhone)) {
-      setFormError(
-        lang === 'bn'
-          ? 'সঠিক ১১ সংখ্যার WhatsApp নম্বর দিন (অথবা "মোবাইল নম্বরের মতোই" বাটনে চাপুন)।'
-          : 'Please enter a valid 11-digit WhatsApp number (or tap "Same as Mobile").'
-      );
-      return;
-    }
+    const rawWa = (whatsappPhone || phone).trim();
+    const cleanWa = normalizeValidBangladeshMobileE164(rawWa) || cleanPhone;
 
-    const cleanFb = normalizeFacebookProfileUrl(facebookUrl);
-    if (!cleanFb) {
-      setFormError(
-        lang === 'bn'
-          ? 'অনুগ্রহ করে আপনার আসল Facebook প্রোফাইল লিংক বা ইউজারনেম দিন (যেমন: facebook.com/your.id)।'
-          : 'Please enter your Facebook profile link or username (e.g. facebook.com/your.id).'
-      );
-      return;
-    }
+    const cleanFb = facebookUrl.trim()
+      ? normalizeFacebookProfileUrl(facebookUrl) || undefined
+      : undefined;
 
     if (!district || !selectedDistrictObj) {
       setFormError(
@@ -425,6 +437,26 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
           : 'Please enter your area or neighborhood name (e.g. Niketon, Dhanmondi).'
       );
       return;
+    }
+
+    if (!auth.currentUser) {
+      const cleanEmail = emailInput.trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        setFormError(
+          lang === 'bn'
+            ? 'অ্যাকাউন্ট তৈরি ও পরবর্তীতে লগইন করার জন্য সঠিক ইমেইল (Gmail / Email) লিখুন।'
+            : 'Please enter a valid email address to create your login account.'
+        );
+        return;
+      }
+      if (passwordInput.length < 6) {
+        setFormError(
+          lang === 'bn'
+            ? 'ভবিষ্যতে লগইন করার জন্য কমপক্ষে ৬ অক্ষরের পাসওয়ার্ড দিন।'
+            : 'Password must be at least 6 characters for future sign-in.'
+        );
+        return;
+      }
     }
 
     if (accountRole === 'ADMIN' && !isBootstrappedAdminUser(auth.currentUser)) {
@@ -484,6 +516,25 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               ? `${parsed.messageBn} (অ্যাডমিন ভেরিফিকেশনের জন্য লগইন প্রয়োজন)`
               : `${parsed.messageEn} (Sign in is required for Admin verification)`
           );
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      // If user was signed out, register or login with provided email/password
+      if (!activeUser && emailInput.trim()) {
+        try {
+          const authRes = await registerOrLoginRealEmailPassword(
+            emailInput.trim(),
+            passwordInput,
+            true,
+            cleanName
+          );
+          activeUser = authRes.user;
+          setFirebaseUser(activeUser);
+        } catch (authErr: any) {
+          const parsed = parseFirebaseAuthError(authErr);
+          setFormError(lang === 'bn' ? parsed.messageBn : parsed.messageEn);
           setIsSubmitting(false);
           return;
         }
@@ -562,6 +613,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         name: cleanName,
         email:
           activeUser?.email ||
+          (emailInput.trim() ? emailInput.trim().toLowerCase() : '') ||
           existingSaved?.email ||
           (activeDevOtp
             ? `${activeDevOtp.phoneLocal}@otp-dev.bloodsearch.bd`
@@ -788,21 +840,75 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         ) : (
           /* Single Easy 1-Screen Form (100% Manual User Entry) */
           <form onSubmit={handleSubmit} className="pt-2 space-y-4">
-            {/* Google Sign-In Status Bar (Only prominent if not signed in yet) */}
+            {/* Account & Login Credentials Box (For unauthenticated users) */}
             {!firebaseUser ? (
-              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0d1322] border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2.5">
-                <div className="text-xs text-slate-700 dark:text-slate-300">
-                  {lang === 'bn'
-                    ? 'প্রোফাইল স্থায়ীভাবে সেভ করতে Google দিয়ে যুক্ত হোন:'
-                    : 'Connect Google once to save your profile across devices:'}
+              <div className="p-4 rounded-2xl bg-rose-50/80 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-black text-rose-950 dark:text-rose-100 flex items-center gap-1.5">
+                    <KeyRound className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                    <span>
+                      {lang === 'bn'
+                        ? 'লগইন অ্যাকাউন্ট তথ্য (ভবিষ্যতে লগইন করার জন্য) *'
+                        : 'Login Credentials (for future sign-in) *'}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleConnectGoogle}
+                    className="min-h-[34px] px-3 py-1 rounded-xl btn-indigo text-[11px] font-bold cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    {lang === 'bn' ? 'Google দিয়ে ১-ক্লিক' : '1-Click Google'}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleConnectGoogle}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl btn-indigo text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  {lang === 'bn' ? 'Google লগইন' : 'Google Sign-In'}
-                </button>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label htmlFor="reg-email" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      {lang === 'bn' ? 'আপনার ইমেইল (Gmail / Email) *' : 'Your Email *'}
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 pointer-events-none" />
+                      <input
+                        id="reg-email"
+                        name="regEmail"
+                        type="email"
+                        required
+                        value={emailInput}
+                        onChange={(e) => setEmailInput(e.target.value)}
+                        placeholder="you@gmail.com"
+                        className="w-full h-11 pl-9 pr-3 rounded-xl bg-white dark:bg-[#090f1e] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="reg-password" className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      {lang === 'bn' ? 'পাসওয়ার্ড (কমপক্ষে ৬ অক্ষর) *' : 'Password (min 6 chars) *'}
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 pointer-events-none" />
+                      <input
+                        id="reg-password"
+                        name="regPassword"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        placeholder="••••••"
+                        className="w-full h-11 pl-9 pr-10 rounded-xl bg-white dark:bg-[#090f1e] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-2.5 top-3 text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                        aria-label="Toggle password visibility"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : null}
 
@@ -989,7 +1095,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
               <div>
                 <div className="flex items-center justify-between gap-1 mb-1">
                   <label htmlFor="reg-donor-whatsapp" className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                    {lang === 'bn' ? '৭. WhatsApp নম্বর *' : '7. WhatsApp Number *'}
+                    {lang === 'bn' ? '৭. WhatsApp নম্বর (ঐচ্ছিক)' : '7. WhatsApp Number (Optional)'}
                   </label>
                   {phone.trim() && whatsappPhone !== phone && (
                     <button
@@ -1007,10 +1113,9 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                     id="reg-donor-whatsapp"
                     name="donorWhatsapp"
                     type="tel"
-                    required
                     value={whatsappPhone}
                     onChange={(e) => setWhatsappPhone(e.target.value)}
-                    placeholder="017XXXXXXXX"
+                    placeholder={phone || '017XXXXXXXX (ঐচ্ছিক)'}
                     className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
@@ -1020,8 +1125,8 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
             <div>
               <label htmlFor="reg-donor-facebook" className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                 {lang === 'bn'
-                  ? '৮. Facebook প্রোফাইল লিংক / আইডি *'
-                  : '8. Facebook Profile Link / ID *'}
+                  ? '৮. Facebook প্রোফাইল লিংক / ইউজারনেম (ঐচ্ছিক)'
+                  : '8. Facebook Profile Link / Username (Optional)'}
               </label>
               <div className="relative">
                 <Globe className="w-4 h-4 text-[#1877f2] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1029,11 +1134,10 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
                   id="reg-donor-facebook"
                   name="donorFacebookUrl"
                   type="text"
-                  required
                   maxLength={200}
                   value={facebookUrl}
                   onChange={(e) => setFacebookUrl(e.target.value)}
-                  placeholder="https://facebook.com/your.id"
+                  placeholder="https://facebook.com/your.id (ঐচ্ছিক)"
                   className="w-full h-11 pl-10 pr-3.5 rounded-xl bg-slate-50 dark:bg-[#0d1322] border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
               </div>
