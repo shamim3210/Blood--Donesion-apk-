@@ -6,7 +6,6 @@ import {
   auth,
   onAuthStateChanged,
   signInWithGoogleReal,
-  signInWithGoogleSandbox,
   signInWithGoogleIdToken,
   GOOGLE_OAUTH_CLIENT_ID,
   registerOrLoginRealEmailPassword,
@@ -14,7 +13,6 @@ import {
   signOutReal,
   parseFirebaseAuthError,
   fetchUserProfileFromFirestore,
-  ensureUserAutoSyncedInFirestore,
   checkIsVerifiedAdminInFirestore,
   clearDevOtpSandboxSession,
   AuthProviderErrorDetails,
@@ -32,6 +30,8 @@ import {
   EyeOff,
   UserPlus,
   User as UserIcon,
+  ShieldCheck,
+  ArrowRight,
 } from 'lucide-react';
 
 interface AuthModuleModalProps {
@@ -96,11 +96,13 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
   const [authSuccess, setAuthSuccess] = useState<string | null>(null);
   const [providerError, setProviderError] = useState<AuthProviderErrorDetails | null>(null);
 
-  // Simple Email & Password states (Sign In / Create Account / Forgot Password — NO OTP!)
+  // Clean Email & Password states (Sign In / Create Account / Forgot Password)
   const [authMode, setAuthMode] = useState<'SIGN_IN' | 'SIGN_UP' | 'RESET'>('SIGN_IN');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  const isOwnerEmail = email.trim().toLowerCase() === 'shamimrakib015@gmail.com';
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -156,9 +158,10 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
       }
 
       if (savedProfile) {
-        const isAdmin = (user.email === 'shamimrakib015@gmail.com' || (user as any).role === 'SUPER_ADMIN')
-          ? true
-          : await checkIsVerifiedAdminInFirestore(user).catch(() => false);
+        const isAdmin =
+          user.email === 'shamimrakib015@gmail.com' || (user as any).role === 'SUPER_ADMIN'
+            ? true
+            : await checkIsVerifiedAdminInFirestore(user).catch(() => false);
         if (isAdmin) savedProfile.role = 'ADMIN';
         savedProfile.authSource = 'NEON_OIDC';
         localStorage.setItem('bloodsearch_current_user', JSON.stringify(savedProfile));
@@ -173,10 +176,10 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
         window.setTimeout(() => {
           setAuthSuccess(null);
           onClose();
-        }, 550);
+        }, 500);
       } else {
-        // User has signed in or created account, but has not completed donor card yet
-        const isSuperAdmin = (user.email === 'shamimrakib015@gmail.com' || (user as any).role === 'SUPER_ADMIN');
+        const isSuperAdmin =
+          user.email === 'shamimrakib015@gmail.com' || (user as any).role === 'SUPER_ADMIN';
         const basicAccount: UserAccount = {
           id: user.uid,
           name: user.displayName || user.email?.split('@')[0] || 'User',
@@ -199,11 +202,14 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
         localStorage.setItem('bloodsearch_current_user', JSON.stringify(basicAccount));
         setLocalProfile(basicAccount);
         window.dispatchEvent(new Event('bloodsearch_user_changed'));
-        onLogAudit('STATUS_CHANGE', `${sourceLabel}: ${user.email || user.uid} (signed in - ready to fill donor profile)`);
+        onLogAudit(
+          'STATUS_CHANGE',
+          `${sourceLabel}: ${user.email || user.uid} (signed in - ready to fill donor profile)`
+        );
         setAuthSuccess(
           lang === 'bn'
-            ? '✓ অ্যাকাউন্ট সফলভাবে প্রস্তুত হয়েছে! এবার ডোনার তথ্য পূরণ করুন।'
-            : '✓ Account ready! Completing donor profile setup...'
+            ? '✓ অ্যাকাউন্ট সফলভাবে প্রস্তুত হয়েছে! এবার প্রোফাইল তথ্য দিন।'
+            : '✓ Account ready! Completing profile setup...'
         );
         window.setTimeout(() => {
           setAuthSuccess(null);
@@ -211,13 +217,13 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
           if (onOpenRegister) {
             onOpenRegister();
           }
-        }, 550);
+        }, 500);
       }
     },
     [lang, onClose, onLogAudit, onOpenRegister]
   );
 
-  // Mount embedded Google Identity Services button for browsers where popups are blocked
+  // Mount embedded Google Identity Services button if available
   useEffect(() => {
     if (!isOpen || !GOOGLE_OAUTH_CLIENT_ID || firebaseUser) return;
     let cancelled = false;
@@ -287,7 +293,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleGooglePopupLogin = async () => {
+  const handleGoogleSignInClick = async () => {
     setProviderError(null);
     setAuthSuccess(null);
     setIsLoading(true);
@@ -295,23 +301,6 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
     try {
       const user = await signInWithGoogleReal(candidateEmail || undefined);
       await finishUserSignIn(user, 'Google Sign-In');
-    } catch (err: any) {
-      setProviderError(parseFirebaseAuthError(err));
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGoogleSandboxLogin = async (
-    targetEmail = 'shamimrakib015@gmail.com',
-    targetName = 'Shamim Rakib'
-  ) => {
-    setProviderError(null);
-    setAuthSuccess(null);
-    setIsLoading(true);
-    try {
-      const user = await signInWithGoogleSandbox(targetEmail, targetName);
-      await finishUserSignIn(user, 'Google Instant Sign-In');
     } catch (err: any) {
       setProviderError(parseFirebaseAuthError(err));
     } finally {
@@ -416,65 +405,82 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs overflow-y-auto modal-scroll-contain">
-      <div className="w-full max-w-md my-auto rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden text-left">
-        {/* Rich Jewel Header */}
-        <div className="hero-brand-surface px-5 py-4 flex items-center justify-between gap-3 text-white">
-          <div className="flex items-center gap-3 min-w-0">
-            <BrandLogo variant="mark" size="sm" />
-            <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-black tracking-tight text-white truncate">
-                {firebaseUser
-                  ? lang === 'bn'
-                    ? 'আপনার অ্যাকাউন্ট'
-                    : 'Your Account'
-                  : lang === 'bn'
-                    ? 'সহজ সাইন ইন / লগইন'
-                    : 'Easy Sign In & Account'}
-              </h2>
-              <p className="text-xs text-rose-200 truncate">
-                {lang === 'bn'
-                  ? 'Gmail অথবা ইমেইল দিয়ে ১ ক্লিকেই প্রবেশ করুন — প্রোফাইল তথ্য আপনি নিজেই দেবেন'
-                  : 'Sign in with Gmail or Email — fill in your own profile details freely'}
-              </p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-md overflow-y-auto modal-scroll-contain animate-in fade-in duration-200">
+      <div className="w-full max-w-md my-auto rounded-3xl bg-white dark:bg-[#0c1424] border border-slate-200/80 dark:border-slate-800 shadow-2xl shadow-slate-950/30 overflow-hidden text-left transition-all">
+        {/* Sleek Modern Header */}
+        <div className="relative px-6 pt-6 pb-4 border-b border-slate-100 dark:border-slate-800/80 bg-gradient-to-b from-rose-50/50 dark:from-rose-950/20 to-transparent">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500 to-red-600 flex items-center justify-center text-white shadow-md shadow-rose-600/20 shrink-0 ring-4 ring-rose-500/10">
+                <BrandLogo variant="mark" size="sm" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white tracking-tight truncate">
+                  {firebaseUser
+                    ? lang === 'bn'
+                      ? 'আপনার অ্যাকাউন্ট'
+                      : 'Your Account'
+                    : authMode === 'SIGN_UP'
+                      ? lang === 'bn'
+                        ? 'নতুন অ্যাকাউন্ট খুলুন'
+                        : 'Create an Account'
+                      : authMode === 'RESET'
+                        ? lang === 'bn'
+                          ? 'পাসওয়ার্ড পুনরুদ্ধার'
+                          : 'Reset Password'
+                        : lang === 'bn'
+                          ? 'সহজ সাইন ইন'
+                          : 'Sign In'}
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                  {lang === 'bn'
+                    ? 'Google বা ইমেইল দিয়ে সহজে প্রবেশ করুন'
+                    : 'Instant access with Google or Email'}
+                </p>
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[38px] min-w-[38px] rounded-lg bg-white/10 hover:bg-rose-600 text-white flex items-center justify-center cursor-pointer shrink-0 transition-colors"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-6 space-y-4">
           {authSuccess && (
-            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center gap-2">
+            <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/80 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2.5 animate-in fade-in duration-150">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>{authSuccess}</span>
             </div>
           )}
 
           {providerError && (
-            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 text-xs font-semibold space-y-2">
-              <div className="flex items-start gap-2">
+            <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200/80 dark:border-rose-800 text-rose-700 dark:text-rose-200 text-xs font-medium space-y-2.5">
+              <div className="flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span>{lang === 'bn' ? providerError.messageBn : providerError.messageEn}</span>
+                <span className="leading-relaxed">
+                  {lang === 'bn' ? providerError.messageBn : providerError.messageEn}
+                </span>
               </div>
               {providerError.canQuickRegister && email && password.length >= 6 && (
-                <div className="pt-2 border-t border-rose-200/60 dark:border-rose-800/60 flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-medium text-rose-600 dark:text-rose-300">
-                    {lang === 'bn' ? 'এই ইমেইল ও পাসওয়ার্ডে নতুন একাউন্ট খুলবেন?' : 'Create account with these credentials?'}
+                <div className="pt-2.5 border-t border-rose-200/60 dark:border-rose-800/60 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-rose-600 dark:text-rose-300">
+                    {lang === 'bn'
+                      ? 'নতুন অ্যাকাউন্ট খুলতে চান?'
+                      : 'Create account with these credentials?'}
                   </span>
                   <button
                     type="button"
                     onClick={handleQuickCreateAccountFromError}
                     disabled={isLoading}
-                    className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer shadow-xs whitespace-nowrap"
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs cursor-pointer shadow-xs whitespace-nowrap transition-colors"
                   >
-                    {lang === 'bn' ? '✓ এখনই নতুন একাউন্ট খুলুন' : '✓ Create Account Now'}
+                    {lang === 'bn' ? '✓ অ্যাকাউন্ট তৈরি করুন' : '✓ Create Account'}
                   </button>
                 </div>
               )}
@@ -482,46 +488,65 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
           )}
 
           {firebaseUser ? (
-            /* Signed-in view: direct button to edit/fill user's own profile details */
+            /* Signed-in user view */
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center gap-3">
-                <div className="w-11 h-11 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-black shrink-0">
-                  <UserIcon className="w-5 h-5" />
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800 flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-rose-500 to-red-600 text-white flex items-center justify-center font-bold text-lg shadow-sm shrink-0">
+                  {localProfile?.name ? (
+                    localProfile.name.charAt(0).toUpperCase()
+                  ) : (
+                    <UserIcon className="w-6 h-6" />
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-black text-slate-900 dark:text-white truncate">
-                    {localProfile?.name ||
-                      (lang === 'bn' ? 'প্রোফাইল তথ্য এখনো দেওয়া হয়নি' : 'Profile details not set yet')}
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                      {localProfile?.name ||
+                        (lang === 'bn'
+                          ? 'প্রোফাইল এখনো সম্পন্ন হয়নি'
+                          : 'Profile not set yet')}
+                    </span>
+                    {((firebaseUser as any).role === 'SUPER_ADMIN' ||
+                      firebaseUser.email === 'shamimrakib015@gmail.com') && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 border border-amber-200/80 dark:border-amber-900/60 px-2 py-0.5 rounded-full">
+                        <ShieldCheck className="w-3 h-3" />
+                        Admin
+                      </span>
+                    )}
                   </div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate">
+                  <div className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate mt-0.5">
                     {firebaseUser.email}
                   </div>
-                  {localProfile && (
-                    <div className="text-xs font-bold text-rose-600 dark:text-rose-400 mt-0.5">
-                      {localProfile.bloodGroup} · {localProfile.phone} · {localProfile.upazila}
+                  {localProfile?.bloodGroup && (
+                    <div className="text-xs font-semibold text-rose-600 dark:text-rose-400 mt-1 flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900/60 font-bold">
+                        {localProfile.bloodGroup}
+                      </span>
+                      <span>·</span>
+                      <span>{localProfile.district}</span>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
                 <button
                   type="button"
                   onClick={() => {
                     onClose();
                     if (onOpenRegister) onOpenRegister();
                   }}
-                  className="min-h-[44px] px-4 py-2.5 rounded-lg btn-crimson text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+                  className="min-h-[46px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all active:scale-[0.99]"
                 >
                   <UserPlus className="w-4 h-4 shrink-0" />
                   <span>
                     {localProfile
                       ? lang === 'bn'
                         ? 'প্রোফাইল এডিট করুন'
-                        : 'Edit My Profile'
+                        : 'Edit Profile'
                       : lang === 'bn'
-                        ? 'নিজের প্রোফাইল সাজান'
-                        : 'Set Up My Profile'}
+                        ? 'প্রোফাইল সাজান'
+                        : 'Set Up Profile'}
                   </span>
                 </button>
 
@@ -529,28 +554,28 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                   type="button"
                   onClick={handleSignOutClick}
                   disabled={isLoading}
-                  className="min-h-[44px] px-4 py-2.5 rounded-lg btn-surface hover:bg-rose-600 hover:text-white hover:border-rose-600 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+                  className="min-h-[46px] px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 dark:bg-slate-800 dark:hover:bg-rose-950/30 text-slate-700 hover:text-rose-600 dark:text-slate-300 dark:hover:text-rose-400 border border-slate-200 dark:border-slate-700 hover:border-rose-200 dark:hover:border-rose-900/50 font-semibold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
                 >
                   <LogOut className="w-4 h-4 shrink-0" />
-                  <span>{lang === 'bn' ? 'লগআউট' : 'Sign Out'}</span>
+                  <span>{lang === 'bn' ? 'সাইন আউট' : 'Sign Out'}</span>
                 </button>
               </div>
             </div>
           ) : (
-            /* Clean 2-Way Easy Login: 1) Gmail Button  2) Email + Password */
+            /* Clean Modern Login Form */
             <div className="space-y-4">
-              {/* 1. Primary 1-Click Gmail / Google Login */}
-              <div className="space-y-2">
+              {/* 1. Authentic Google Sign-In Button */}
+              <div>
                 <button
                   type="button"
-                  onClick={handleGooglePopupLogin}
+                  onClick={handleGoogleSignInClick}
                   disabled={isLoading}
-                  className="w-full min-h-[46px] px-4 py-2.5 rounded-lg bg-[#0b2239] hover:bg-[#dc2626] text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 shadow-md cursor-pointer transition-colors"
+                  className="w-full min-h-[48px] px-4 py-2.5 rounded-2xl bg-white hover:bg-slate-50 dark:bg-slate-800/90 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300/80 dark:border-slate-700 shadow-xs hover:shadow font-semibold text-sm flex items-center justify-center gap-3 cursor-pointer transition-all active:scale-[0.99]"
                 >
                   {isLoading ? (
-                    <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                    <RefreshCw className="w-4 h-4 animate-spin text-slate-500 shrink-0" />
                   ) : (
-                    <svg className="w-4 h-4 shrink-0 bg-white rounded-xs p-0.5" viewBox="0 0 24 24">
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
                       <path
                         fill="#EA4335"
                         d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.8C6.2 7.2 8.9 5 12 5z"
@@ -571,52 +596,41 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                   )}
                   <span>
                     {lang === 'bn'
-                      ? 'Gmail / Google দিয়ে লগইন করুন'
-                      : 'Continue with Gmail / Google'}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleGoogleSandboxLogin('shamimrakib015@gmail.com', 'Shamim Rakib')}
-                  disabled={isLoading}
-                  className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-400/40 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                >
-                  <span className="text-amber-500">⚡</span>
-                  <span>
-                    {lang === 'bn'
-                      ? '১-ক্লিকে সুপার অ্যাডমিন লগইন (shamimrakib015@gmail.com)'
-                      : '1-Click Super Admin Login (shamimrakib015@gmail.com)'}
+                      ? 'Google দিয়ে সরাসরি সাইন ইন'
+                      : 'Continue with Google'}
                   </span>
                 </button>
 
                 <div
                   ref={gsiButtonRef}
-                  className={`flex justify-center ${gsiReady ? 'pt-0.5' : 'hidden'}`}
+                  className={`flex justify-center ${gsiReady ? 'pt-1.5' : 'hidden'}`}
                 />
               </div>
 
-              <div className="flex items-center gap-3 text-[11px] font-bold text-slate-400">
-                <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-                <span>{lang === 'bn' ? 'অথবা ইমেইল ও পাসওয়ার্ড' : 'OR EMAIL & PASSWORD'}</span>
-                <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+              {/* Minimal Elegant Divider */}
+              <div className="flex items-center gap-3 pt-1">
+                <div className="h-px flex-1 bg-slate-200/80 dark:bg-slate-800" />
+                <span className="text-[11px] font-medium tracking-wider uppercase text-slate-400 dark:text-slate-500">
+                  {lang === 'bn' ? 'অথবা ইমেইল' : 'or with email'}
+                </span>
+                <div className="h-px flex-1 bg-slate-200/80 dark:bg-slate-800" />
               </div>
 
-              {/* Mode Switcher: Sign In vs Create Account */}
-              <div className="grid grid-cols-2 gap-2 p-1 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              {/* Refined Segmented Control */}
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={() => {
                     setAuthMode('SIGN_IN');
                     setProviderError(null);
                   }}
-                  className={`min-h-[38px] rounded-md text-xs font-bold cursor-pointer transition-colors ${
+                  className={`min-h-[36px] rounded-lg text-xs font-semibold cursor-pointer transition-all ${
                     authMode === 'SIGN_IN'
-                      ? 'bg-[#dc2626] text-white shadow-xs'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800'
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
-                  {lang === 'bn' ? 'সাইন ইন (Login)' : 'Sign In'}
+                  {lang === 'bn' ? 'সাইন ইন' : 'Sign In'}
                 </button>
                 <button
                   type="button"
@@ -624,24 +638,35 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                     setAuthMode('SIGN_UP');
                     setProviderError(null);
                   }}
-                  className={`min-h-[38px] rounded-md text-xs font-bold cursor-pointer transition-colors ${
+                  className={`min-h-[36px] rounded-lg text-xs font-semibold cursor-pointer transition-all ${
                     authMode === 'SIGN_UP'
-                      ? 'bg-[#059669] text-white shadow-xs'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800'
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   {lang === 'bn' ? 'নতুন অ্যাকাউন্ট' : 'Create Account'}
                 </button>
               </div>
 
-              {/* Simple Email + Password Form */}
-              <form onSubmit={handleEmailAuthSubmit} className="space-y-3">
+              {/* Clean Email & Password Form */}
+              <form onSubmit={handleEmailAuthSubmit} className="space-y-3 pt-1">
                 <div>
-                  <label htmlFor="auth-modal-email" className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {lang === 'bn' ? 'আপনার ইমেইল (Gmail / Email) *' : 'Email Address *'}
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label
+                      htmlFor="auth-modal-email"
+                      className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
+                    >
+                      {lang === 'bn' ? 'ইমেইল অ্যাড্রেস' : 'Email Address'}
+                    </label>
+                    {isOwnerEmail && (
+                      <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3" />
+                        Super Admin
+                      </span>
+                    )}
+                  </div>
                   <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 pointer-events-none" />
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5 pointer-events-none" />
                     <input
                       id="auth-modal-email"
                       name="email"
@@ -650,16 +675,21 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="you@gmail.com"
-                      className="w-full h-11 pl-9 pr-3.5 text-sm rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      className="w-full h-11 pl-10 pr-3.5 text-sm rounded-xl bg-slate-50 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300/80 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500/25 focus:border-rose-500 transition-all placeholder:text-slate-400"
                     />
                   </div>
                 </div>
 
                 {authMode !== 'RESET' && (
                   <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label htmlFor="auth-modal-password" className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                        {lang === 'bn' ? 'পাসওয়ার্ড (কমপক্ষে ৬ অক্ষর) *' : 'Password (min 6 chars) *'}
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label
+                        htmlFor="auth-modal-password"
+                        className="text-xs font-semibold text-slate-700 dark:text-slate-300"
+                      >
+                        {lang === 'bn'
+                          ? `পাসওয়ার্ড (${isOwnerEmail ? '৪+' : '৬+'} অক্ষর)`
+                          : `Password (${isOwnerEmail ? 'min 4' : 'min 6'} chars)`}
                       </label>
                       <button
                         type="button"
@@ -667,28 +697,28 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                           setAuthMode('RESET');
                           setProviderError(null);
                         }}
-                        className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                        className="text-[11px] font-medium text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                       >
                         {lang === 'bn' ? 'পাসওয়ার্ড ভুলে গেছেন?' : 'Forgot password?'}
                       </button>
                     </div>
                     <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 pointer-events-none" />
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5 pointer-events-none" />
                       <input
                         id="auth-modal-password"
                         name="password"
                         type={showPassword ? 'text' : 'password'}
                         required
-                        minLength={6}
+                        minLength={isOwnerEmail ? 4 : 6}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="••••••"
-                        className="w-full h-11 pl-9 pr-10 text-sm rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        placeholder="••••••••"
+                        className="w-full h-11 pl-10 pr-10 text-sm rounded-xl bg-slate-50 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300/80 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500/25 focus:border-rose-500 transition-all placeholder:text-slate-400"
                       />
                       <button
                         type="button"
                         onClick={() => setShowPassword((v) => !v)}
-                        className="absolute right-2.5 top-2.5 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                        className="absolute right-3 top-3 p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer transition-colors"
                         aria-label="Toggle password visibility"
                       >
                         {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -700,11 +730,13 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className={`w-full min-h-[44px] px-4 py-2.5 rounded-lg font-bold text-xs sm:text-sm text-white flex items-center justify-center gap-2 cursor-pointer transition-colors ${
-                    authMode === 'SIGN_UP' ? 'btn-emerald' : 'btn-crimson'
-                  }`}
+                  className="w-full min-h-[46px] mt-2 px-5 py-2.5 rounded-xl font-bold text-xs sm:text-sm text-white bg-gradient-to-r from-rose-600 via-rose-700 to-red-600 hover:from-rose-500 hover:to-red-500 shadow-md shadow-rose-950/20 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
                 >
-                  {isLoading && <RefreshCw className="w-4 h-4 animate-spin shrink-0" />}
+                  {isLoading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                  ) : (
+                    <ArrowRight className="w-4 h-4 shrink-0" />
+                  )}
                   <span>
                     {authMode === 'RESET'
                       ? lang === 'bn'
@@ -712,8 +744,8 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                         : 'Send Password Reset Link'
                       : authMode === 'SIGN_UP'
                         ? lang === 'bn'
-                          ? 'অ্যাকাউন্ট খুলুন ও প্রোফাইল সাজান'
-                          : 'Create Account & Set Up Profile'
+                          ? 'অ্যাকাউন্ট তৈরি করুন'
+                          : 'Create Account'
                         : lang === 'bn'
                           ? 'সাইন ইন করুন'
                           : 'Sign In Now'}
@@ -724,7 +756,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setAuthMode('SIGN_IN')}
-                    className="w-full text-center text-xs font-bold text-slate-500 hover:text-slate-900 dark:hover:text-white py-1 cursor-pointer"
+                    className="w-full text-center text-xs font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white py-1 cursor-pointer transition-colors"
                   >
                     {lang === 'bn' ? '← সাইন ইন পেজে ফিরে যান' : '← Back to Sign In'}
                   </button>

@@ -187,7 +187,7 @@ function evaluateRequestOrigin(
   // Special handling for capacitor://localhost
   if (raw.toLowerCase() === 'capacitor://localhost') {
     return {
-      allowed: configuredAllowlist.has('capacitor://localhost'),
+      allowed: true,
       normalizedOrigin: 'capacitor://localhost',
     };
   }
@@ -207,6 +207,22 @@ function evaluateRequestOrigin(
     if (configuredAllowlist.has(lowerOrigin)) {
       return { allowed: true, normalizedOrigin };
     }
+
+    const hostname = parsed.hostname.toLowerCase();
+    // Auto-allow all Vercel deployments, Cloud Run, Google, GitHub Codespaces, and localhost
+    if (
+      hostname.endsWith('.vercel.app') ||
+      hostname.endsWith('.run.app') ||
+      hostname.endsWith('.google.com') ||
+      hostname.endsWith('.googleusercontent.com') ||
+      hostname.endsWith('.github.dev') ||
+      hostname.endsWith('.app.github.dev') ||
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1'
+    ) {
+      return { allowed: true, normalizedOrigin };
+    }
+
     return { allowed: false, normalizedOrigin: null };
   } catch {
     return { allowed: false, normalizedOrigin: null };
@@ -838,14 +854,13 @@ export function createEmergencyApiApp(options?: {
     next();
   });
 
-  // Mount dedicated Neon PostgreSQL primary database API (/api/v1/*)
-  app.use(
-    '/api/v1',
-    createNeonApiRouter({
-      verifyActorOverride: options?.verifyNeonActorOverride,
-      otpService,
-    })
-  );
+  // Mount dedicated Neon PostgreSQL primary database API (/api/v1/* and /v1/*)
+  const neonApiRouter = createNeonApiRouter({
+    verifyActorOverride: options?.verifyNeonActorOverride,
+    otpService,
+  });
+  app.use('/api/v1', neonApiRouter);
+  app.use('/v1', neonApiRouter);
 
   const MAX_SERVER_BUCKETS = 5000;
   const rateBuckets = new Map<string, number[]>();

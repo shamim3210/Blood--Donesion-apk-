@@ -54,6 +54,8 @@ import {
   Copy,
   Check,
   Download,
+  ShieldCheck,
+  Zap,
 } from 'lucide-react';
 import { BrandLogo } from '../BrandLogo';
 import type { CareSuiteTab } from '../ecosystem/EmergencyCareSuiteModal';
@@ -507,17 +509,29 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 shadow-xl ring-1 ring-white/15"
               />
               <div className="space-y-1.5 min-w-0 flex-1">
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-400/30 text-rose-200 text-[11px] sm:text-xs font-bold tracking-tight">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>
-                    {lang === 'bn'
-                      ? '৬৪ জেলা লাইভ নেটওয়ার্ক · সরাসরি কল ও WhatsApp'
-                      : '64 Districts Live Network · Direct Call & WhatsApp'}
-                  </span>
+                {/* Security & Network Trust Markers */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-400/30 text-rose-200 text-[11px] sm:text-xs font-bold tracking-tight">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>
+                      {lang === 'bn'
+                        ? '৬৪ জেলা লাইভ নেটওয়ার্ক · সরাসরি কল ও WhatsApp'
+                        : '64 Districts Live Network · Direct Call & WhatsApp'}
+                    </span>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-200 text-[11px] sm:text-xs font-bold tracking-tight">
+                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                    <span>
+                      {lang === 'bn'
+                        ? '২৫৬-বিট সুরক্ষিত ডাটাবেস · জিরো নম্বর স্ক্র্যাপিং'
+                        : '256-Bit Secure Database · Anti-Scraping'}
+                    </span>
+                  </div>
                 </div>
-                <h2 className="text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-tight leading-snug">
+
+                <h2 className="text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-tight leading-snug text-balance">
                   {lang === 'bn'
-                    ? 'জরুরি মুহূর্তে সরাসরি প্রস্তুত রক্তদাতার সাথে যোগাযোগ করুন'
+                    ? 'জরুরি প্রয়োজনে সরাসরি প্রস্তুত রক্তদাতার সাথে যোগাযোগ করুন'
                     : 'Find Verified Blood Donors & Contact Directly in Minutes'}
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-200/90 leading-relaxed max-w-2xl font-normal">
@@ -539,17 +553,30 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       : 'Select Blood Group Needed'}
                   </span>
                 </span>
-                <span className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 px-2 py-0.5 rounded-md border border-rose-200/60 dark:border-rose-900/60">
-                  {lang === 'bn' ? '১ ক্লিকে সরাসরি সার্চ' : '1-Tap Instant Search'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRareOnlyFilter((v) => !v)}
+                    className={`text-[11px] font-bold px-2.5 py-0.5 rounded-md border cursor-pointer transition-all ${
+                      rareOnlyFilter
+                        ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    {lang === 'bn' ? 'নেগেটিভ (Rare) গ্রুপ' : 'Rare (-) Only'}
+                  </button>
+                  <span className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 px-2 py-0.5 rounded-md border border-rose-200/60 dark:border-rose-900/60 hidden sm:inline">
+                    {lang === 'bn' ? '১ ক্লিকে সার্চ' : '1-Tap Search'}
+                  </span>
+                </div>
               </div>
 
-              {/* Smart Tactile Blood Group Selector Cards */}
+              {/* Smart Tactile Blood Group Selector Chips */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
                 <button
                   type="button"
                   onClick={() => setExpressGroup('ALL')}
-                  className={`min-h-[46px] px-3.5 py-2 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 transition-all ${
+                  className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95 ${
                     expressGroup === 'ALL'
                       ? 'bg-gradient-to-b from-rose-500 via-rose-600 to-red-700 text-white shadow-md shadow-rose-950/40 ring-2 ring-white/80 scale-[1.02]'
                       : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
@@ -559,15 +586,18 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 </button>
                 {ALL_BLOOD_GROUPS.map((grp) => {
                   const selected = expressGroup === grp;
+                  const isNegative = grp.endsWith('-');
                   return (
                     <button
                       key={grp}
                       type="button"
                       onClick={() => setExpressGroup(grp)}
-                      className={`min-h-[46px] min-w-[50px] px-3 py-2 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 transition-all ${
+                      className={`min-h-[44px] min-w-[52px] px-3 py-2 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95 ${
                         selected
                           ? 'bg-gradient-to-b from-rose-500 via-rose-600 to-red-700 text-white shadow-md shadow-rose-950/40 ring-2 ring-white/80 scale-[1.04]'
-                          : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
+                          : isNegative
+                            ? 'bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-900/60'
+                            : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700'
                       }`}
                     >
                       {grp}
@@ -584,7 +614,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                     value={expressDistrict}
                     onChange={(e) => setExpressDistrict(e.target.value)}
                     aria-label="Express District Selector"
-                    className="w-full h-12 px-3 text-xs font-bold rounded-xl bg-slate-50 dark:bg-[#111c33] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                    className="w-full h-12 px-3 text-xs font-bold rounded-xl bg-slate-50 dark:bg-[#111c33] text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer transition-all"
                   >
                     <option value="ALL">
                       {lang === 'bn' ? 'সকল জেলা (সমগ্র বাংলাদেশ)' : 'All 64 Districts'}
@@ -628,7 +658,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                       district: expressDistrict !== 'ALL' ? expressDistrict : undefined,
                     })
                   }
-                  className="sm:col-span-3 min-h-[48px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-[#070e1e] dark:hover:bg-[#111a33] text-rose-300 hover:text-white border border-rose-500/40 hover:border-rose-400 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
+                  className="sm:col-span-3 min-h-[48px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-[#070e1e] dark:hover:bg-[#111a33] text-rose-300 hover:text-white border border-rose-500/40 hover:border-rose-400 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-[0.98] shadow-sm"
                 >
                   <Megaphone className="w-3.5 h-3.5 text-rose-400 shrink-0" />
                   <span>{lang === 'bn' ? 'জরুরি SOS' : 'Post SOS'}</span>
@@ -649,7 +679,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                   <button
                     type="button"
                     onClick={() => onOpenRegister('USER')}
-                    className="shrink-0 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] cursor-pointer"
+                    className="shrink-0 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] cursor-pointer transition-colors"
                   >
                     {lang === 'bn' ? 'নিবন্ধন করুন' : 'Join Now'}
                   </button>
@@ -666,13 +696,13 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 if (onQuickSearchByGroup) onQuickSearchByGroup('ALL', 'ALL');
                 else onNavigateTab('search');
               }}
-              className="p-4 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left transition-all cursor-pointer backdrop-blur-xs hover:border-white/30"
+              className="p-4 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left transition-all cursor-pointer backdrop-blur-xs hover:border-white/30 active:scale-[0.99]"
             >
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold text-slate-200">
                   {lang === 'bn' ? 'প্রস্তুত রক্তদাতা' : 'Ready Donors'}
                 </span>
-                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/30" />
               </div>
               <div className="text-3xl sm:text-4xl font-black text-white font-mono tabular-nums mt-1">
                 {totalReadyDonors}
@@ -686,13 +716,13 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigateTab('requests')}
-              className="p-4 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-300/30 text-left transition-all cursor-pointer backdrop-blur-xs hover:border-rose-300/50"
+              className="p-4 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-300/30 text-left transition-all cursor-pointer backdrop-blur-xs hover:border-rose-300/50 active:scale-[0.99]"
             >
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold text-rose-100">
                   {lang === 'bn' ? 'সক্রিয় জরুরি আবেদন' : 'Active SOS Requests'}
                 </span>
-                <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse ring-2 ring-rose-400/30" />
               </div>
               <div className="text-3xl sm:text-4xl font-black text-white font-mono tabular-nums mt-1">
                 {activeRequestsAll.length}
@@ -706,7 +736,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigateTab('map')}
-              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2.5 transition-all cursor-pointer backdrop-blur-xs hover:border-white/30"
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2.5 transition-all cursor-pointer backdrop-blur-xs hover:border-white/30 active:scale-[0.99]"
             >
               <div className="min-w-0">
                 <div className="text-xs font-black text-white truncate">
@@ -724,7 +754,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
             <button
               type="button"
               onClick={() => onOpenRegister('USER')}
-              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2.5 transition-all cursor-pointer backdrop-blur-xs hover:border-white/30"
+              className="p-3.5 rounded-2xl bg-white/10 hover:bg-white/16 border border-white/16 text-left flex items-center justify-between gap-2.5 transition-all cursor-pointer backdrop-blur-xs hover:border-white/30 active:scale-[0.99]"
             >
               <div className="min-w-0">
                 <div className="text-xs font-black text-white truncate">
@@ -737,7 +767,7 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                     : 'Join as Donor'}
                 </div>
                 <div className="text-[11px] text-slate-300 truncate mt-0.5">
-                  {lang === 'bn' ? 'স্মার্ট আইডি ও সেটিংস' : 'Smart ID & privacy'}
+                  {lang === 'bn' ? 'স্মার্ট আইডি ও প্রাইভেসী' : 'Smart ID & privacy'}
                 </div>
               </div>
               <div className="w-9 h-9 rounded-xl bg-rose-500/25 text-rose-200 flex items-center justify-center shrink-0 border border-rose-400/30">
@@ -745,11 +775,11 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
               </div>
             </button>
 
-            {onOpenPlayStore && (
+            {onOpenPlayStore ? (
               <button
                 type="button"
                 onClick={onOpenPlayStore}
-                className="col-span-2 min-h-[46px] px-4 py-2.5 rounded-2xl bg-white/12 hover:bg-white/20 border border-white/20 text-left flex items-center justify-between gap-2 transition-all cursor-pointer"
+                className="col-span-2 min-h-[46px] px-4 py-2.5 rounded-2xl bg-white/12 hover:bg-white/20 border border-white/20 text-left flex items-center justify-between gap-2 transition-all cursor-pointer active:scale-[0.99]"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <Download className="w-4 h-4 text-emerald-300 shrink-0" />
@@ -761,6 +791,18 @@ const DonorHomeViewInner: React.FC<DonorHomeViewProps> = ({
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-200 shrink-0" />
               </button>
+            ) : (
+              <div className="col-span-2 p-3 rounded-2xl bg-white/8 border border-white/15 flex items-center justify-between text-xs text-slate-300">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="text-[11px]">
+                    {lang === 'bn'
+                      ? '২৪/৭ জাতীয় জরুরি সহায়তা: ৯৯৯ / ১৬২৬৩'
+                      : '24/7 Emergency Helplines: 999 / 16263'}
+                  </span>
+                </div>
+                <span className="text-[10px] font-bold text-emerald-300">BD Verified</span>
+              </div>
             )}
           </div>
         </div>
