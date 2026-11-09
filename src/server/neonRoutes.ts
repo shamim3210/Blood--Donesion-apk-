@@ -1145,7 +1145,8 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
       if (!actor) return;
 
       const body = req.body || {};
-      const targetUid = body.targetUid ? String(body.targetUid) : actor.uid;
+      const targetUid =
+        isAdminRole(actor.role) && body.targetUid ? String(body.targetUid) : actor.uid;
 
       const profile = await upsertUserAndDonorProfileTx(db, actor, {
         targetUid,

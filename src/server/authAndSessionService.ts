@@ -1075,11 +1075,11 @@ export async function verifyRequestSession(
     };
   }
 
-  // 2. Extract opaque session token from HttpOnly cookie OR Bearer header (Capacitor Android APK)
+  // 2. Extract opaque session token from Bearer header OR HttpOnly cookie
   const cookies = parseCookieHeader(req.headers.cookie);
   const cookieToken = cookies[SESSION_COOKIE_NAME] || '';
-  const candidateToken = cookieToken || bearerToken;
-  const authTransport: 'COOKIE' | 'BEARER' = cookieToken ? 'COOKIE' : 'BEARER';
+  const candidateToken = bearerToken || cookieToken;
+  const authTransport: 'COOKIE' | 'BEARER' = bearerToken ? 'BEARER' : (cookieToken ? 'COOKIE' : 'BEARER');
 
   if (!candidateToken || !candidateToken.startsWith('bs_sess_') || candidateToken.length > 256) {
     return null;

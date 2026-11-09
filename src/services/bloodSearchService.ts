@@ -106,6 +106,15 @@ let cachedUserFullSnapshot: {
 } | null = null;
 
 function loadNativeSessionTokenIfApplicable(): string {
+  if (typeof window !== 'undefined' && !inMemoryCsrfToken) {
+    try {
+      const storedCsrf =
+        localStorage.getItem('bloodsearch_csrf_token') ||
+        sessionStorage.getItem('bloodsearch_csrf_token') ||
+        '';
+      if (storedCsrf) inMemoryCsrfToken = storedCsrf;
+    } catch {}
+  }
   if (inMemorySessionToken) return inMemorySessionToken;
   if (typeof window === 'undefined') return '';
   try {
@@ -127,6 +136,14 @@ function loadNativeSessionTokenIfApplicable(): string {
 function persistSessionTokens(params: { csrfToken?: string; sessionToken?: string }): void {
   if (params.csrfToken) {
     inMemoryCsrfToken = params.csrfToken;
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('bloodsearch_csrf_token', params.csrfToken);
+        sessionStorage.setItem('bloodsearch_csrf_token', params.csrfToken);
+      } catch {
+        // Ignore storage error
+      }
+    }
   }
   if (params.sessionToken) {
     inMemorySessionToken = params.sessionToken;
@@ -151,6 +168,8 @@ function clearSessionTokens(): void {
       localStorage.removeItem('bloodsearch_session_token');
       sessionStorage.removeItem('bloodsearch_session_token');
       sessionStorage.removeItem(NATIVE_SESSION_STORAGE_KEY);
+      localStorage.removeItem('bloodsearch_csrf_token');
+      sessionStorage.removeItem('bloodsearch_csrf_token');
     } catch {
       // Ignore
     }
@@ -185,19 +204,30 @@ export async function apiFetch(
     headers.set('Content-Type', 'application/json');
   }
 
-  // Ensure CSRF token is present for cookie-authenticated mutations
+  const bearer = loadNativeSessionTokenIfApplicable();
+  if (bearer && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${bearer}`);
+  }
+
+  // Ensure CSRF token is present for mutations
   if (isMutation) {
     recentGetCache.clear();
-    if (!inMemoryCsrfToken && auth.currentUser && typeof fetch === 'function') {
+    if (!inMemoryCsrfToken && typeof fetch === 'function') {
       try {
+        const refreshHeaders: Record<string, string> = {};
+        if (bearer) {
+          refreshHeaders['Authorization'] = `Bearer ${bearer}`;
+        }
         const meRes = await fetch(resolveApiUrl('/api/v1/auth/me?refreshCsrf=1'), {
           method: 'GET',
+          headers: refreshHeaders,
           credentials: 'include',
         });
         if (meRes.ok) {
           const meJson = await meRes.json().catch(() => null);
           if (meJson?.csrfToken) {
             inMemoryCsrfToken = String(meJson.csrfToken);
+            persistSessionTokens({ csrfToken: inMemoryCsrfToken });
           }
         }
       } catch {
@@ -207,11 +237,6 @@ export async function apiFetch(
     if (inMemoryCsrfToken && !headers.has('X-CSRF-Token')) {
       headers.set('X-CSRF-Token', inMemoryCsrfToken);
     }
-  }
-
-  const bearer = loadNativeSessionTokenIfApplicable();
-  if (bearer && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${bearer}`);
   }
 
   const fullUrl = resolveApiUrl(path);
@@ -360,6 +385,7 @@ export async function hydrateSessionFromServer(): Promise<User | null> {
     }
     if (data.csrfToken) {
       inMemoryCsrfToken = String(data.csrfToken);
+      persistSessionTokens({ csrfToken: inMemoryCsrfToken });
     }
     cachedUserFullSnapshot = {
       user: data.user || null,
