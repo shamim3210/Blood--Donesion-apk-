@@ -1237,10 +1237,11 @@ export async function createBloodRequestWithAlertsTx(
 ) {
   const patientName = assertCleanText(input.patientName, 'patientName', 160, 2);
   const bloodGroup = assertBloodGroup(input.bloodGroup);
-  const urgency = String(input.urgency || 'URGENT').trim().toUpperCase();
-  if (!VALID_URGENCIES.has(urgency)) {
-    throw new DomainSecurityError(400, 'INVALID_URGENCY', 'Urgency must be CRITICAL, URGENT, or STANDARD.');
-  }
+  let rawUrgency = String(input.urgency || 'URGENT').trim().toUpperCase();
+  if (rawUrgency === 'EMERGENCY' || rawUrgency === 'HIGH') rawUrgency = 'CRITICAL';
+  if (rawUrgency === 'MEDIUM') rawUrgency = 'URGENT';
+  if (rawUrgency === 'LOW') rawUrgency = 'STANDARD';
+  const urgency = VALID_URGENCIES.has(rawUrgency) ? rawUrgency : 'URGENT';
 
   const bagsNeeded = Number(input.bagsNeeded);
   if (!Number.isInteger(bagsNeeded) || bagsNeeded < 1 || bagsNeeded > 20) {

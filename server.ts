@@ -1595,7 +1595,8 @@ if (process.env.BLOODSEARCH_SERVERLESS_MODE !== 'true') {
 
   if (isDirectEntry) {
     (async () => {
-      const PORT = Number(process.env.PORT) || 3000;
+      const PORT =
+        process.env.PORT && process.env.PORT !== '8080' ? Number(process.env.PORT) : 3000;
       const app = createEmergencyApiApp();
       const httpServer = http.createServer(app);
 

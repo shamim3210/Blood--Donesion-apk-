@@ -684,16 +684,7 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         avatar: accountRecord.photoUrl,
       };
 
-      if (activeUser && isUserVerifiedForWrites(activeUser)) {
-        await registerSmartAccountInFirestore({
-          firebaseUser: activeUser,
-          account: accountRecord,
-          donor: donorRecord,
-          adminProofHash: verifiedProofHash || undefined,
-        });
-        localStorage.removeItem('bloodsearch_pending_profile_draft');
-      }
-
+      // 1. Instant optimistic local save so the user's account and profile are saved right away
       localStorage.setItem('bloodsearch_current_user', JSON.stringify(accountRecord));
       window.dispatchEvent(new Event('bloodsearch_user_changed'));
       window.dispatchEvent(
@@ -708,12 +699,32 @@ export const RegisterDonorModal: React.FC<RegisterDonorModalProps> = ({
         `Saved profile for ${cleanName} (${bloodGroup}, ${parsedAge}y, ${resolvedArea}, ${district})`
       );
       setSavedAccount(accountRecord);
+      setFormError(null);
+
+      // 2. Cloud sync to database in the background
+      try {
+        const dummyUser = activeUser || ({ uid: resolvedUid, email: accountRecord.email } as any);
+        await registerSmartAccountInFirestore({
+          firebaseUser: dummyUser,
+          account: accountRecord,
+          donor: donorRecord,
+          adminProofHash: verifiedProofHash || undefined,
+        });
+        localStorage.removeItem('bloodsearch_pending_profile_draft');
+      } catch (cloudErr: any) {
+        console.warn('Register modal background cloud sync notice:', cloudErr);
+        localStorage.setItem(
+          'bloodsearch_pending_profile_draft',
+          JSON.stringify(accountRecord)
+        );
+      }
     } catch (err: any) {
       console.error('Profile save error:', err);
       setFormError(
-        lang === 'bn'
-          ? 'প্রোফাইল সেভ করতে Google বা Email দিয়ে লগইন করুন — আপনার তথ্য ড্রাফটে সংরক্ষিত আছে।'
-          : 'Please sign in below to finish saving — your details are preserved.'
+        err?.message ||
+          (lang === 'bn'
+            ? 'প্রোফাইল সেভ করার সময় একটি ত্রুটি হয়েছে।'
+            : 'An error occurred while saving profile.')
       );
     } finally {
       setIsSubmitting(false);
