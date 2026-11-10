@@ -169,15 +169,15 @@ export async function ensureMainPostgresReady(
         ]);
         let client: PGlite;
         try {
-          fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true, mode: 0o700 });
+          fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true, mode: 0o777 });
           client = new PGliteRuntime(EMBEDDED_PG_DIR);
           await client.waitReady;
-        } catch {
-          // If directory is locked or has corrupted WASM state, cleanly fall back to in-memory PostgreSQL 16
+        } catch (dirErr) {
+          console.warn('[MainPostgres] PGlite disk storage notice:', dirErr);
           try {
-            fs.rmSync(EMBEDDED_PG_DIR, { recursive: true, force: true });
+            fs.mkdirSync(EMBEDDED_PG_DIR, { recursive: true });
           } catch {}
-          client = new PGliteRuntime();
+          client = new PGliteRuntime(EMBEDDED_PG_DIR);
           await client.waitReady;
         }
 

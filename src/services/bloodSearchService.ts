@@ -396,6 +396,64 @@ export async function hydrateSessionFromServer(): Promise<User | null> {
       isAdmin: Boolean(data.isAdmin),
       isSuperAdmin: Boolean(data.isSuperAdmin),
     };
+
+    const dp = data.donorProfile as Record<string, any> | null;
+    const pc = data.privateContact as Record<string, any> | null;
+    const usr = data.user as Record<string, any> | null;
+
+    if (dp || usr) {
+      try {
+        const existingRaw = typeof window !== 'undefined' ? localStorage.getItem('bloodsearch_current_user') : null;
+        const existing = existingRaw ? JSON.parse(existingRaw) : null;
+        const officialSmartId =
+          dp?.donorSmartId ||
+          existing?.idCardNumber ||
+          (data.isSuperAdmin || data.isAdmin
+            ? `ADMIN-BD-${usr?.uid?.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase() || '1001'}`
+            : `BS-${usr?.uid?.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase() || '1001'}`);
+
+        const resolvedAccount: UserAccount = {
+          id: usr?.uid || dp?.userUid || existing?.id || '',
+          name: dp?.publicName || usr?.displayName || existing?.name || 'Blood Donor',
+          email: usr?.email || existing?.email || '',
+          phone: pc?.phoneE164 || existing?.phone || '',
+          whatsappPhone: pc?.whatsappE164 || existing?.whatsappPhone || pc?.phoneE164 || '',
+          facebookUrl: pc?.facebookProfileUrl || existing?.facebookUrl || '',
+          bloodGroup: (dp?.bloodGroup || usr?.bloodGroup || existing?.bloodGroup || '') as BloodGroup,
+          division: existing?.division || 'dhaka',
+          district: dp?.district || usr?.district || existing?.district || 'dhaka',
+          upazila: dp?.upazila || dp?.area || usr?.area || existing?.upazila || '',
+          photoUrl: dp?.avatarUrl || usr?.photoUrl || existing?.photoUrl || DEFAULT_AVATAR_DATA_URI,
+          role: (data.isSuperAdmin || data.isAdmin || existing?.role === 'ADMIN') ? 'ADMIN' : 'USER',
+          verifiedStatus: Boolean(usr?.emailVerified || usr?.uid),
+          idCardNumber: officialSmartId,
+          age: typeof dp?.age === 'number' ? dp.age : (typeof existing?.age === 'number' ? existing.age : undefined),
+          gender: dp?.gender || existing?.gender || undefined,
+          weightKg: typeof dp?.weightKg === 'number' ? dp.weightKg : (typeof existing?.weightKg === 'number' ? existing.weightKg : undefined),
+          availableToDonate: dp ? Boolean(dp.isAvailable) : (existing?.availableToDonate ?? true),
+          availabilityStatus: dp?.availabilityStatus || existing?.availabilityStatus || 'AVAILABLE',
+          availabilityConfirmedAtMs: dp?.lastAvailabilityConfirmedAt ? new Date(dp.lastAvailabilityConfirmedAt).getTime() : Date.now(),
+          shareDirectContact: dp ? Boolean(dp.shareDirectContact) : true,
+          contactVisibility: dp?.contactVisibility || existing?.contactVisibility || 'PUBLIC_OPT_IN',
+          allowCall: true,
+          allowWhatsApp: true,
+          allowSms: true,
+          emergencyAlertsOptIn: true,
+          alertsPaused: false,
+          lastDonationDate: dp?.lastDonationDate ? new Date(dp.lastDonationDate).toISOString().slice(0, 10) : (existing?.lastDonationDate || ''),
+          totalDonations: typeof dp?.totalDonations === 'number' ? dp.totalDonations : (existing?.totalDonations || 0),
+          createdAt: dp?.createdAt || existing?.createdAt || new Date().toISOString(),
+        };
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('bloodsearch_current_user', JSON.stringify(resolvedAccount));
+          window.dispatchEvent(new Event('bloodsearch_user_changed'));
+        }
+      } catch (err) {
+        console.warn('Failed to hydrate local user account cache:', err);
+      }
+    }
+
     const nextUser = buildUserObject({
       ...data.user,
       role: data.role,
@@ -2287,6 +2345,19 @@ export async function registerSmartAccountInFirestore(params: {
   if (!res.ok) {
     const errJson = await res.json().catch(() => ({}));
     throw new Error(errJson?.message || 'Failed to save donor profile in Neon PostgreSQL.');
+  }
+
+  const json = await res.json().catch(() => null);
+  const serverSmartId = json?.profile?.donorSmartId;
+  if (serverSmartId) {
+    account.idCardNumber = serverSmartId;
+    donor.id = serverSmartId;
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('bloodsearch_current_user', JSON.stringify(account));
+        window.dispatchEvent(new Event('bloodsearch_user_changed'));
+      } catch {}
+    }
   }
 }
 
