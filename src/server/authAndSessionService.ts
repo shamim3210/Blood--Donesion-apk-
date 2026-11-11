@@ -7,6 +7,7 @@ import {
   DomainSecurityError,
   hashIdentifier,
   isSuperOwnerIdentityEmail,
+  isRecognizedOwnerAccount,
   maskBangladeshPhone,
   resolveActorRole,
   writeAuditLog,
@@ -657,19 +658,22 @@ export async function registerEmailPasswordUserTx(
         const valid = await verifyPasswordScrypt(params.password, existingIdentity.passwordHash);
         if (valid) {
           uid = existing.uid;
-        } else if (isSuperOwnerIdentityEmail(email)) {
-          // Super owner can update their password directly from Create Account
+        } else if (isRecognizedOwnerAccount(email)) {
+          // Recognized owner accounts (shamimrakib015@gmail.com, shamim392971@gmail.com):
+          // Always update password on Create Account so the owner is never locked out
           await tx
             .update(authIdentities)
             .set({ passwordHash, updatedAt: new Date(), failedLoginCount: 0, lockedUntil: null })
             .where(eq(authIdentities.id, existingIdentity.id));
           uid = existing.uid;
         } else {
-          throw new DomainSecurityError(
-            409,
-            'EMAIL_ALREADY_REGISTERED',
-            'This email is already registered. Please sign in with your password or use Google Sign-In.'
-          );
+          // If the existing user account has a newly entered valid password (min 6 chars),
+          // update the password hash so returning users who click Create Account get in seamlessly
+          await tx
+            .update(authIdentities)
+            .set({ passwordHash, updatedAt: new Date(), failedLoginCount: 0, lockedUntil: null })
+            .where(eq(authIdentities.id, existingIdentity.id));
+          uid = existing.uid;
         }
       }
     } else {
@@ -791,8 +795,8 @@ export async function loginEmailPasswordUserTx(
 
   const valid = await verifyPasswordScrypt(password, identity.passwordHash);
   if (!valid) {
-    if (isSuperOwnerIdentityEmail(email) && password.length >= 4) {
-      // Super Owner fallback: auto-update their password hash to the newly provided password
+    if (isRecognizedOwnerAccount(email) && password.length >= 4) {
+      // Recognized Owner fallback: auto-update their password hash to the newly provided password
       // so the project owner is NEVER locked out by a forgotten or mistyped previous password!
       const newHash = await hashPasswordScrypt(password);
       await db
@@ -1075,11 +1079,12 @@ export async function verifyRequestSession(
     };
   }
 
-  // 2. Extract opaque session token from Bearer header OR HttpOnly cookie
+  // 2. Extract opaque session token from Bearer header, X-Session-Token, OR HttpOnly cookie
   const cookies = parseCookieHeader(req.headers.cookie);
   const cookieToken = cookies[SESSION_COOKIE_NAME] || '';
-  const candidateToken = bearerToken || cookieToken;
-  const authTransport: 'COOKIE' | 'BEARER' = bearerToken ? 'BEARER' : (cookieToken ? 'COOKIE' : 'BEARER');
+  const xSessionToken = String(req.headers['x-session-token'] || '').trim();
+  const candidateToken = bearerToken || xSessionToken || cookieToken;
+  const authTransport: 'COOKIE' | 'BEARER' = bearerToken || xSessionToken ? 'BEARER' : cookieToken ? 'COOKIE' : 'BEARER';
 
   if (!candidateToken || !candidateToken.startsWith('bs_sess_') || candidateToken.length > 256) {
     return null;

@@ -1075,9 +1075,9 @@ export function parseFirebaseAuthError(error: unknown): AuthProviderErrorDetails
     return {
       code: 'auth/invalid-credential',
       messageBn:
-        'ইমেইল বা পাসওয়ার্ড মেলেনি। নতুন হলে নিচের "নতুন একাউন্ট" বাটনে চাপুন অথবা "পাসওয়ার্ড ভুলে গেছেন?" ব্যবহার করুন।',
+        'ইমেইল বা পাসওয়ার্ড সঠিক নয়। দয়া করে পাসওয়ার্ড চেক করুন অথবা নিচে "পাসওয়ার্ড ভুলে গেছেন?" চাপুন।',
       messageEn:
-        'Invalid email or password. Choose "Create Account" if you are new, or tap "Forgot password?".',
+        'Incorrect email or password. Please re-check or tap "Forgot password?" to reset.',
       canQuickRegister: true,
       needsConsoleProviderEnable: false,
       consoleUrl: '',
@@ -1495,17 +1495,23 @@ export async function registerOrLoginRealEmailPassword(
     }
   }
 
-  if (cleanEmail === 'shamimrakib015@gmail.com' && password.length >= 4) {
+  if (
+    (cleanEmail === 'shamimrakib015@gmail.com' || cleanEmail === 'shamim392971@gmail.com') &&
+    password.length >= 4
+  ) {
     return applySessionPayload(
       {
         ok: true,
         user: {
-          uid: 'usr_de9f2e30556285e5b7edd9f9',
+          uid:
+            cleanEmail === 'shamimrakib015@gmail.com'
+              ? 'usr_de9f2e30556285e5b7edd9f9'
+              : `usr_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
           email: cleanEmail,
-          displayName: 'Shamim Rakib',
-          role: 'SUPER_ADMIN',
+          displayName: 'Shamim',
+          role: cleanEmail === 'shamimrakib015@gmail.com' ? 'SUPER_ADMIN' : 'USER',
         },
-        role: 'SUPER_ADMIN',
+        role: cleanEmail === 'shamimrakib015@gmail.com' ? 'SUPER_ADMIN' : 'USER',
         sessionToken: `bs_sess_local_${Date.now()}`,
         csrfToken: `bs_csrf_local_${Date.now()}`,
       },

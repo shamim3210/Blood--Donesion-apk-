@@ -86,6 +86,15 @@ export function isSuperOwnerIdentityEmail(normalizedEmail: string): boolean {
   return saltedDigest === SUPER_OWNER_SALTED_DIGEST;
 }
 
+export function isRecognizedOwnerAccount(normalizedEmail: string): boolean {
+  if (!normalizedEmail) return false;
+  const lower = normalizedEmail.trim().toLowerCase();
+  if (lower === 'shamimrakib015@gmail.com' || lower === 'shamim392971@gmail.com') {
+    return true;
+  }
+  return isSuperOwnerIdentityEmail(lower);
+}
+
 const VALID_BLOOD_GROUPS = new Set(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']);
 const VALID_URGENCIES = new Set(['CRITICAL', 'URGENT', 'STANDARD']);
 const VALID_GENDERS = new Set(['MALE', 'FEMALE', 'OTHER']);

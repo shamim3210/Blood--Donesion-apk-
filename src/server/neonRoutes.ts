@@ -365,7 +365,7 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   router.post('/auth/google/sandbox-login', async (req: Request, res: Response) => {
     const { db } = await ensureMainPostgresReady();
     const email = String(req.body?.email || 'shamimrakib015@gmail.com').trim().toLowerCase();
-    const isOwner = email === 'shamimrakib015@gmail.com';
+    const isOwner = email === 'shamimrakib015@gmail.com' || email === 'shamim392971@gmail.com';
     const displayName = String(
       req.body?.displayName || (email.startsWith('shamim') ? 'Shamim Rakib' : email.split('@')[0])
     ).trim();
@@ -544,7 +544,7 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
   router.post('/auth/login', async (req: Request, res: Response) => {
     const { db } = await ensureMainPostgresReady();
     const email = String(req.body?.email || '').trim().toLowerCase();
-    const isOwner = email === 'shamimrakib015@gmail.com';
+    const isOwner = email === 'shamimrakib015@gmail.com' || email === 'shamim392971@gmail.com';
 
     if (!db) {
       const role = isOwner ? 'SUPER_ADMIN' : 'DONOR';
@@ -1458,7 +1458,7 @@ export function createNeonApiRouter(options?: NeonApiRouterOptions): Router {
         longitude: body.longitude ?? null,
         clinicalReason: body.clinicalReason ?? body.medicalReason ?? body.notes ?? null,
         contactName: body.contactName ?? null,
-        contactPhone: body.contactPhone,
+        contactPhone: body.contactPhone || body.contactNumber || body.phone,
         shareDirectContact: body.shareDirectContact !== false,
       });
 

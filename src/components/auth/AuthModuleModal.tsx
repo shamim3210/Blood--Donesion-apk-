@@ -102,7 +102,8 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  const isOwnerEmail = email.trim().toLowerCase() === 'shamimrakib015@gmail.com';
+  const isSuperAdminEmail = email.trim().toLowerCase() === 'shamimrakib015@gmail.com';
+  const isOwnerEmail = isSuperAdminEmail || email.trim().toLowerCase() === 'shamim392971@gmail.com';
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -467,7 +468,7 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                   {lang === 'bn' ? providerError.messageBn : providerError.messageEn}
                 </span>
               </div>
-              {providerError.canQuickRegister && email && password.length >= 6 && (
+              {providerError.canQuickRegister && authMode === 'SIGN_IN' && email && password.length >= 6 && (
                 <div className="pt-2.5 border-t border-rose-200/60 dark:border-rose-800/60 flex items-center justify-between gap-2">
                   <span className="text-[11px] text-rose-600 dark:text-rose-300">
                     {lang === 'bn'
@@ -658,12 +659,6 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                     >
                       {lang === 'bn' ? 'ইমেইল অ্যাড্রেস' : 'Email Address'}
                     </label>
-                    {isOwnerEmail && (
-                      <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                        <ShieldCheck className="w-3 h-3" />
-                        Super Admin
-                      </span>
-                    )}
                   </div>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5 pointer-events-none" />
@@ -673,7 +668,10 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                       type="email"
                       required
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        if (providerError) setProviderError(null);
+                      }}
                       placeholder="you@gmail.com"
                       className="w-full h-11 pl-10 pr-3.5 text-sm rounded-xl bg-slate-50 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300/80 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500/25 focus:border-rose-500 transition-all placeholder:text-slate-400"
                     />
@@ -711,7 +709,10 @@ export const AuthModuleModal: React.FC<AuthModuleModalProps> = ({
                         required
                         minLength={isOwnerEmail ? 4 : 6}
                         value={password}
-                        onChange={(e) => setPassword(e.target.value)}
+                        onChange={(e) => {
+                          setPassword(e.target.value);
+                          if (providerError) setProviderError(null);
+                        }}
                         placeholder="••••••••"
                         className="w-full h-11 pl-10 pr-10 text-sm rounded-xl bg-slate-50 dark:bg-slate-900/90 text-slate-900 dark:text-white border border-slate-300/80 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500/25 focus:border-rose-500 transition-all placeholder:text-slate-400"
                       />
